@@ -51,6 +51,9 @@ const WORKTREE_REFUSALS = {
   outside_workdirs: 'the repository is outside the allowed workdirs, so a worktree in it would be too',
 } as const;
 
+/** One daemon-side preference shared by every agent that supports the chosen permission level. */
+const PERMISSION_DEFAULT_KEY = 'permission.default';
+
 /** What forking a thread can offer besides a copy in the same directory. */
 export interface ForkOptions {
   worktree: {
@@ -333,6 +336,7 @@ export class ThreadManager {
       // The key is the instance id: a second account of the same CLI must not report the
       // adapter's own name, or the picker could not tell the two apart.
       const m = meta.get(id);
+      const defaultPermissionMode = this.permissionDefault(id);
       out.push({
         id,
         label: a.label,
@@ -342,10 +346,29 @@ export class ThreadManager {
         ...(m?.hidden !== undefined ? { hidden: m.hidden } : {}),
         available: await a.available(),
         ...(a.startLogin ? { login: 'wizard' as const } : a.loginCommand ? { login: 'terminal' as const } : {}),
-        capabilities: a.capabilities,
+        capabilities: { ...a.capabilities, ...(defaultPermissionMode ? { defaultPermissionMode } : {}) },
       });
     }
     return out;
+  }
+
+  /** The global remembered level when this agent supports it, otherwise its adapter default. */
+  private permissionDefault(agent: string): PermissionMode | undefined {
+    const adapter = this.adapters.get(agent);
+    if (!adapter?.capabilities.permissionModes.length) return undefined;
+    const remembered = this.store.hubSetting<unknown>(PERMISSION_DEFAULT_KEY, null);
+    if (typeof remembered === 'string' && adapter.capabilities.permissionModes.includes(remembered as PermissionMode)) {
+      return remembered as PermissionMode;
+    }
+    const own = adapter.capabilities.defaultPermissionMode;
+    return own && adapter.capabilities.permissionModes.includes(own) ? own : undefined;
+  }
+
+  /** Validates against the agent being changed, then shares that choice with every compatible agent. */
+  rememberPermissionDefault(agent: string, value: unknown): PermissionMode {
+    const mode = this.validatePermissionMode(agent, value);
+    this.store.saveHubSetting(PERMISSION_DEFAULT_KEY, mode);
+    return mode;
   }
 
   /** Commands for an agent. `cwd` selects project-level commands and must be an allowed workdir. */
@@ -1356,11 +1379,11 @@ export class ThreadManager {
   }
 
   /** Checks a permission level against what the thread's agent supports. */
-  private validatePermissionMode(agent: string, mode: string): PermissionMode {
+  private validatePermissionMode(agent: string, mode: unknown): PermissionMode {
     const adapter = this.adapters.get(agent);
     const supported = adapter?.capabilities.permissionModes ?? [];
     if (supported.length === 0) throw new HttpError(400, `${agent} has no permission modes`);
-    if (!(PERMISSION_MODES as readonly string[]).includes(mode) || !supported.includes(mode as PermissionMode)) {
+    if (typeof mode !== 'string' || !(PERMISSION_MODES as readonly string[]).includes(mode) || !supported.includes(mode as PermissionMode)) {
       throw new HttpError(400, `unsupported permission mode for ${agent}: ${mode}`);
     }
     return mode as PermissionMode;
@@ -1533,11 +1556,11 @@ export class ThreadManager {
     if (input.sectionId !== undefined && input.sectionId !== null && !this.store.getSection(input.sectionId)) {
       throw new HttpError(400, 'section not found');
     }
-    // Default for new threads: the agent's own, else auto-approve edits and still ask before other actions.
+    // Default for new threads: the person's global last choice when compatible, then the adapter default.
     const permissionMode =
       adapter.capabilities.permissionModes.length === 0
         ? 'auto_edit'
-        : this.validatePermissionMode(input.agent, input.permissionMode ?? adapter.capabilities.defaultPermissionMode ?? 'auto_edit');
+        : this.validatePermissionMode(input.agent, input.permissionMode ?? this.permissionDefault(input.agent) ?? 'auto_edit');
     const workMode = this.validateWorkMode(input.agent, input.workMode ?? 'execute');
     const model = input.model ? await this.validateModel(input.agent, input.model) : null;
     const effort = input.effort ? await this.validateEffort(input.agent, model, input.effort) : null;

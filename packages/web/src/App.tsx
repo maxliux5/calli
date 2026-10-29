@@ -1897,6 +1897,29 @@ export function App({ token, onToken, connect, hostId = null, onHost, start, sho
   const effort = selected ? selected.effort : draftEffort;
   const speed = selected ? selected.speed ?? null : draftSpeed;
 
+  const acceptPermissionDefault = (mode: string) => {
+    // The daemon stores one preference. Reflect it immediately on every compatible agent; agents
+    // that do not offer this level keep their own safe default.
+    setAgents((prev) => prev.map((item) => item.capabilities.permissionModes.includes(mode)
+      ? { ...item, capabilities: { ...item.capabilities, defaultPermissionMode: mode } }
+      : item));
+    const draftCaps = capsOf(draftAgent);
+    if (draftCaps?.permissionModes.includes(mode)) setDraftPermission(mode);
+  };
+
+  const changeDraftPermission = (mode: string) => {
+    const agent = draftAgent;
+    const before = draftPermission;
+    setDraftPermission(mode);
+    if (!agent || api.demo) return;
+    void api.savePermissionDefault(agent, mode)
+      .then((saved) => acceptPermissionDefault(saved.permissionMode))
+      .catch((error) => {
+        setDraftPermission((current) => current === mode ? before : current);
+        handleError(error);
+      });
+  };
+
   const updateSelected = (patch: { speed?: string | null; permissionMode?: string; model?: string | null; effort?: string | null }) => {
     if (!selected) return;
     // Shown at once: a control that waits for the round trip snaps back to the old value first.
@@ -1905,7 +1928,10 @@ export function App({ token, onToken, connect, hostId = null, onHost, start, sho
     setThreads((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
     api
       .updateThread(id, patch)
-      .then((updated) => setThreads((prev) => prev.map((t) => (t.id === updated.id ? updated : t))))
+      .then((updated) => {
+        setThreads((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+        if (patch.permissionMode) acceptPermissionDefault(updated.permissionMode);
+      })
       .catch((e) => {
         setThreads((prev) => prev.map((t) => (t.id === id ? { ...t, ...before } : t)));
         handleError(e);
@@ -2142,7 +2168,7 @@ export function App({ token, onToken, connect, hostId = null, onHost, start, sho
       value={permission}
       canAsk={activeCaps?.approvals ?? true}
       openSignal={permissionSignal}
-      onChange={(m) => (selected ? updateSelected({ permissionMode: m }) : setDraftPermission(m))}
+      onChange={(m) => (selected ? updateSelected({ permissionMode: m }) : changeDraftPermission(m))}
     />
   </>);
 
@@ -2710,7 +2736,7 @@ export function App({ token, onToken, connect, hostId = null, onHost, start, sho
       {agentsOpen && coordination && <AgentPanel key={`${coordination.rootId}:${agentsStart ?? ''}`} start={agentsStart} api={api} memberApi={(id) => new Api(token ?? '', '', id)} team={coordination} agents={agents} memberModel={(thread) => {
         const a = agents.find((v) => v.id === thread.agent);
         return a ? <MemberModel agent={a} models={modelsByAgent[a.id] ?? []} value={{ model: thread.model ?? null, effort: thread.effort ?? null }} onNeed={needModels} onChange={({ model, effort }) => { void api.updateThread(thread.id, { model, effort }).then(() => refreshThreads()).catch(handleError); }}
-          permission={a.capabilities.permissionModes.length ? thread.permissionMode : undefined} onPermission={(permissionMode) => { void api.updateThread(thread.id, { permissionMode }).then(() => refreshThreads()).catch(handleError); }} /> : null;
+          permission={a.capabilities.permissionModes.length ? thread.permissionMode : undefined} onPermission={(permissionMode) => { void api.updateThread(thread.id, { permissionMode }).then((updated) => { acceptPermissionDefault(updated.permissionMode); return refreshThreads(); }).catch(handleError); }} /> : null;
       }} leadAgent={threads.find((t) => t.id === coordination.rootId)?.agent} phone={compact} onClose={() => setAgentsOpen(false)} onOpen={thread => { openThread(thread); setAgentsOpen(false); }} onAdjust={name => { setAgentsOpen(false); setSelectedId(coordination.rootId); setRestore({ text: t('app.adjustTask', name), nonce: Date.now() }); }} onRefresh={() => { void refreshThreads(); }} onError={handleError} />}
       {files && selected && api && <FilesPanel api={api} threadId={filesThreadId ?? selected.id} target={files} phone={compact} revision={threads.find(t => t.id === (filesThreadId ?? selected.id))?.updatedAt} writingStage={selected.writing?.stage ?? null} writingHabits={selected.writing?.habits ?? null} noted={{ count: noteCount, nonce: filesNotePulse }} onClose={() => setFiles(null)} />}
       {preview && api && (

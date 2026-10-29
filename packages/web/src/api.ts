@@ -1302,6 +1302,11 @@ export class Api {
     return this.request('PATCH', `/api/agents/${encodeURIComponent(id)}`, patch);
   }
 
+  /** Saves one global permission default, validated against the agent where it was selected. */
+  savePermissionDefault(id: string, permissionMode: string): Promise<{ permissionMode: string }> {
+    return this.request('PUT', `/api/agents/${encodeURIComponent(id)}/default-permission`, { permissionMode });
+  }
+
   /** Removes only the hub's registration; the agent's config, login and sessions stay. */
   removeAgent(id: string): Promise<void> {
     return this.request('DELETE', `/api/agents/${encodeURIComponent(id)}`);

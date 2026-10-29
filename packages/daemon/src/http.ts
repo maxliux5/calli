@@ -442,6 +442,12 @@ export function createHttpServer(deps: HttpDeps): Server {
     // GET /api/agents
     if (method === 'GET' && path === '/api/agents') return sendJson(res, 200, await manager.listAgents());
 
+    // Validate through the selected agent, then save one global default for future threads.
+    if (method === 'PUT' && parts[0] === 'api' && parts[1] === 'agents' && parts[2] && parts[3] === 'default-permission' && !parts[4]) {
+      const body = await readJson(req);
+      return sendJson(res, 200, { permissionMode: manager.rememberPermissionDefault(parts[2], body.permissionMode) });
+    }
+
     // GET /api/agents/supported: all agent types supported by the hub
     if (method === 'GET' && path === '/api/agents/supported') {
       if (!registry) throw new HttpError(404, 'this daemon has no agent registry');
@@ -942,23 +948,22 @@ export function createHttpServer(deps: HttpDeps): Server {
 
       if (method === 'PATCH' && !sub) {
         const body = await readJson(req);
-        return sendJson(
-          res,
-          200,
-          await manager.updateThread(threadId, {
-            title: body.title,
-            pinned: body.pinned,
-            workMode: body.workMode,
-            permissionMode: body.permissionMode,
-            model: body.model,
-            effort: body.effort,
-            speed: body.speed,
-            archived: body.archived,
-            sectionId: body.sectionId,
-            unread: body.unread,
-            done: body.done,
-          }),
-        );
+        const updated = await manager.updateThread(threadId, {
+          title: body.title,
+          pinned: body.pinned,
+          workMode: body.workMode,
+          permissionMode: body.permissionMode,
+          model: body.model,
+          effort: body.effort,
+          speed: body.speed,
+          archived: body.archived,
+          sectionId: body.sectionId,
+          unread: body.unread,
+          done: body.done,
+        });
+        // Only this existing thread changes; the stored value is a default for future threads.
+        if (body.permissionMode !== undefined) manager.rememberPermissionDefault(updated.agent, updated.permissionMode);
+        return sendJson(res, 200, updated);
       }
 
       if (method === 'GET' && sub === 'history') {
