@@ -1239,10 +1239,22 @@ export function App({ token, onToken, connect, hostId = null, onHost, start, sho
     const vv = window.visualViewport;
     if (!vv) return;
     const apply = () => {
-      if (Math.abs(vv.scale - 1) >= 0.01) return;
-      const root = document.documentElement.style;
+      const html = document.documentElement;
+      const root = html.style;
+      if (Math.abs(vv.scale - 1) >= 0.01) {
+        root.removeProperty('--vvh');
+        root.removeProperty('--vvt');
+        html.classList.remove('visual-viewport-panned');
+        return;
+      }
       root.setProperty('--vvh', `${vv.height}px`);
-      root.setProperty('--vvt', `${vv.pageTop}px`);
+      if (Math.abs(vv.pageTop) >= 0.5) {
+        root.setProperty('--vvt', `${vv.pageTop}px`);
+        html.classList.add('visual-viewport-panned');
+      } else {
+        root.removeProperty('--vvt');
+        html.classList.remove('visual-viewport-panned');
+      }
       // With the keyboard up the home indicator is under it, so the bottom inset is no space to
       // keep clear: kept, it shows as a band between the composer and the keyboard.
       if (document.documentElement.clientHeight - vv.height > 120) root.setProperty('--safe-bottom', '0px');
@@ -1268,6 +1280,11 @@ export function App({ token, onToken, connect, hostId = null, onHost, start, sho
     window.addEventListener('pageshow', settle);
     window.addEventListener('orientationchange', settle);
     return () => {
+      const root = document.documentElement.style;
+      root.removeProperty('--vvh');
+      root.removeProperty('--vvt');
+      root.removeProperty('--safe-bottom');
+      document.documentElement.classList.remove('visual-viewport-panned');
       timers.forEach((t) => clearTimeout(t));
       vv.removeEventListener('resize', apply);
       vv.removeEventListener('scroll', apply);

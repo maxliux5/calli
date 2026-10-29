@@ -430,12 +430,16 @@ button:disabled {
   display: flex;
   height: 100%;
   /* --vvh and --vvt track the visual viewport: with a phone keyboard up, the app is as tall as
-     what is left of the screen and sits where the browser has panned to. The transform also makes
-     the app the box that fixed layers inside it (sheets, dialogs, toasts) are placed in, so they
-     stay on the visible part of the screen too. Without the variables: the whole viewport. */
+     what is left of the screen and sits where the browser has panned to. Without the variables:
+     the whole viewport. */
   height: var(--vvh, 100dvh);
-  transform: translateY(var(--vvt, 0px));
   overflow: hidden;
+}
+
+html.visual-viewport-panned .app {
+  /* Avoid keeping the whole app on a transformed layer when the offset is 0: some browsers soften
+     large text blocks in that composited path. Only pan the app while the visual viewport moved. */
+  transform: translateY(var(--vvt, 0px));
 }
 
 .sidebar {
