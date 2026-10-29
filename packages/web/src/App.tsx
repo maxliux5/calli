@@ -33,7 +33,7 @@ import { attentionCount, pageTitle, threadNotices } from './notices';
 import { folderName } from './paths';
 import { ThreadPlace } from './components/ThreadPlace';
 import { PERMISSION_LABELS, PERMISSION_ORDER, permissionHint, startingPermission } from './permissions';
-import { buildTimeline, toMarkdown, turnPreviews, type StoredEvent } from './timeline';
+import { buildTimeline, toMarkdown, turnPreviews, type StoredEvent, type Timeline } from './timeline';
 import { newerBuildAvailable } from './version';
 import { AppearancePanel } from './components/AppearancePanel';
 import { ActionSheet, type SheetTarget } from './components/ActionSheet';
@@ -116,6 +116,16 @@ const GESTURE_GRACE_MS = 1500;
 
 /** How often, at most, the page asks whether a newer build is being served. */
 const UPDATE_CHECK_MS = 30_000;
+
+const timelineCache = new WeakMap<StoredEvent[], Timeline>();
+function buildCachedTimeline(events: StoredEvent[], speech: Parameters<typeof buildTimeline>[1]): Timeline {
+  if (speech?.length) return buildTimeline(events, speech);
+  const cached = timelineCache.get(events);
+  if (cached) return cached;
+  const timeline = buildTimeline(events);
+  timelineCache.set(events, timeline);
+  return timeline;
+}
 
 const isNearBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
 
@@ -740,7 +750,7 @@ export function App({ token, onToken, connect, hostId = null, onHost, start, sho
   const seenThreads = useRef<Thread[] | null>(null);
 
   const voice = useVoiceSession(api, selectedId, hostId);
-  const timeline = useMemo(() => buildTimeline(events,
+  const timeline = useMemo(() => buildCachedTimeline(events,
     voice.state.messagesThreadId === selectedId ? voice.state.messages : []),
   [events, selectedId, voice.state.messages, voice.state.messagesThreadId]);
   const turnPreviewMap = useMemo(() => turnPreviews(timeline.items), [timeline.items]);

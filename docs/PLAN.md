@@ -26,8 +26,8 @@ daemon（Node.js，跑在远程主机上）
 | Claude Code | ACP，`@agentclientprotocol/claude-agent-acp@0.89.0`（stdio JSON-RPC） | 流式、审批、图片输入、`session/list`、`session/load`（回放历史）、`session/fork`、`session/delete`、`session/set_mode`、`session/set_config_option`（模型、强度）、斜杠命令 |
 | pi | `pi --mode rpc`（stdin/stdout JSON 行） | 流式、图片输入、`set_model`、`set_thinking_level`、`get_available_models`（含每个模型的强度映射和是否支持图片）、`get_commands`、`clone`、`fork`、`get_messages`；没有审批 |
 | Antigravity | `agy --input-format stream-json --output-format stream-json … -p=` | 流式、多轮（一个进程，每行输入一轮）、`--conversation` 恢复、`--model`、SIGINT 停止。输入是 `{"event":"user","message":{"content":…}}`，输出是 `init`、`step_update`、`result`。无界面模式不能询问权限，需要批准的操作会被拒绝；输入只有文字；流里没有思考过程和文件内容 |
-| Codex | `codex app-server`（自有 JSON-RPC v2 线程协议，stdio） | 流式、审批（`item/commandExecution/requestApproval`、`item/fileChange/requestApproval`，选项按 `availableDecisions` 生成）、`thread/resume`、`model/list`（含强度和图片输入）、`thread/turns/list`（回放历史）、`thread/fork`、`thread/delete`、`thread/compact/start`（`/compact`）；`turn/start` 携带模型/强度/沙箱覆盖，`thread/tokenUsage/updated` 映射上下文占用 |
-| TraeX | 执行与命令走 `traex app-server`，复用 Codex 线程协议；模型、历史、分叉仍走 ACP | 原生 `/goal`、多轮流式、审批、恢复、压缩、模型/强度/权限；额度保留 `traex models --json`。已有 ACP 会话通过同一原生会话 ID 恢复，入口命令配置无需迁移 |
+| Codex | `codex app-server`（自有 JSON-RPC v2 线程协议，stdio） | 流式、人工审批（`item/commandExecution/requestApproval`、`item/fileChange/requestApproval`，选项按 `availableDecisions` 生成）、原生自动审批（`approvalsReviewer: auto_review`）、`thread/resume`、`model/list`（含强度和图片输入）、`thread/turns/list`（回放历史）、`thread/fork`、`thread/delete`、`thread/compact/start`（`/compact`）；`turn/start` 携带模型/强度/权限覆盖，`thread/tokenUsage/updated` 映射上下文占用 |
+| TraeX | 执行、命令、历史与分叉走 `traex app-server`，复用 Codex 线程协议；模型元数据仍走 ACP | 原生 `/goal`、多轮流式、审批、恢复、压缩、模型/强度/权限；额度保留 `traex models --json`。已有 ACP 会话通过同一原生会话 ID 恢复，入口命令配置无需迁移 |
 | zcode | `zcode app-server`（无 jsonrpc 字段的 NDJSON） | 精简协议接入：关闭自动记忆、基础工具白名单、流式、审批回调、取消、恢复、模型/强度、图片输入（按原生模型能力）、`/compact`；无权限档位，扩展全局关闭需另配，见 `zcode-minimal-design.md` |
 
 注意：`@zed-industries/claude-agent-acp` 已停更（0.23.1，模型列表过时），不要用回去。
@@ -71,12 +71,12 @@ Plan 交互参考了 [Cline 的 Plan / Act](https://docs.cline.bot/core-workflow
 - **同一个会话，两个入口。** 线程保存 agent 侧的会话 ID。网页和终端操作的是同一份会话；daemon 重启后用这个 ID 恢复。
 - **不在 agent 那边留痕迹。** 探测模型和命令用临时进程（pi 加 `--no-session`；Claude 不发消息就不会落盘）。
 - **设置按线程保存：** 权限、模型、思考强度。运行中修改会直接作用到会话上，做不到时重启会话并恢复。
-  - 权限三档：请求批准 → `default`；帮我批准 → `auto`（没有就退到 `acceptEdits`）；完全访问 → `bypassPermissions`。pi 没有权限模式。
+  - 权限三档按 agent 的原生语义映射：Codex / TraeX 的「帮我批准」使用 `workspace-write + on-request + approvalsReviewer: auto_review`，由原生审批 subagent 评估，切回请求批准或完全访问时恢复 `approvalsReviewer: user`；Claude 优先使用 `auto`（没有就退到 `acceptEdits`）；完全访问使用原生 bypass。pi 没有权限模式。
   - 模型列表、每个模型支持的强度、是否能读图片，都从 agent 读，不写死。Claude 要逐个模型探测（约 12 秒），所以 daemon 启动时就在后台做并缓存。
   - 速度同样按模型发现：`capabilities.speed` 表示适配器能设置速度，`ModelOption.speeds` 提供实际档位，适配器用 `isFast` 标记加速档，避免把经济或未知档位当作加速。Codex 读取 `model/list.serviceTiers`，旧协议的 `additionalSpeedTiers.fast` 映射为 `priority`；Claude 在现有逐模型探测中读取 ACP `fast` 的 on/off 选项，不增加模型请求。TraeX 仅合并执行协议中匹配模型的速度能力。
   - 模型弹层左上角的闪电直接切换加速：开启为绿色实心，关闭为灰色轮廓；不再单独占一块速度选项。关闭显式恢复标准速度，模型不支持时隐藏；模型列表标注「可加速」。尚未选择时保留原生设置，按钮提示说明继承状态及加速可能增加用量。前端先于 Hub 更新、旧响应尚无 `isFast` 时，兼容已返回的快速档位 ID；明确的 `isFast: false` 优先，经济与未知档位不猜测为加速。
   - 线程 `speed` 未设置时不覆盖原生速度；选择后通过原生会话接口应用并保存。标准档为 `default`，切换到不支持原档位的模型也显式保存标准档，避免恢复时继承旧加速设置。Codex 通过 `thread/settings/update` 和 `turn/start.serviceTier` 应用，Claude 通过 `session/set_config_option` 应用并从 `config_option_update` 同步原生降速。切换速度不改变思考强度、权限、工作模式或会话。界面提示加速可能增加用量，不把固定价格或账户资格写死；参见 [官方 Speed 说明](https://learn.chatgpt.com/docs/agent-configuration/speed)。
-- **审批：** 只接受 agent 给出的选项 ID，其他一律拒绝。取消 turn 时，未决的审批自动按取消处理。
+- **审批：** Codex / TraeX 的自动审批由 app-server 原生处理，未被自动审批接管的请求仍进入统一人工审批；人工审批只接受 agent 给出的选项 ID，其他一律拒绝。取消 turn 时，未决的审批自动按取消处理。
 - **工作模式与权限分开。** `workMode: execute | plan` 按线程保存，前端只看 `capabilities.workModes`。运行中禁止切换，原生计划审批导致的模式变化由适配器回报；排队消息保留入队时的模式。进入计划不会改写用户的执行权限，回到执行继续使用原模型、强度、会话和权限。计划模式不能启动或恢复长期目标。
   - 输入框「＋」菜单合并附件与「计划模式」开关，开启时菜单打勾、底栏「＋」旁出现「计划」胶囊（列表图标 + 计划 + ×，点 × 退出），输入框提示先讨论方案，关闭即回到执行。手机模型仪表按钮及其容器保持固定正圆，停止和发送同时出现时也不压缩；手机上运行中的一轮遇到空输入框折叠为一行（＋、追加一条…、停止），点按输入行立即展开回两行。
   - Codex / TraeX 通过 `collaborationMode/list` 探测，再随 `turn/start` 传原生 `collaborationMode`；模型和强度取当前会话，不套用另一套默认值。旧版本不支持时明确报错。

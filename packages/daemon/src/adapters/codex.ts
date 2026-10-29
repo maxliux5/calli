@@ -53,12 +53,14 @@ import type {
  * `turn/completed` when everything is over. Approvals arrive as JSON-RPC requests from the server.
  */
 
-/** One hub permission level, as the pair of knobs Codex itself exposes: sandbox + approval policy. */
-const CODEX_MODES: Record<PermissionMode, { sandbox: string; approvalPolicy: string }> = {
+type ApprovalsReviewer = 'user' | 'auto_review';
+
+/** One hub permission level, as the sandbox, approval policy and native reviewer Codex exposes. */
+const CODEX_MODES: Record<PermissionMode, { sandbox: string; approvalPolicy: string; approvalsReviewer: ApprovalsReviewer }> = {
   // Codex's own three modes: Read Only, Auto, Full Access.
-  ask: { sandbox: 'read-only', approvalPolicy: 'on-request' },
-  auto_edit: { sandbox: 'workspace-write', approvalPolicy: 'on-request' },
-  full_access: { sandbox: 'danger-full-access', approvalPolicy: 'never' },
+  ask: { sandbox: 'read-only', approvalPolicy: 'on-request', approvalsReviewer: 'user' },
+  auto_edit: { sandbox: 'workspace-write', approvalPolicy: 'on-request', approvalsReviewer: 'auto_review' },
+  full_access: { sandbox: 'danger-full-access', approvalPolicy: 'never', approvalsReviewer: 'user' },
 };
 
 /** Metadata shared by the index and a single-thread read; never hydrate turns for a title. */
@@ -514,7 +516,7 @@ class CodexSession implements AgentSession {
   private collaboration: any = undefined;
   private defaultModel = '';
   private defaultEffort: string | null = null;
-  private overrides: { serviceTier?: string | null; model?: string; effort?: EffortLevel; approvalPolicy?: string; sandboxPolicy?: { type: string } } = {};
+  private overrides: { serviceTier?: string | null; model?: string; effort?: EffortLevel; approvalPolicy?: string; approvalsReviewer?: ApprovalsReviewer; sandboxPolicy?: { type: string } } = {};
 
   constructor(
     readonly agentSessionId: string,
@@ -782,6 +784,7 @@ class CodexSession implements AgentSession {
     if (this.overrides.serviceTier !== undefined) out.serviceTier = this.overrides.serviceTier;
     if (this.overrides.effort) out.effort = this.overrides.effort;
     if (this.overrides.approvalPolicy) out.approvalPolicy = this.overrides.approvalPolicy;
+    if (this.overrides.approvalsReviewer) out.approvalsReviewer = this.overrides.approvalsReviewer;
     if (this.overrides.sandboxPolicy) out.sandboxPolicy = this.overrides.sandboxPolicy;
     if (this.collaboration) out.collaborationMode = { mode: this.workMode === 'plan' ? 'plan' : 'default', settings: {
       model: this.overrides.model ?? this.defaultModel, reasoning_effort: this.overrides.effort ?? this.defaultEffort, developer_instructions: null,
@@ -939,8 +942,14 @@ class CodexSession implements AgentSession {
   async setPermissionMode(mode: PermissionMode): Promise<void> {
     const codex = CODEX_MODES[mode];
     this.overrides.approvalPolicy = codex.approvalPolicy;
+    this.overrides.approvalsReviewer = codex.approvalsReviewer;
     this.overrides.sandboxPolicy = SANDBOX_POLICY[codex.sandbox];
-    if (this.turn?.goal) await this.peer.request('thread/settings/update', { threadId: this.agentSessionId, approvalPolicy: codex.approvalPolicy, sandboxPolicy: this.overrides.sandboxPolicy });
+    // Native app-server only permits changing the reviewer on an active turn. The sandbox and
+    // approval policy intentionally remain unchanged until the next turn starts.
+    if (this.turn?.id) await this.peer.request('turn/settings/update', { threadId: this.agentSessionId,
+      turnId: this.turn.id, approvalsReviewer: codex.approvalsReviewer });
+    if (this.turn?.goal) await this.peer.request('thread/settings/update', { threadId: this.agentSessionId, approvalPolicy: codex.approvalPolicy,
+      approvalsReviewer: codex.approvalsReviewer, sandboxPolicy: this.overrides.sandboxPolicy });
   }
 
   async cancel(): Promise<void> {
@@ -1367,7 +1376,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
           cwd: opts.cwd,
           excludeTurns: true,
           ...toolConfig,
-          ...(mode ? { sandbox: mode.sandbox, approvalPolicy: mode.approvalPolicy } : {}),
+          ...(mode ? { sandbox: mode.sandbox, approvalPolicy: mode.approvalPolicy, approvalsReviewer: mode.approvalsReviewer } : {}),
         });
         nativeModel = res?.model;
         nativeEffort = res?.reasoningEffort;
@@ -1376,7 +1385,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
         const res = await peer.request('thread/start', {
           cwd: opts.cwd,
           ...toolConfig,
-          ...(mode ? { sandbox: mode.sandbox, approvalPolicy: mode.approvalPolicy } : {}),
+          ...(mode ? { sandbox: mode.sandbox, approvalPolicy: mode.approvalPolicy, approvalsReviewer: mode.approvalsReviewer } : {}),
           ...(opts.model ? { model: opts.model } : {}),
         });
         nativeModel = res?.model;

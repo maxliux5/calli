@@ -550,11 +550,13 @@ test('a copy can be made for another directory, each agent in its own way', asyn
     assert.equal(await pi.forkSession('hist-p', here, 'e2', tree), 'hist-p-in-abcd1234-fork-e2');
     assert.deepEqual((await pi.loadHistory('hist-p-in-abcd1234-fork-e2', tree)).map((t) => t.text), ['run the tests']);
 
-    // TRAE CLI takes Claude's fork point and, like Claude, is asked for the copy from where it will run.
+    // TRAE CLI uses its app-server turn ids for history and fork, matching the protocol that runs
+    // live turns so an active writer does not block a history-boundary fork.
     const traex = new TraexAcpAdapter([process.execPath, fakeAcp], { FAKE_ACP_FLAVOR: 'traex' });
+    assert.deepEqual((await traex.loadHistory('hist-x', here)).map((t) => t.forkRef), ['turn-1', 'turn-2']);
     assert.equal(await traex.forkSession('hist-x', here, undefined, tree), 'hist-x-fork-in-abcd1234');
-    assert.equal(await traex.forkSession('hist-x', here, 'm1b', tree), 'hist-x-fork-at-m1b-in-abcd1234');
-    assert.equal(await traex.forkSession('hist-x', here, 'm1b'), 'hist-x-fork-at-m1b');
+    assert.equal(await traex.forkSession('hist-x', here, 'turn-1', tree), 'hist-x-fork-at-turn-1-in-abcd1234');
+    assert.equal(await traex.forkSession('hist-x', here, 'turn-1'), 'hist-x-fork-at-turn-1');
 
     // Codex is told where the copy will work; resuming says it again.
     const codex = new CodexAppServerAdapter([process.execPath, fakeCodex]);
@@ -877,14 +879,17 @@ test('TraexAcpAdapter: live settings use the native app-server sandbox, approval
 
   const session = await adapter.start({ cwd: here, permissionMode: 'auto_edit', model: 'big', effort: 'high' });
   t.after(() => session.close());
-  const { hooks, events } = collectingHooks();
+  const { hooks, events, approvals } = collectingHooks();
   await session.prompt(turn('model?'), hooks);
-  assert.equal(events.filter(e => e.type === 'message.delta').map(e => e.data.text).join(''), 'model:big;effort:high;sandbox:workspace-write;approval:on-request');
+  assert.equal(events.filter(e => e.type === 'message.delta').map(e => e.data.text).join(''), 'model:big;effort:high;sandbox:workspace-write;approval:on-request;reviewer:auto_review');
+  await session.prompt(turn('approve this'), hooks);
+  assert.deepEqual(approvals, [], 'native auto-review handles eligible approvals');
+  assert.match(events.filter(e => e.type === 'message.delta').map(e => e.data.text).join(''), /auto-review:approved/);
   await session.setPermissionMode!('full_access');
   await session.setEffort!('low');
   const second = collectingHooks();
   await session.prompt(turn('model?'), second.hooks);
-  assert.equal(second.events.filter(e => e.type === 'message.delta').map(e => e.data.text).join(''), 'model:big;effort:low;sandbox:danger-full-access;approval:never');
+  assert.equal(second.events.filter(e => e.type === 'message.delta').map(e => e.data.text).join(''), 'model:big;effort:low;sandbox:danger-full-access;approval:never;reviewer:user');
   await session.close();
 });
 
@@ -1276,9 +1281,12 @@ test('CodexAppServerAdapter: a server that dies mid-turn ends it as an error', a
 test('CodexAppServerAdapter: permission level, model and effort ride with the turns', async () => {
   const adapter = new CodexAppServerAdapter([process.execPath, fakeCodex]);
   const session = await adapter.start({ cwd: here, permissionMode: 'auto_edit', model: 'gpt-big', effort: 'low' });
-  const { hooks, events } = collectingHooks();
+  const { hooks, events, approvals } = collectingHooks();
   await session.prompt(turn('model?'), hooks);
-  assert.equal(textFrom(events), 'model:gpt-big;effort:low;sandbox:workspace-write;approval:on-request');
+  assert.equal(textFrom(events), 'model:gpt-big;effort:low;sandbox:workspace-write;approval:on-request;reviewer:auto_review');
+  await session.prompt(turn('approve this'), hooks);
+  assert.deepEqual(approvals, [], 'native auto-review handles eligible approvals');
+  assert.match(textFrom(events), /auto-review:approved/);
 
   // Changing them on the live session applies from the next turn, without a restart.
   await session.setPermissionMode!('full_access');
@@ -1286,12 +1294,67 @@ test('CodexAppServerAdapter: permission level, model and effort ride with the tu
   assert.equal(await session.setEffort!('high'), true);
   const second = collectingHooks();
   await session.prompt(turn('model?'), second.hooks);
-  assert.equal(textFrom(second.events), 'model:gpt-small;effort:high;sandbox:danger-full-access;approval:never');
+  assert.equal(textFrom(second.events), 'model:gpt-small;effort:high;sandbox:danger-full-access;approval:never;reviewer:user');
   // full_access answers nothing: the approval that would have been asked is skipped.
   const third = collectingHooks();
   await session.prompt(turn('approve this'), third.hooks);
   assert.deepEqual(third.approvals, []);
   await session.close();
+});
+
+test('CodexAppServerAdapter: native auto-review is selected when threads start or resume', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'calli-codex-auto-review-'));
+  const log = join(dir, 'rpc.jsonl');
+  try {
+    const adapter = new CodexAppServerAdapter([process.execPath, fakeCodex], { FAKE_CODEX_RPC_LOG: log });
+    const created = await adapter.start({ cwd: here, permissionMode: 'auto_edit' });
+    await created.close();
+    const resumed = await adapter.start({ cwd: here, resumeId: 'previous-thread', permissionMode: 'auto_edit' });
+    await resumed.close();
+
+    const calls = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const started = calls.find((call) => call.method === 'thread/start');
+    const resumedCall = calls.find((call) => call.method === 'thread/resume');
+    assert.equal(started?.params.approvalsReviewer, 'auto_review');
+    assert.equal(resumedCall?.params.approvalsReviewer, 'auto_review');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CodexAppServerAdapter: changing permission during a turn updates its native reviewer', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'calli-codex-live-auto-review-'));
+  const log = join(dir, 'rpc.jsonl');
+  try {
+    const adapter = new CodexAppServerAdapter([process.execPath, fakeCodex], {
+      FAKE_CODEX_RPC_LOG: log,
+      FAKE_CODEX_TURN_DELAY: '80',
+    });
+    const session = await adapter.start({ cwd: here, permissionMode: 'ask' });
+    const live = collectingHooks();
+    const pending = session.prompt(turn('approve after switching'), live.hooks);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await session.setPermissionMode!('auto_edit');
+
+    assert.equal((await pending).stopReason, 'end_turn');
+    assert.deepEqual(live.approvals, [], 'the active turn switches to the native reviewer');
+    assert.match(textFrom(live.events), /auto-review:approved/);
+
+    const calls = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const update = calls.find((call) => call.method === 'turn/settings/update');
+    assert.deepEqual(update?.params, {
+      threadId: 'codex-thread-1',
+      turnId: 'turn-1',
+      approvalsReviewer: 'auto_review',
+    });
+
+    const next = collectingHooks();
+    await session.prompt(turn('model?'), next.hooks);
+    assert.equal(textFrom(next.events), 'model:gpt-big;effort:high;sandbox:workspace-write;approval:on-request;reviewer:auto_review');
+    await session.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('CodexAppServerAdapter: resume keeps the thread id, /compact is answered locally', async () => {

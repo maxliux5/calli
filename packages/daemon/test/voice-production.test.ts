@@ -19,7 +19,7 @@ async function until(check: () => boolean) {
     await new Promise(resolve => setTimeout(resolve, 10));
   }
 }
-async function setup(t: TestContext, env: Record<string, string> = {}) {
+async function setup(t: TestContext, env: Record<string, string> = {}, permissionMode?: 'ask' | 'auto_edit' | 'full_access') {
   const directory = mkdtempSync(join(tmpdir(), 'calli-voice-production-'));
   const log = join(directory, 'rpc.jsonl');
   const adapter = new CodexAppServerAdapter([process.execPath, fileURLToPath(new URL('./fixtures/fake-codex.mjs', import.meta.url))], {
@@ -30,7 +30,7 @@ async function setup(t: TestContext, env: Record<string, string> = {}) {
   const manager = new ThreadManager(store, adapters, [directory], new AttachmentStore(directory));
   const events: StoredEvent[] = [];
   manager.subscribe(event => events.push(event));
-  const thread = await manager.createThread({ agent: 'provider', cwd: directory });
+  const thread = await manager.createThread({ agent: 'provider', cwd: directory, ...(permissionMode ? { permissionMode } : {}) });
   t.after(async () => { await manager.shutdown(); store.close(); rmSync(directory, { recursive: true, force: true }); });
   return { adapter, adapters, manager, thread, events, store,
     methods: () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line).method) : [],
@@ -47,7 +47,7 @@ test('protocol availability is read-only and unsupported versions cannot adverti
 });
 
 test('native voice work retains approvals, survives voice stop, and drains queued text exactly once', async t => {
-  const { manager, thread, events, methods } = await setup(t, { FAKE_CODEX_VOICE_TASK: 'approve' });
+  const { manager, thread, events, methods } = await setup(t, { FAKE_CODEX_VOICE_TASK: 'approve' }, 'ask');
   const voice = manager.voiceTransport(thread.id);
   const signals: VoiceSignal[] = [];
   await voice.start('fixture-offer', signal => signals.push(signal));
@@ -185,7 +185,7 @@ test('a lease cancelled during process initialization never starts a late upstre
 
 
 test('a native task starting in the same stdout batch as a prompted completion remains running', async t => {
-  const { manager, thread, events } = await setup(t, { FAKE_CODEX_VOICE_AFTER_PROMPT: '1' });
+  const { manager, thread, events } = await setup(t, { FAKE_CODEX_VOICE_AFTER_PROMPT: '1' }, 'ask');
   await manager.startTurn(thread.id, { text: 'first' });
   await until(() => events.some(e => e.type === 'approval.request'));
   await new Promise(resolve => setTimeout(resolve, 20));

@@ -4,14 +4,59 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../../daemon/src/store';
-import { buildTimeline, hydrateHistoryFiles, liveWorkFromEvents, type Item } from '../src/timeline';
-import { hydrateWork, mergeHistory } from '../src/history';
+import { buildTimeline, hydrateHistoryFiles, liveWorkFromEvents, type Item, type StoredEvent } from '../src/timeline';
+import { historyPage, hydrateWork, mergeHistory, watchHistory, type HistoryPage } from '../src/history';
 import type { EventType } from '../../daemon/src/events';
+import type { Api } from '../src/api';
 
 const visible = (items: Item[]) => items.map(i => i.kind === 'work' ? { kind: i.kind, key: i.key, count: i.count ?? i.steps.length, done: i.done, stopped: i.stopped, startedAt: i.startedAt, endedAt: i.endedAt }
   : i.kind === 'changes' ? { kind: i.kind, added: i.added, removed: i.removed, files: i.files.map(f => ({ path: f.path, added: f.added, removed: f.removed })) } : i);
 const thoughts = (item: Extract<Item, { kind: 'work' }> | undefined) =>
   item?.entries.filter(e => e.kind === 'thought').map(e => e.thought.text) ?? [];
+
+const pageEvent = (threadId: string, seq: number): StoredEvent => ({ threadId, seq, turnId: `turn-${seq}`, type: 'turn.started', ts: '', data: { text: `question ${seq}` } });
+
+test('history pages are cached per api, thread and cursor', async () => {
+  let calls = 0;
+  const api = {
+    demo: false,
+    historyPage: async (id: string, before?: number, after?: number, chain?: boolean): Promise<HistoryPage> => {
+      calls++;
+      return { events: [pageEvent(id, calls)], snapshotSeq: calls, nextCursor: before ?? after ?? null, hasOlder: chain === true };
+    },
+  } as unknown as Api;
+  const first = await historyPage(api, 'thread-a');
+  assert.equal(calls, 1);
+  assert.equal((await historyPage(api, 'thread-a')).snapshotSeq, first.snapshotSeq);
+  assert.equal(calls, 1);
+  await historyPage(api, 'thread-a', 10);
+  await historyPage(api, 'thread-b');
+  assert.equal(calls, 3);
+});
+
+test('history cache is cleared when a historyChanged event streams in', async () => {
+  let calls = 0;
+  const id = 'thread-reset-cache';
+  const api = {
+    demo: false,
+    historyPage: async (): Promise<HistoryPage> => {
+      calls++;
+      return { events: [pageEvent(id, calls)], snapshotSeq: calls, nextCursor: null, hasOlder: false };
+    },
+    stream: async (_path: string, push: (ev: StoredEvent) => void) => {
+      push({ threadId: id, seq: 2, turnId: null, type: 'thread.historyChanged', ts: '', data: {} });
+      throw new Error('stop stream');
+    },
+  } as unknown as Api;
+  await historyPage(api, id);
+  assert.equal(calls, 1);
+  const ctrl = new AbortController();
+  setTimeout(() => ctrl.abort(), 0);
+  await watchHistory(api, id, ctrl.signal, { page: () => {}, events: () => {}, error: () => {} });
+  assert.equal(calls, 1);
+  assert.equal((await historyPage(api, id)).snapshotSeq, 2);
+  assert.equal(calls, 2);
+});
 
 test('projected completed histories have the same visible answers, boundaries, status and file counts', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'calli-view-'));

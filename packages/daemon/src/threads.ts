@@ -474,7 +474,8 @@ export class ThreadManager {
     const adapter = this.adapters.get(thread.agent);
     if (!adapter?.capabilities.fork || !adapter.forkSession) throw new HttpError(400, `${thread.agent} cannot fork a conversation`);
     if (!thread.agentSessionId) throw new HttpError(400, 'there is nothing to fork yet; send a message first');
-    if (this.running.has(id)) throw new HttpError(409, 'wait for the running turn to finish before forking');
+    const running = this.running.has(id);
+    if (running && !opts.turnId) throw new HttpError(409, 'wait for the running turn to finish before forking');
 
     // Where the hub's copy stops, and which of its turns that is. Null: the whole thread.
     let cut: { upToSeq: number; hubIndex: number; hubKeys: string[] } | null = null;
@@ -484,9 +485,12 @@ export class ThreadManager {
       if (hubIndex < 0) throw new HttpError(404, 'no such turn in this thread');
       // A turn the user stopped is not a place to go on from: the agent may not have kept it at all.
       const end = this.store.listEventsOfType(id, 'turn.done').find((ev) => ev.turnId === opts.turnId);
+      if (running && !end) throw new HttpError(409, 'wait for this turn to finish before forking from it');
       if (end?.data.stopReason === 'cancelled') throw new HttpError(409, 'this turn was stopped, so a copy cannot end there');
       if (hubIndex < starts.length - 1) {
-        cut = { upToSeq: starts[hubIndex + 1].seq - 1, hubIndex, hubKeys: starts.map((ev) => turnKey(String(ev.data.text ?? ''))) };
+        // Match only through the requested boundary. Later turns may be running or divergent, and
+        // they are not part of the copy being made.
+        cut = { upToSeq: starts[hubIndex + 1].seq - 1, hubIndex, hubKeys: starts.slice(0, hubIndex + 1).map((ev) => turnKey(String(ev.data.text ?? ''))) };
       }
     }
 
@@ -590,14 +594,27 @@ export class ThreadManager {
     if (!adapter.capabilities.forkAt || !adapter.loadHistory || !thread.agentSessionId) {
       throw new HttpError(400, `${thread.agent} can only fork a whole conversation`);
     }
-    const agentTurns = await adapter.loadHistory(thread.agentSessionId, thread.cwd);
-    const matched = matchTurns(agentTurns.map((t) => turnKey(t.text)), hubKeys, ThreadManager.SYNC_SKIP_TOLERANCE);
-    const agentIndex = matched?.hubToAgent[hubIndex] ?? -1;
-    if (agentIndex < 0) throw new HttpError(409, `this turn is not in ${thread.agent}'s own history, so a copy cannot stop there`);
-    if (agentIndex === agentTurns.length - 1) return undefined;
-    const ref = agentTurns[agentIndex].forkRef;
-    if (!ref) throw new HttpError(409, `${thread.agent} cannot stop a copy at this turn`);
-    return ref;
+    const active = this.running.has(thread.id);
+    const retryDelays = active ? [0, 50, 150] : [0];
+    for (const delayMs of retryDelays) {
+      // A second app-server can briefly see the active writer's history one turn behind. Only
+      // retry that prefix case; a real text disagreement still fails immediately.
+      if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      const agentTurns = await adapter.loadHistory(thread.agentSessionId, thread.cwd);
+      const matched = matchTurns(agentTurns.map((t) => turnKey(t.text)), hubKeys, ThreadManager.SYNC_SKIP_TOLERANCE);
+      const agentIndex = matched?.hubToAgent[hubIndex] ?? -1;
+      if (agentIndex < 0) {
+        if (matched && delayMs !== retryDelays.at(-1)) continue;
+        break;
+      }
+      // During a live turn the read snapshot may end at this older boundary even though the writer
+      // has already started another turn. Pass the explicit ref instead of cloning its moving tip.
+      if (!active && agentIndex === agentTurns.length - 1) return undefined;
+      const ref = agentTurns[agentIndex].forkRef;
+      if (!ref) throw new HttpError(409, `${thread.agent} cannot stop a copy at this turn`);
+      return ref;
+    }
+    throw new HttpError(409, `this turn is not in ${thread.agent}'s own history, so a copy cannot stop there`);
   }
 
   /** Where a stored image is on disk, for the HTTP layer to stream. */
@@ -1455,14 +1472,13 @@ export class ThreadManager {
       throw new HttpError(400, `this thread's session cannot be read back`);
     }
 
-    const [agentTurns, hubTexts] = await Promise.all([
-      adapter.loadHistory(thread.agentSessionId, thread.cwd),
-      Promise.resolve(
-        // Every turn the hub has, not one page of the log: a turn missing from this list would
-        // look new on the agent's side and be appended again on every sync.
-        this.store.listEventsOfType(id, 'turn.started').map((ev) => turnKey(String(ev.data.text ?? ''))),
-      ),
-    ]);
+    const agentTurns = await adapter.loadHistory(thread.agentSessionId, thread.cwd);
+    // A web turn may have started while history was being read. Defer the sync until it finishes;
+    // otherwise the same prompt can be imported from the agent while its live turn is still running.
+    if (this.running.has(id)) return { added: 0, terminalActivity: this.view(thread).terminalActivity };
+    // Read the hub side after the awaited agent history. A turn that started and finished during
+    // that read must participate in matching instead of being appended again as a terminal turn.
+    const hubTexts = this.store.listEventsOfType(id, 'turn.started').map((ev) => turnKey(String(ev.data.text ?? '')));
 
     const matched = matchTurns(agentTurns.map((t) => turnKey(t.text)), hubTexts, ThreadManager.SYNC_SKIP_TOLERANCE);
     if (!matched) return { added: 0, terminalActivity: this.view(thread).terminalActivity }; // histories disagree

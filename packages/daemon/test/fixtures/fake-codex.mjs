@@ -41,6 +41,8 @@ let currentEffort = 'high';
 let currentSpeed = null;
 let currentSandbox = 'read-only';
 let currentApproval = 'on-request';
+let currentApprovalsReviewer = 'user';
+let activeApprovalsReviewer = null;
 let currentWebSearch = null;
 let dynamicTools = [];
 const awaitingTool = new Map();
@@ -51,6 +53,7 @@ const runGoal = (generation, round = 1) => {
   if (generation !== goalGeneration || goal?.status !== 'active') return;
   const turnId = `goal-${nextTurnSeq++}`;
   activeTurn = turnId;
+  activeApprovalsReviewer = currentApprovalsReviewer;
   notify('turn/started', { turn: { id: turnId, status: 'inProgress' } });
   if (goal.objective.includes('crash')) return process.exit(2);
   if (goal.objective.includes('slow')) return;
@@ -141,6 +144,7 @@ const applyTurnOverrides = (p) => {
   if (typeof p.model === 'string') currentModel = p.model;
   if (typeof p.effort === 'string') currentEffort = p.effort;
   if (typeof p.approvalPolicy === 'string') currentApproval = p.approvalPolicy;
+  if (typeof p.approvalsReviewer === 'string') currentApprovalsReviewer = p.approvalsReviewer;
   if (p.sandboxPolicy?.type) currentSandbox = p.sandboxPolicy.type;
 };
 
@@ -153,6 +157,7 @@ const say = (text) => {
 
 /** The scripted part of one turn. `done` finishes it. */
 const runTurn = (text, turnId, done) => {
+  const approvalsReviewer = activeTurn === turnId ? activeApprovalsReviewer ?? currentApprovalsReviewer : currentApprovalsReviewer;
   const userItem = { type: 'userMessage', id: `user-${nextTurnSeq}`, content: [{ type: 'text', text }] };
   notify('item/started', { item: userItem, turnId });
   notify('item/completed', { item: userItem, turnId });
@@ -320,8 +325,25 @@ const runTurn = (text, turnId, done) => {
     notify('turn/plan/updated', { turnId, plan: [{ step: 'Read the code', status: 'completed' }, { step: 'Write the fix', status: 'inProgress' }] });
   }
   if (text.includes('model?')) {
-    say(`model:${currentModel};effort:${currentEffort};sandbox:${sandboxName()};approval:${currentApproval}`);
+    say(`model:${currentModel};effort:${currentEffort};sandbox:${sandboxName()};approval:${currentApproval};reviewer:${approvalsReviewer}`);
     return done();
+  }
+  if ((text.includes('approve') || text.includes('deny')) && currentApproval !== 'never' && approvalsReviewer === 'auto_review') {
+    const id = 'exec-2';
+    const reviewId = `review-${nextServerRequestId++}`;
+    const denied = text.includes('deny');
+    const command = 'rm -rf /tmp/one/build';
+    const action = { type: 'command', source: 'shell', command, cwd: '/tmp/one' };
+    notify('item/started', { turnId, item: { type: 'commandExecution', id, command, cwd: '/tmp/one', status: 'inProgress' } });
+    notify('item/autoApprovalReview/started', { turnId, reviewId, startedAtMs: 1, targetItemId: id,
+      review: { status: 'inProgress', riskLevel: null, userAuthorization: null, rationale: null }, action });
+    notify('item/autoApprovalReview/completed', { turnId, reviewId, startedAtMs: 1, completedAtMs: 2,
+      targetItemId: id, decisionSource: 'agent', review: { status: denied ? 'denied' : 'approved',
+        riskLevel: denied ? 'critical' : 'low', userAuthorization: 'high', rationale: denied ? 'too risky' : 'authorized' }, action });
+    notify('item/completed', { turnId, item: { type: 'commandExecution', id, command, cwd: '/tmp/one',
+      status: denied ? 'failed' : 'completed', exitCode: denied ? 1 : 0, aggregatedOutput: denied ? 'auto-review denied' : 'gone', durationMs: 5 } });
+    say(`auto-review:${denied ? 'denied' : 'approved'}`);
+    done(); return;
   }
   if ((text.includes('approve') || text.includes('deny')) && currentApproval !== 'never') {
     const id = 'exec-2';
@@ -497,6 +519,11 @@ rl.on('line', (line) => {
     case 'thread/settings/update':
       applyTurnOverrides(msg.params);
       return out({ jsonrpc: '2.0', id: msg.id, result: {} });
+    case 'turn/settings/update':
+      if (activeTurn !== msg.params?.turnId) return out({ jsonrpc: '2.0', id: msg.id, result: { status: 'targetUnavailable' } });
+      // The native endpoint can change only the reviewer of the current turn.
+      if (typeof msg.params?.approvalsReviewer === 'string') activeApprovalsReviewer = msg.params.approvalsReviewer;
+      return out({ jsonrpc: '2.0', id: msg.id, result: { status: 'applied' } });
     case 'thread/goal/get':
       if (process.env.FAKE_CODEX_NO_GOALS) return out({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'goals not supported' } });
       return out({ jsonrpc: '2.0', id: msg.id, result: { goal } });
@@ -562,14 +589,16 @@ rl.on('line', (line) => {
       currentWebSearch = msg.params?.config?.web_search ?? null;
       if (typeof msg.params?.sandbox === 'string') currentSandbox = msg.params.sandbox.replace(/-([a-z])/g, (_, c) => c.toUpperCase()).replace('Fullaccess', 'FullAccess');
       if (typeof msg.params?.approvalPolicy === 'string') currentApproval = msg.params.approvalPolicy;
+      if (typeof msg.params?.approvalsReviewer === 'string') currentApprovalsReviewer = msg.params.approvalsReviewer;
       if (typeof msg.params?.model === 'string') currentModel = msg.params.model;
-      return out({ jsonrpc: '2.0', id: msg.id, result: { thread: { id: threadId, cwd: '/tmp/one' }, model: currentModel, reasoningEffort: currentEffort, sandbox: { type: 'readOnly' }, approvalPolicy: currentApproval } });
+      return out({ jsonrpc: '2.0', id: msg.id, result: { thread: { id: threadId, cwd: '/tmp/one' }, model: currentModel, reasoningEffort: currentEffort, sandbox: { type: 'readOnly' }, approvalPolicy: currentApproval, approvalsReviewer: currentApprovalsReviewer } });
     case 'thread/resume':
       currentWebSearch = msg.params?.config?.web_search ?? null;
       threadId = msg.params?.threadId ?? threadId;
       if (typeof msg.params?.sandbox === 'string') currentSandbox = msg.params.sandbox.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
       if (typeof msg.params?.approvalPolicy === 'string') currentApproval = msg.params.approvalPolicy;
-      return out({ jsonrpc: '2.0', id: msg.id, result: { thread: { id: msg.params?.threadId ?? threadId, cwd: '/tmp/one' }, model: currentModel, reasoningEffort: currentEffort, sandbox: { type: 'readOnly' }, approvalPolicy: currentApproval } });
+      if (typeof msg.params?.approvalsReviewer === 'string') currentApprovalsReviewer = msg.params.approvalsReviewer;
+      return out({ jsonrpc: '2.0', id: msg.id, result: { thread: { id: msg.params?.threadId ?? threadId, cwd: '/tmp/one' }, model: currentModel, reasoningEffort: currentEffort, sandbox: { type: 'readOnly' }, approvalPolicy: currentApproval, approvalsReviewer: currentApprovalsReviewer } });
     case 'turn/start': {
       if (activeTurn) return out({ jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: 'ActiveTurnNotSteerable' } });
       applyTurnOverrides(msg.params ?? {});
@@ -616,6 +645,7 @@ rl.on('line', (line) => {
       }
       out({ jsonrpc: '2.0', id: msg.id, result: { turn: { id: turnId, items: [], itemsView: 'notLoaded', status: 'inProgress', error: null } } });
       activeTurn = turnId;
+      activeApprovalsReviewer = currentApprovalsReviewer;
       notify('turn/started', { turn: { id: turnId, items: [], itemsView: 'notLoaded', status: 'inProgress', error: null } });
       if (text === 'quota-exhausted') { activeTurn = null; finishTurn(turnId, 'failed', { message: "You've hit your usage limit for this model. Switch to another model now, or try again later." }); break; }
       if (images.length) say(`images:${images.map((i) => i.path).join(',')}`);

@@ -8,13 +8,14 @@ import { AcpAdapter, airForkPoint } from './acp.js';
 import { CodexAppServerAdapter } from './codex.js';
 import { TRAE_ICON } from './icons.js';
 import { configDirectory, findSessionFile, quoteArg } from './session-location.js';
-import type { AgentSession, ModelOption, PermissionMode, PlanQuota, QuotaWindow, SlashCommand, StartOptions } from './types.js';
+import type { AgentSession, HistoryTurn, ModelOption, PermissionMode, PlanQuota, QuotaWindow, SlashCommand, StartOptions } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
 /**
  * TRAE CLI uses the Codex-compatible app-server for live turns and native goals.
- * ACP remains the metadata/history/fork transport; both address the same native sessions.
+ * ACP remains the metadata transport; live turns, history and fork use app-server so one protocol owns
+ * the native thread while it is active.
  * What is TRAE-specific:
  *
  * - it has no mode that asks before every action. "Workspace Edit" (its default) already approves
@@ -23,8 +24,8 @@ const execFileAsync = promisify(execFile);
  * - the effort config option is called `reasoning_effort` and offers low..xhigh. The shared code
  *   finds it by its category, so nothing here has to know the id;
  * - its ACP server cannot delete a session, but its CLI can (`traex delete --force`);
- * - `session/fork` takes the same fork point as claude-agent-acp, and a copy asked for from another
- *   directory is filed and loads there (both tried against traecli 0.209);
+ * - app-server `thread/fork` can copy through or before a turn, and a copy asked for from another
+ *   directory is filed and loads there;
  * - it keeps a per-session folder of files it generated, next to its session log.
  */
 
@@ -106,6 +107,16 @@ export class TraexAcpAdapter extends AcpAdapter {
 
   protected forkPointMeta(forkRef: string): Record<string, unknown> {
     return airForkPoint(forkRef);
+  }
+
+  /** Keep history refs in the same turn-id space as the app-server fork RPC. */
+  override loadHistory(agentSessionId: string, _cwd: string): Promise<HistoryTurn[]> {
+    return this.execution.loadHistory(agentSessionId);
+  }
+
+  /** Fork through a finished turn with app-server; ACP session/fork conflicts with active writers. */
+  override forkSession(agentSessionId: string, cwd: string, forkRef?: string, intoCwd?: string): Promise<string> {
+    return this.execution.forkSession(agentSessionId, cwd, forkRef, intoCwd);
   }
 
   /**

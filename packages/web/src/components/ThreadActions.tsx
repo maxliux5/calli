@@ -52,9 +52,9 @@ type DialogState =
 export type ThreadAction = 'rename' | 'pin' | 'fork' | 'archive' | 'restore' | 'delete';
 
 /** Why a thread cannot be forked right now, or null when it can. */
-export function forkBlocked(thread: Thread): string | null {
+export function forkBlocked(thread: Thread, turnId?: string): string | null {
   if (!thread.agentSessionId) return t('actions.forkEmpty');
-  if (thread.status === 'running') return t('actions.forkRunning');
+  if (thread.status === 'running' && !turnId) return t('actions.forkRunning');
   return null;
 }
 
@@ -85,7 +85,7 @@ export function useThreadActions(deps: Deps) {
   // something to choose: the agent can move a copy, and the thread stands in a git repository.
   const fork = async (thread: Thread, turnId?: string, where?: 'here' | 'worktree') => {
     if (!api) return;
-    const blocked = forkBlocked(thread);
+    const blocked = forkBlocked(thread, turnId);
     if (blocked) return toast({ message: blocked });
     if (!where && agents.find((a) => a.id === thread.agent)?.capabilities.forkInto) {
       // An older daemon has no such question to answer; then the copy is made in place, as before.
