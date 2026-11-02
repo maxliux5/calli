@@ -583,6 +583,7 @@ rl.on('line', (line) => {
       const turnId = `turn-${nextTurnSeq++}`;
       const text = (msg.params?.input ?? []).filter((i) => i.type === 'text').map((i) => i.text).join('');
       const images = (msg.params?.input ?? []).filter((i) => i.type === 'localImage');
+      const inlineImages = (msg.params?.input ?? []).filter((i) => i.type === 'image');
       const skills = (msg.params?.input ?? []).filter((i) => i.type === 'skill');
       if (['batch-completed', 'batch-item-first', 'batch-completed-only', 'batch-failed', 'batch-rejected', 'batch-late-previous', 'batch-late-no-start', 'batch-mismatched-start', 'batch-noise'].includes(text)) {
         const failed = text === 'batch-failed';
@@ -618,6 +619,18 @@ rl.on('line', (line) => {
       activeTurn = turnId;
       notify('turn/started', { turn: { id: turnId, items: [], itemsView: 'notLoaded', status: 'inProgress', error: null } });
       if (text === 'quota-exhausted') { activeTurn = null; finishTurn(turnId, 'failed', { message: "You've hit your usage limit for this model. Switch to another model now, or try again later." }); break; }
+      // Reproduce a backend rejecting uploaded image references while accepting image bytes.
+      if (images.length && process.env.FAKE_CODEX_REJECT_LOCAL_IMAGES) {
+        activeTurn = null; finishTurn(turnId, 'failed', { message: 'stream disconnected before completion: Invalid image' }); break;
+      }
+      if (inlineImages.length) {
+        const types = inlineImages.map((image) => {
+          const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(image.url);
+          if (!match || !Buffer.from(match[2], 'base64').length) throw new Error('Invalid inline image');
+          return match[1];
+        });
+        say(`inline-images:${types.join(',')};`);
+      }
       if (images.length) say(`images:${images.map((i) => i.path).join(',')}`);
       if (skills.length) say(`skills:${skills.map((s) => `${s.name}@${s.path}`).join(',')};`);
       setTimeout(() => runTurn(text, turnId, () => {

@@ -129,7 +129,9 @@ export class TraexAcpAdapter extends AcpAdapter {
     super(command, env);
     const endsWithServe = command.length > 2 && command.at(-2) === 'acp' && command.at(-1) === 'serve';
     this.cli = cli ?? (endsWithServe ? command.slice(0, -2) : command);
-    this.execution = new CodexAppServerAdapter([...this.cli, 'app-server'], env, 'TRAE CLI');
+    // TRAE's ImageX references can produce 4016 Invalid image even after a successful upload.
+    // Inline image bytes remain readable and do not leave an invalid CDN reference in history.
+    this.execution = new CodexAppServerAdapter([...this.cli, 'app-server'], env, 'TRAE CLI', true);
   }
 
   override diagnose() { return cliDiagnostic(this.cli, this.env, 'app-server / ACP 1'); }

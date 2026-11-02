@@ -959,6 +959,23 @@ import { tmpdir } from 'node:os';
 
 const traexEnv = { FAKE_ACP_FLAVOR: 'traex' };
 
+test('TraexAcpAdapter: pictures and follow-ups work when the backend rejects uploaded references', async (t) => {
+  const adapter = new TraexAcpAdapter([process.execPath, fakeAcp], { ...traexEnv, FAKE_CODEX_REJECT_LOCAL_IMAGES: '1' });
+  for (const resumeId of [undefined, 'existing-image-thread']) {
+    const session = await adapter.start({ cwd: here, resumeId });
+    t.after(() => session.close());
+    const { hooks, events } = collectingHooks();
+    const result = await session.prompt(turn('what is this', [{ data: PNG, mimeType: 'image/png', path: '/data/attachments/t/1.png' }]), hooks);
+    assert.equal(result.stopReason, 'end_turn');
+    assert.equal(result.error, undefined);
+    assert.match(textFrom(events), /inline-images:image\/png;/);
+    const followUp = collectingHooks();
+    assert.equal((await session.prompt(turn('hello again'), followUp.hooks)).stopReason, 'end_turn');
+    assert.match(textFrom(followUp.events), /hello again/);
+    await session.close();
+  }
+});
+
 
 test('TraexAcpAdapter: live settings use the native app-server sandbox, approval and effort fields', async (t) => {
   const adapter = new TraexAcpAdapter([process.execPath, fakeAcp], traexEnv);

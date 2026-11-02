@@ -525,6 +525,8 @@ class CodexSession implements AgentSession {
     /** Whose app-server this is; TRAE CLI runs the same protocol under its own name. */
     private readonly name = 'codex',
     private readonly computer?: BrowserComputer,
+    /** Send image bytes when this server's CDN upload references are unusable. */
+    private readonly inlineImages = false,
   ) { this.defaultModel = initialModel ?? ''; this.defaultEffort = initialEffort ?? null; }
 
   /** Called by the peer for every notification. Ignores anything about another thread. */
@@ -889,7 +891,9 @@ class CodexSession implements AgentSession {
         input: [
           ...(input.text ? [{ type: 'text', text: skill ? `$${skill.name}${args ? ` ${args}` : ''}` : input.text }] : []),
           ...(skill ? [{ type: 'skill', name: skill.name, path: skill.path }] : []),
-          ...input.images.filter((img) => typeof img.path === 'string').map((img) => ({ type: 'localImage', path: img.path })),
+          ...(this.inlineImages
+            ? input.images.map((img) => ({ type: 'image', url: `data:${img.mimeType};base64,${img.data}` }))
+            : input.images.filter((img) => typeof img.path === 'string').map((img) => ({ type: 'localImage', path: img.path }))),
         ],
         ...this.turnOverrides(),
       });
@@ -1103,6 +1107,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     private readonly env: Record<string, string> = {},
     /** Name in errors; TRAE CLI reuses this adapter with its own binary. */
     private readonly name = 'codex',
+    private readonly inlineImages = false,
   ) {}
 
   /** Device auth prints a code, so it also works when the terminal is not on the browser's machine. */
@@ -1385,7 +1390,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
         if (!threadId) throw new Error('Codex did not return a thread id');
       }
 
-      const session = new CodexSession(threadId, peer, opts.cwd, nativeModel, nativeEffort, this.name, computer);
+      const session = new CodexSession(threadId, peer, opts.cwd, nativeModel, nativeEffort, this.name, computer, this.inlineImages);
       holder.session = session;
       session.onGoal = opts.onGoal;
       // An ordinary prompt can also continue a persisted native goal. Older servers omit it.
