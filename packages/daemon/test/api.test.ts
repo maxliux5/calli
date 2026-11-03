@@ -433,6 +433,7 @@ test('model and command lists are served per agent; unknown agents are 404', asy
 });
 
 test('new threads default to auto_edit; settings are validated and stored', async () => {
+  store.saveHubSetting('permission.default', null);
   const created = await api('/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'claude', cwd: workdir }) });
   const thread = (await created.json()) as { id: string; permissionMode: string; model: string | null; effort: string | null };
   assert.equal(thread.permissionMode, 'auto_edit');
@@ -454,6 +455,56 @@ test('new threads default to auto_edit; settings are validated and stored', asyn
   const cleared = (await (await patch({ model: null, effort: null })).json()) as { model: null; effort: null };
   assert.equal(cleared.model, null);
   assert.equal(cleared.effort, null);
+  store.saveHubSetting('permission.default', null);
+});
+
+test('one global permission choice is shared by compatible agents and future threads', async () => {
+  const saveDefault = (agent: string, permissionMode: string) => api(`/api/agents/${agent}/default-permission`, {
+    method: 'PUT', body: JSON.stringify({ permissionMode }),
+  });
+  try {
+    store.saveHubSetting('permission.default', null);
+    const existing = await api('/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'claude', cwd: workdir }) });
+    const existingThread = (await existing.json()) as { id: string; permissionMode: string };
+    assert.equal(existingThread.permissionMode, 'auto_edit');
+
+    const saved = await saveDefault('claude', 'full_access');
+    assert.equal(saved.status, 200);
+    assert.deepEqual(await saved.json(), { permissionMode: 'full_access' });
+
+    let agents = (await (await api('/api/agents')).json()) as Array<{ id: string; capabilities: { defaultPermissionMode?: string } }>;
+    assert.equal(agents.find((agent) => agent.id === 'claude')?.capabilities.defaultPermissionMode, 'full_access');
+    assert.equal(agents.find((agent) => agent.id === 'agy')?.capabilities.defaultPermissionMode, 'full_access');
+    const created = await api('/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'agy', cwd: workdir }) });
+    const thread = (await created.json()) as { id: string; permissionMode: string };
+    assert.equal(thread.permissionMode, 'full_access');
+    assert.equal(((await (await api(`/api/threads/${existingThread.id}`)).json()) as { permissionMode: string }).permissionMode, 'auto_edit');
+
+    // Changing one agent's existing thread becomes another compatible agent's next default.
+    const changed = await api(`/api/threads/${thread.id}`, { method: 'PATCH', body: JSON.stringify({ permissionMode: 'auto_edit' }) });
+    assert.equal(changed.status, 200);
+    const next = await api('/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'claude', cwd: workdir }) });
+    assert.equal(((await next.json()) as { permissionMode: string }).permissionMode, 'auto_edit');
+
+    // An agent that cannot represent the global value keeps its own safe adapter default.
+    assert.equal((await saveDefault('claude', 'ask')).status, 200);
+    agents = (await (await api('/api/agents')).json()) as typeof agents;
+    assert.equal(agents.find((agent) => agent.id === 'claude')?.capabilities.defaultPermissionMode, 'ask');
+    assert.equal(agents.find((agent) => agent.id === 'agy')?.capabilities.defaultPermissionMode, 'full_access');
+    assert.equal(((await (await api(`/api/threads/${existingThread.id}`)).json()) as { permissionMode: string }).permissionMode, 'auto_edit');
+
+    assert.equal(store.hubSetting('permission.default', null), 'ask');
+    const reopened = new Store(dataDir);
+    try {
+      assert.equal(reopened.hubSetting('permission.default', null), 'ask');
+    } finally { reopened.close(); }
+
+    assert.equal((await saveDefault('claude', 'root')).status, 400);
+    assert.equal((await saveDefault('pi', 'full_access')).status, 400);
+    assert.equal((await saveDefault('missing', 'full_access')).status, 400);
+  } finally {
+    store.saveHubSetting('permission.default', null);
+  }
 });
 
 test('settings chosen at creation reach the agent on the first turn', async () => {
