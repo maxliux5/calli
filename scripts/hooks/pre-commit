@@ -1,0 +1,3 @@
+#!/bin/sh
+# Publish check on what this commit adds. Bypass with --no-verify when you truly must.
+exec node "$(dirname "$0")/../../scripts/check-publish.mjs" --staged

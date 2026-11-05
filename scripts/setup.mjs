@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // One command to a working .env: creates it from the template if missing, fills in a random
 // access token when empty, and prints the token so it can be pasted straight into the browser.
+// Also installs the repository's pre-commit hook (the publish check).
 //
 //   npm run setup
+import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -36,6 +38,15 @@ if (current) {
   console.log('Generated a random access token:');
   console.log(`  ${token}`);
   console.log('Use it to sign in at http://127.0.0.1:8787/ .');
+}
+
+// The publish check as a pre-commit hook: installed by pointing git at the hooks kept in the
+// repository, so every checkout gets it without copying anything around.
+try {
+  execFileSync('git', ['config', 'core.hooksPath', 'scripts/hooks'], { cwd: root });
+  console.log('Pre-commit hook installed (scripts/hooks; the publish check runs on what a commit adds).');
+} catch {
+  console.log('Not a git checkout — skipped the pre-commit hook.');
 }
 
 console.log(`

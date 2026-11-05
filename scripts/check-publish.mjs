@@ -2,7 +2,11 @@
 // Looks for things that must not be published: your user name, host name and home directory,
 // private IP addresses, long secrets, personal e-mail addresses, and words you list yourself.
 //
-//   npm run check:publish
+//   npm run check:publish                      scan everything git would publish
+//   node scripts/check-publish.mjs --staged    scan only what this commit adds (the hook)
+//
+// The staged mode checks added lines only, so findings already sitting in history do not block
+// work on unrelated files, while new leaks never get in.
 //
 // Words of your own (company or project names, for example) go in a file outside the repository,
 // one per line: $CALLI_PUBLISH_DENYLIST, or ~/.config/calli/publish-denylist by default.
@@ -49,6 +53,30 @@ const files = execFileSync('git', ['ls-files', '--cached', '--others', '--exclud
   .filter((f) => f !== 'package-lock.json'); // integrity hashes look like secrets
 
 let findings = 0;
+
+/** The lines this commit adds, so the hook can judge the change and not all of history. */
+function stagedAddedLines(file) {
+  const diff = execFileSync('git', ['diff', '--cached', '-U0', '--', file], { cwd: root, encoding: 'utf8' });
+  return diff.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++'));
+}
+
+if (process.argv.includes('--staged')) {
+  const staged = execFileSync('git', ['diff', '--cached', '--name-only', '-z'], { cwd: root, encoding: 'utf8' })
+    .split('\0')
+    .filter(Boolean)
+    .filter((f) => f !== 'package-lock.json');
+  for (const file of staged) {
+    for (const line of stagedAddedLines(file)) {
+      for (const rule of rules) {
+        const m = rule.pattern.exec(line);
+        if (!m) continue;
+        findings += 1;
+        const shown = m[0].length > 6 ? `${m[0].slice(0, 3)}…${m[0].slice(-2)}` : '…';
+        console.log(`${file}: staged ${rule.label} (${shown})`);
+      }
+    }
+  }
+} else {
 for (const file of files) {
   const path = join(root, file);
   if (!existsSync(path) || statSync(path).size > 2 * 1024 * 1024) continue;
@@ -66,7 +94,7 @@ for (const file of files) {
     }
   });
 }
-
+}
 // The lockfile still gets one check of its own: whatever npm wrote as "resolved" must point at
 // the public registry. A machine whose npm is configured for an internal mirror writes that
 // mirror's host into every line it adds, which is exactly the name that must not be published.
@@ -82,7 +110,7 @@ if (existsSync(lockfile)) {
 }
 
 if (findings > 0) {
-  console.log(`\n${findings} finding(s) in ${files.length} files. Remove them before publishing.`);
+  console.log(`\n${findings} finding(s)${process.argv.includes('--staged') ? ' in what this commit adds' : ` in ${files.length} files`}. Remove them before publishing.`);
   process.exit(1);
 }
-console.log(`No findings in ${files.length} files (${rules.length} checks${existsSync(denylist) ? ', including your denylist' : ''}).`);
+console.log(`No findings (${rules.length} checks${existsSync(denylist) ? ', including your denylist' : ''}${process.argv.includes('--staged') ? ' on staged changes' : ` in ${files.length} files`}).`);

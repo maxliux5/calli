@@ -41,3 +41,5 @@
 ```bash
 npm run typecheck && npm test && npm run build
 ```
+
+提交时 pre-commit 钩子（`npm run setup` 安装）会自动拦新增的泄露：用户名、主机名、私网 IP、密钥、邮箱、内部源主机名（`scripts/check-publish.mjs`，只查本次新增的行，历史遗留不阻塞）。对外发布前另跑全量 `npm run check:publish`。确需绕过时 `git commit --no-verify`，并在提交说明里写明原因。
