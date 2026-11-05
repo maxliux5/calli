@@ -21,7 +21,7 @@ test('what cannot be a hub address is refused', () => {
   assert.equal(normalizeHubAddress('http://'), null);
   assert.equal(normalizeHubAddress('ftp://hub.internal'), null);
   assert.equal(normalizeHubAddress('calli://connect'), null);
-  assert.equal(normalizeHubAddress('http://user:pass@hub.internal'), null);
+  assert.equal(normalizeHubAddress('http://user:pass@hub'), null);
   assert.equal(normalizeHubAddress('not a url at all'), null);
   assert.equal(normalizeHubAddress('hub.internal:abc'), null);
 });

@@ -67,6 +67,20 @@ for (const file of files) {
   });
 }
 
+// The lockfile still gets one check of its own: whatever npm wrote as "resolved" must point at
+// the public registry. A machine whose npm is configured for an internal mirror writes that
+// mirror's host into every line it adds, which is exactly the name that must not be published.
+const lockfile = join(root, 'package-lock.json');
+if (existsSync(lockfile)) {
+  readFileSync(lockfile, 'utf8').split('\n').forEach((line, i) => {
+    const m = /"resolved": "https?:\/\/([^/\"]+)\//.exec(line);
+    if (m && m[1] !== 'registry.npmjs.org' && m[1] !== 'registry.yarnpkg.com') {
+      findings += 1;
+      console.log(`package-lock.json:${i + 1}: non-public registry host (${m[1].slice(0, 4)}…)`);
+    }
+  });
+}
+
 if (findings > 0) {
   console.log(`\n${findings} finding(s) in ${files.length} files. Remove them before publishing.`);
   process.exit(1);
