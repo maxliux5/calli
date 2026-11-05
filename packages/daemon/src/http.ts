@@ -1,6 +1,6 @@
 import type { PushService } from './push.js';
 import { DEFAULT_RULES } from './autotitle.js';
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { connect } from 'node:net';
@@ -200,6 +200,41 @@ function serveStatic(res: ServerResponse, webDir: string, urlPath: string): void
 const DOWNLOAD_GRANT_S = 6 * 60 * 60;
 
 /**
+ * One-shot pairing codes handing this hub's token to a freshly installed desktop app: the browser
+ * page (already signed in) asks for a code, the app brings it back over a `calli://` link within
+ * its minute. Codes live in memory only, each works exactly once, and guessing is hopeless: ten
+ * random bytes. There is nothing to mint another one without the hub's token in the first place.
+ */
+class Pairing {
+  private readonly pending = new Map<string, { token: string; expiresAt: number }>();
+  constructor(
+    private readonly token: string,
+    private readonly ttlMs = 60_000,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
+
+  issue(): { code: string; expiresAt: number } {
+    const now = this.now();
+    for (const [code, entry] of this.pending) if (entry.expiresAt <= now) this.pending.delete(code);
+    // A page left open should not pile codes up: the oldest go when there are too many.
+    while (this.pending.size >= 20) this.pending.delete(this.pending.keys().next().value as string);
+    const code = randomBytes(12).toString('base64url');
+    const expiresAt = now + this.ttlMs;
+    this.pending.set(code, { token: this.token, expiresAt });
+    return { code, expiresAt };
+  }
+
+  /** The hub token when the code is right and fresh; null otherwise. */
+  exchange(raw: unknown): string | null {
+    if (typeof raw !== 'string' || raw.length > 200) return null;
+    const entry = this.pending.get(raw);
+    if (!entry) return null;
+    this.pending.delete(raw);
+    return entry.expiresAt > this.now() ? entry.token : null;
+  }
+}
+
+/**
  * A short-lived signature for one file of one thread, so a `<video>` tag or a save link — neither
  * of which can send an Authorization header — can still fetch it. Tied to the path as well as the
  * thread, so it opens that file and nothing else.
@@ -277,6 +312,7 @@ function serveDownload(
 export function createHttpServer(deps: HttpDeps): Server {
   const { manager, registry, terminals, desktop, hosts, scheduler, extensions, voice, trusted, token, webDir, version, autotitle } = deps;
   const pets = deps.pets ?? new PetService();
+  const pairing = new Pairing(token);
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -299,7 +335,10 @@ export function createHttpServer(deps: HttpDeps): Server {
     // signed for a `<video>` tag or a save link loses the header the same way and verifies the same.
     const signedFileRoute = /^\/api\/threads\/[^/]+\/files\//.test(path);
     const signedDownloadRoute = /^\/api\/threads\/[^/]+\/download$/.test(path) && url.searchParams.has('sig');
-    if (!trusted && !signedFileRoute && !signedDownloadRoute && !tokenMatches(bearer, token)) return sendJson(res, 401, { error: 'unauthorized' });
+    // Pairing exchange carries its own one-shot proof: the desktop app has no token yet, and the
+    // code it brings is worth exactly one login within its minute.
+    const pairingExchange = path === '/api/devices/exchange' && method === 'POST';
+    if (!trusted && !signedFileRoute && !signedDownloadRoute && !pairingExchange && !tokenMatches(bearer, token)) return sendJson(res, 401, { error: 'unauthorized' });
 
     const parts = path.split('/').filter(Boolean); // ['api', ...]
     /** Everything that would break if this instance disappeared from the registry. */
@@ -311,6 +350,16 @@ export function createHttpServer(deps: HttpDeps): Server {
       const handoverOrders = Object.entries(orders).filter(([source, targets]) => source === id || targets.some((t) => t.agent === id)).length;
       return { threads, schedules, teams, handoverOrders };
     };
+
+    if (path === '/api/devices/pair' && method === 'POST') {
+      return sendJson(res, 200, pairing.issue());
+    }
+    if (pairingExchange) {
+      const { code } = await readJson(req);
+      const granted = pairing.exchange(code);
+      if (!granted) throw new HttpError(404, 'no such pairing code; ask the page for a new one');
+      return sendJson(res, 200, { token: granted });
+    }
 
     if (path === '/api/general-settings') {
       if (method === 'GET') return sendJson(res, 200, manager.generalSettings());

@@ -1,0 +1,314 @@
+/*
+ * The shell's welcome screen, in the app's own design language (packages/web styles.css tokens):
+ * one column, generous space, one thing to do. A hub address is the only thing it asks for; the
+ * hubs used before are large rows, the way Obsidian lists vaults, not a table.
+ */
+:root {
+  --bg: #f8f6f1;
+  --surface: #ffffff;
+  --surface-2: #fbfaf7;
+  --text: #1f1e1c;
+  --muted: #827f77;
+  --border: #e5e2da;
+  --border-strong: #d6d2c8;
+  --hover: rgba(31, 30, 28, 0.045);
+  --accent: #1f1e1c;
+  --accent-fg: #ffffff;
+  --danger: #c2412e;
+  --shadow-card: 0 1px 2px rgba(31, 30, 28, 0.04), 0 6px 20px rgba(31, 30, 28, 0.05);
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 18px;
+  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', 'Noto Sans CJK SC',
+    'Microsoft YaHei', sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1a18;
+    --surface: #252422;
+    --surface-2: #201f1d;
+    --text: #ecebe7;
+    --muted: #9a978f;
+    --border: #32302c;
+    --border-strong: #423f3a;
+    --hover: rgba(236, 235, 231, 0.06);
+    --accent: #ecebe7;
+    --accent-fg: #1b1a18;
+    --danger: #e06a52;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 20px rgba(0, 0, 0, 0.25);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 var(--font);
+  padding: 40px 24px;
+}
+
+.welcome {
+  width: min(400px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* The greeting: one mark, one name, one line of guidance. */
+.brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.mark {
+  width: 76px;
+  height: 76px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+h1 {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.lead {
+  margin: 0;
+  color: var(--muted);
+  max-width: 34ch;
+}
+
+/* Where to go: one large row per hub, like a vault picker. */
+.group {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+.hubs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hubs li {
+  position: relative;
+}
+
+.hubs button.row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.hubs button.row:hover {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+}
+
+.hubs .glyph {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: var(--hover);
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+
+.hubs .meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.hubs .label {
+  display: block;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hubs .url {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hubs .last {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--hover);
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+
+.hubs .remove {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.hubs .remove:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* One address, one button. */
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+}
+
+.field {
+  display: block;
+}
+
+input {
+  width: 100%;
+  font: inherit;
+  font-size: 15px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 11px 14px;
+}
+
+input::placeholder {
+  color: var(--muted);
+}
+
+input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+button.primary {
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  background: var(--accent);
+  color: var(--accent-fg);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 11px 20px;
+  cursor: pointer;
+}
+
+button.primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+button.wide {
+  width: 100%;
+}
+
+button.ghost {
+  font: inherit;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 10px 18px;
+  cursor: pointer;
+}
+
+button.ghost:hover,
+button.primary:not(:disabled):hover {
+  filter: brightness(1.05);
+}
+
+/* The hub that could not be reached. */
+#offline:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  text-align: center;
+  align-items: center;
+}
+
+.offline-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.offline-url {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  word-break: break-all;
+}
+
+#offline .row {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

@@ -1024,6 +1024,8 @@ export class Api {
   savePushSettings(value: PushSettings): Promise<PushSettings> { return this.request('PUT', '/api/push/settings', value); }
   pushStatus(full = false): Promise<PushStatus> { return this.request('GET', `/api/push/status${full ? '' : '?summary=true'}`); }
   testPush(): Promise<PushRecord> { return this.request('POST', '/api/push/test', {}); }
+  /** A one-minute code the Mac app brings back to log itself in; see the pairing routes. */
+  pairDevice(): Promise<{ code: string; expiresAt: number }> { return this.request('POST', '/api/devices/pair', {}); }
 
   todos(): Promise<Todo[]> {
     return this.request('GET', '/api/todos');

@@ -33,6 +33,10 @@ data/
 .worktrees/
 packages/e2e/shots/
 
+# the desktop app's mac builds and electron cache, and its e2e screenshots
+packages/desktop/release/
+packages/desktop/e2e/shots/
+
 # playwright MCP artifacts when e2e testing from the repo root
 .playwright-mcp/
 

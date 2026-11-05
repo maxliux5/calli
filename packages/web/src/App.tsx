@@ -1,4 +1,5 @@
 import { PushSettingsDialog } from './components/PushSettingsDialog';
+import { MacAppDialog } from './components/MacAppDialog';
 import { GeneralSettingsDialog } from './components/GeneralSettingsDialog';
 import { AutoHandoverNotice, HandoverSettingsDialog } from './components/AutoHandover';
 import { useWorkSources, WorkSummary } from './extensions/work';
@@ -32,6 +33,7 @@ import { useHosts } from './hosts';
 import type { PreparedImage } from './images';
 import { restoreVideos, type PreparedVideo } from './videos';
 import { attentionCount, pageTitle, threadNotices } from './notices';
+import { desktop as desktopBridge } from './desktop';
 import { folderName } from './paths';
 import { ThreadPlace } from './components/ThreadPlace';
 import { PERMISSION_LABELS, PERMISSION_ORDER, permissionHint, startingPermission } from './permissions';
@@ -99,7 +101,7 @@ import { NoteMarks, type NoteMark } from './components/NoteMarks';
 import { Toast, type ToastState } from './components/Toast';
 import { ConnectDialog, DemoBar } from './components/ConnectDialog';
 import { DemoApi, DemoError } from './demo/DemoApi';
-import { IconCheck, IconBell, AgentMark, IconActivity, IconAgents, IconArchive, IconArrowDown, IconBack, IconClose, IconEdit, IconFiles, IconFolder, IconGauge, IconGlobe, IconImport, IconList, IconMenu, IconSettings, IconMore, IconPalette, IconPlus, IconPuzzle, IconServer, IconSidebar, IconSignIn, IconSignOut, IconSparkle, IconTerminal, IconTrace, IconLanguage, IconWaveform } from './components/icons';
+import { IconCheck, IconBell, AgentMark, IconActivity, IconAgents, IconArchive, IconArrowDown, IconBack, IconClose, IconDesktop, IconEdit, IconFiles, IconFolder, IconGauge, IconGlobe, IconImport, IconList, IconMenu, IconSettings, IconMore, IconPalette, IconPlus, IconPuzzle, IconServer, IconSidebar, IconSignIn, IconSignOut, IconSparkle, IconTerminal, IconTrace, IconLanguage, IconWaveform } from './components/icons';
 import { StatReadings } from './components/SessionStats';
 import { ThreadTracePanel } from './components/TracePanel';
 import { chooseLocale, locale, LOCALES, localeChoice, t } from './i18n';
@@ -137,6 +139,8 @@ const SCHEDULES_HASH = '#/schedules';
 const ACTIVITY_HASH = '#/activity';
 const OBSERVABILITY_HASH = '#/observability';
 const EXTENSIONS_HASH = '#/extensions';
+/** The new-thread composer, with nothing selected. The Mac app's menu opens this. */
+const NEW_HASH = '#/new';
 /** The hub's own pages. Any other `#/…` may be an extension's view; see extensions/routes.ts. */
 const CORE_ROUTES = [AGENTS_HASH, TEAMS_HASH, TODOS_HASH, DESK_HASH, SKILLS_HASH, MCP_HASH, SCHEDULES_HASH, ACTIVITY_HASH, OBSERVABILITY_HASH, EXTENSIONS_HASH];
 
@@ -146,6 +150,8 @@ type MainView = 'agents' | 'teams' | 'thread' | 'todos' | 'desk' | 'schedules' |
 function viewForHash(hash: string, connected: boolean): MainView | null {
   if (hash.startsWith('#/thread/')) return null;
   switch (hash) {
+    case NEW_HASH:
+      return 'thread';
     case DESK_HASH:
       return 'desk';
     case TODOS_HASH:
@@ -536,6 +542,7 @@ export function App({ token, onToken, connect, hostId = null, onHost, start, sho
   const [personal, setPersonal] = useState<PersonalSettings | null>(null);
   const [personalError, setPersonalError] = useState('');
   const [pushSettingsOpen, setPushSettingsOpen] = useState(false);
+  const [macAppOpen, setMacAppOpen] = useState(false);
   const reloadPersonal = useCallback(() => {
     if (api.demo) return; setPersonalError('');
     void api.personalSettings().then(setPersonal).catch(e => setPersonalError(String(e)));
@@ -1574,16 +1581,26 @@ export function App({ token, onToken, connect, hostId = null, onHost, start, sho
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The Mac app's menu follows the page's language; a browser simply has no bridge to tell.
+  useEffect(() => {
+    desktopBridge?.setLocale(localeChoice());
+  }, []);
+
   // The thread on screen is being read. With the page in the background, nothing is.
   const viewingId = pageHidden ? null : selectedId;
 
-  // Say so when something happens in a thread that is not on screen, and keep a count in the tab title.
+  // Say so when something happens in a thread that is not on screen, and keep a count in the tab
+  // title. Inside the Mac app the count is also the dock badge, and what happened while nobody
+  // was looking arrives as a native notification; the same transition feeds all three.
   useEffect(() => {
     const before = seenThreads.current;
     seenThreads.current = threads;
     document.title = pageTitle(baseTitle.current, attentionCount(threads, viewingId));
+    desktopBridge?.setBadge(attentionCount(threads, viewingId));
     if (!before) return;
-    const notice = threadNotices(before, threads, viewingId).at(-1);
+    const fresh = threadNotices(before, threads, viewingId);
+    if (pageHidden) for (const notice of fresh) desktopBridge?.notify(notice.message, notice.threadId);
+    const notice = fresh.at(-1);
     if (notice) {
       setToast({
         message: notice.message,
@@ -1596,7 +1613,7 @@ export function App({ token, onToken, connect, hostId = null, onHost, start, sho
         },
       });
     }
-  }, [threads, viewingId]);
+  }, [threads, viewingId, pageHidden]);
 
   // Looking at a thread marks it read, on every device.
   const selectedUnread = Boolean(selected?.unread);
@@ -2909,6 +2926,7 @@ export function App({ token, onToken, connect, hostId = null, onHost, start, sho
         />
       )}
       {pushSettingsOpen && <PushSettingsDialog api={api} onClose={() => setPushSettingsOpen(false)} />}
+      {macAppOpen && <MacAppDialog api={api} onClose={() => setMacAppOpen(false)} />}
       {generalSettingsOpen && <GeneralSettingsDialog api={api} onSave={setStartupSettings} onClose={() => setGeneralSettingsOpen(false)} />}
       {handoverSettingsOpen && api && <HandoverSettingsDialog api={api} agents={agents} onClose={() => setHandoverSettingsOpen(false)} />}
       {quotaOpen && api && <QuotaBoard api={api} agents={agents} current={onPage ? undefined : activeAgent} onClose={() => setQuotaOpen(false)} onError={handleError} />}
@@ -2988,7 +3006,7 @@ export function App({ token, onToken, connect, hostId = null, onHost, start, sho
                   'separator' as const,
                 ]
               : []),
-            ...(!api.demo ? [{ id: 'push', label: t('push.title'), icon: IconBell, onSelect: () => { setPushSettingsOpen(true); setDrawer(false); } }, { id: 'auto-handover', label: t('auto.title'), icon: IconAgents, onSelect: () => { setHandoverSettingsOpen(true); setDrawer(false); } }] : []),
+            ...(!api.demo ? [{ id: 'push', label: t('push.title'), icon: IconBell, onSelect: () => { setPushSettingsOpen(true); setDrawer(false); } }, { id: 'auto-handover', label: t('auto.title'), icon: IconAgents, onSelect: () => { setHandoverSettingsOpen(true); setDrawer(false); } }, { id: 'mac-app', label: t('desktop.open.title'), icon: IconDesktop, onSelect: () => { setMacAppOpen(true); setDrawer(false); } }] : []),
             {
               id: 'appearance',
               label: t('appearance.title'),

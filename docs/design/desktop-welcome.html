@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Calli 桌面版欢迎页 — 设计 playground</title>
+<!--
+  A static playground for the desktop app's welcome screen: four variants, light/dark,
+  wide/narrow, with-hubs/first-run, switchable live. No network, no build; open it anywhere.
+  The tokens mirror packages/web styles.css and packages/desktop/src/shell/shell.css.
+-->
+<style>
+  :root {
+    --bg: #f8f6f1;
+    --surface: #ffffff;
+    --surface-2: #fbfaf7;
+    --text: #1f1e1c;
+    --muted: #827f77;
+    --faint: #a9a69e;
+    --border: #e5e2da;
+    --border-strong: #d6d2c8;
+    --hover: rgba(31, 30, 28, 0.045);
+    --accent: #1f1e1c;
+    --accent-fg: #ffffff;
+    --danger: #c2412e;
+    --shadow-card: 0 1px 2px rgba(31, 30, 28, 0.04), 0 6px 20px rgba(31, 30, 28, 0.05);
+    --shadow-pop: 0 14px 40px rgba(31, 30, 28, 0.14), 0 2px 6px rgba(31, 30, 28, 0.06);
+    --radius-xs: 4px; --radius-sm: 8px; --radius: 12px; --radius-lg: 18px;
+    --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+  }
+  body[data-scheme="dark"] {
+    --bg: #1b1a18; --surface: #252422; --surface-2: #201f1d;
+    --text: #ecebe7; --muted: #9a978f; --faint: #6f6c65;
+    --border: #32302c; --border-strong: #423f3a;
+    --hover: rgba(236, 235, 231, 0.06);
+    --accent: #ecebe7; --accent-fg: #1b1a18; --danger: #e06a52;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 20px rgba(0, 0, 0, 0.25);
+    --shadow-pop: 0 14px 40px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font: 14px/1.5 var(--font);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ---- playground chrome (not part of any variant) ---- */
+  .bar {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .bar .seg { display: flex; border: 1px solid var(--border-strong); border-radius: 999px; overflow: hidden; }
+  .bar .seg button {
+    font: inherit; font-size: 13px; padding: 6px 14px; border: none;
+    background: transparent; color: var(--text); cursor: pointer;
+  }
+  .bar .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); }
+  .bar .note { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .caption { padding: 10px 16px 0; color: var(--muted); font-size: 13px; }
+  .caption b { color: var(--text); font-weight: 600; }
+
+  .stage {
+    flex: 1; display: grid; place-items: center;
+    padding: 28px 20px 48px;
+  }
+  .frame {
+    width: min(880px, 100%);
+    container-type: inline-size;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--bg);
+    overflow: hidden;
+    min-height: 540px;
+    display: flex;
+  }
+  body[data-width="narrow"] .frame { width: min(400px, 100%); }
+
+  .variant { display: none; width: 100%; }
+  .variant.active { display: flex; flex-direction: column; }
+
+  /* shared bits */
+  .mark {
+    width: 76px; height: 76px; border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+  }
+  input {
+    width: 100%; font: inherit; font-size: 15px; color: var(--text);
+    background: var(--surface); border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm); padding: 11px 14px;
+  }
+  input::placeholder { color: var(--faint); }
+  input:focus { outline: none; border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  button.primary {
+    font: inherit; font-size: 15px; font-weight: 600;
+    background: var(--accent); color: var(--accent-fg);
+    border: none; border-radius: var(--radius-sm); padding: 11px 20px; cursor: pointer;
+  }
+  button.primary:hover { filter: brightness(1.05); }
+  button.ghost {
+    font: inherit; background: transparent; color: var(--text);
+    border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+    padding: 10px 18px; cursor: pointer;
+  }
+  button.ghost:hover { background: var(--hover); }
+  .host-glyph {
+    flex: none; width: 34px; height: 34px; border-radius: 999px;
+    background: var(--hover); display: grid; place-items: center; color: var(--muted);
+  }
+  .toast {
+    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+    background: var(--accent); color: var(--accent-fg);
+    font-size: 13px; padding: 9px 18px; border-radius: 999px;
+    opacity: 0; pointer-events: none; transition: opacity 0.18s;
+    z-index: 50;
+  }
+  .toast.show { opacity: 1; }
+
+  body[data-hubs="none"] .has-hubs { display: none !important; }
+  body[data-hubs="some"] .first-run-only { display: none !important; }
+
+  /* ============ A · 居中卡（现行版） ============ */
+  .v-a { align-items: center; justify-content: center; padding: 40px 24px; }
+  .v-a .col { width: min(400px, 100%); display: flex; flex-direction: column; gap: 26px; }
+  .v-a .brand { display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; }
+  .v-a h1 { font-size: 22px; font-weight: 700; margin: 0; }
+  .v-a .lead { margin: 0; color: var(--muted); max-width: 34ch; }
+  .v-a .group { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 8px; }
+  .v-a ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .v-a li button.row {
+    width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--surface); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  }
+  .v-a li button.row:hover { background: var(--surface-2); border-color: var(--border-strong); }
+  .v-a .meta { flex: 1; min-width: 0; }
+  .v-a .label { display: block; font-weight: 600; }
+  .v-a .url { display: block; color: var(--muted); font-size: 12px; }
+  .v-a .last {
+    flex: none; font-size: 12px; color: var(--muted); background: var(--hover);
+    border-radius: 999px; padding: 2px 10px;
+  }
+  .v-a form { display: flex; flex-direction: column; gap: 10px; margin: 0; }
+  .v-a .wide { width: 100%; }
+
+  /* ============ B · 分栏 hero（左品牌右表单） ============ */
+  .v-b { flex-direction: row; }
+  .v-b .hero {
+    flex: 1.1; background: var(--surface-2); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; justify-content: center; gap: 22px; padding: 48px 44px;
+  }
+  .v-b .hero .mark { width: 88px; height: 88px; }
+  .v-b .hero h1 { font-size: 26px; font-weight: 700; margin: 0; letter-spacing: 0.2px; }
+  .v-b .hero .pitch { color: var(--muted); margin: 0; max-width: 30ch; font-size: 15px; }
+  .v-b .points { display: flex; flex-direction: column; gap: 12px; margin-top: 6px; }
+  .v-b .point { display: flex; gap: 12px; align-items: center; color: var(--text); }
+  .v-b .point .dot {
+    flex: none; width: 30px; height: 30px; border-radius: 999px; background: var(--surface);
+    border: 1px solid var(--border); display: grid; place-items: center; color: var(--muted);
+  }
+  .v-b .point span:last-child { font-size: 13.5px; }
+  .v-b .panel { flex: 1; display: grid; place-items: center; padding: 40px 32px; }
+  .v-b .panel .col { width: min(340px, 100%); display: flex; flex-direction: column; gap: 18px; }
+  .v-b .panel h2 { font-size: 16px; font-weight: 600; margin: 0; }
+  .v-b .panel form { display: flex; flex-direction: column; gap: 10px; margin: 0; }
+  .v-b .panel ul { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .v-b .panel li button.row {
+    width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--surface); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  }
+  .v-b .panel li button.row:hover { border-color: var(--border-strong); background: var(--surface-2); }
+  @container (max-width: 700px) {
+    .v-b { flex-direction: column; }
+    .v-b .hero { border-right: none; border-bottom: 1px solid var(--border); flex: none; padding: 28px 24px; gap: 12px; }
+    .v-b .hero .mark { width: 52px; height: 52px; }
+    .v-b .hero h1 { font-size: 20px; }
+    .v-b .points { display: none; }
+  }
+
+  /* ============ C · 命令面板（Spotlight 风） ============ */
+  .v-c {
+    align-items: center; justify-content: center; padding: 40px 24px; position: relative;
+    background:
+      radial-gradient(640px 360px at 50% 22%, color-mix(in srgb, var(--surface) 65%, transparent), transparent 70%),
+      var(--bg);
+  }
+  .v-c .palette {
+    width: min(560px, 100%); background: var(--surface);
+    border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-pop); overflow: hidden;
+  }
+  .v-c .query { display: flex; align-items: center; gap: 10px; padding: 14px 16px; }
+  .v-c .query svg { flex: none; color: var(--muted); }
+  .v-c .query input { border: none; background: transparent; padding: 2px 0; box-shadow: none; }
+  .v-c .query input:focus { box-shadow: none; border: none; }
+  .v-c .kbd {
+    flex: none; font-size: 11px; color: var(--muted); border: 1px solid var(--border-strong);
+    border-radius: var(--radius-xs); padding: 2px 7px;
+  }
+  .v-c .results { border-top: 1px solid var(--border); padding: 6px; }
+  .v-c .hint {
+    display: flex; gap: 14px; padding: 8px 14px; border-top: 1px solid var(--border);
+    color: var(--faint); font-size: 12px; background: var(--surface-2);
+  }
+  .v-c .item {
+    width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+    border: none; border-radius: var(--radius-sm); background: transparent;
+    color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  }
+  .v-c .item.sel, .v-c .item:hover { background: var(--hover); }
+  .v-c .item .meta { flex: 1; min-width: 0; }
+  .v-c .item .label { display: block; font-weight: 600; }
+  .v-c .item .url { display: block; color: var(--muted); font-size: 12px; }
+  .v-c .item .go { color: var(--faint); font-size: 12px; }
+  .v-c .newonly { color: var(--muted); font-size: 13px; text-align: center; padding: 12px 0; }
+  .v-c .brandline { text-align: center; margin-bottom: 22px; display: flex; align-items: center; gap: 10px; justify-content: center; }
+  .v-c .brandline img { width: 28px; height: 28px; border-radius: var(--radius-xs); }
+  .v-c .brandline b { font-size: 14px; }
+
+  /* ============ D · 选择器（列表优先，Obsidian 强化） ============ */
+  .v-d { padding: 44px 32px; align-items: center; }
+  .v-d .col { width: min(520px, 100%); display: flex; flex-direction: column; gap: 20px; }
+  .v-d header { display: flex; align-items: center; gap: 14px; }
+  .v-d header img { width: 46px; height: 46px; border-radius: var(--radius-sm); box-shadow: var(--shadow-card); }
+  .v-d h1 { font-size: 20px; font-weight: 700; margin: 0; }
+  .v-d .sub { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+  .v-d ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+  .v-d li button.row {
+    width: 100%; display: flex; align-items: center; gap: 14px; padding: 14px 16px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+    box-shadow: var(--shadow-card);
+  }
+  .v-d li button.row:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+  .v-d .host-glyph { width: 40px; height: 40px; }
+  .v-d .label { display: block; font-weight: 600; font-size: 15px; }
+  .v-d .url { display: block; color: var(--muted); font-size: 12.5px; margin-top: 1px; }
+  .v-d .meta { flex: 1; min-width: 0; }
+  .v-d .used { color: var(--muted); font-size: 12px; }
+  .v-d footer { display: flex; gap: 10px; align-items: center; }
+  .v-d .add-inline { display: flex; gap: 8px; width: 100%; }
+</style>
+</head>
+<body data-scheme="light" data-width="wide" data-hubs="some">
+
+<div class="bar">
+  <div class="seg" id="seg-variant">
+    <button data-v="a" aria-pressed="true">A · 居中卡</button>
+    <button data-v="b" aria-pressed="false">B · 分栏品牌</button>
+    <button data-v="c" aria-pressed="false">C · 命令面板</button>
+    <button data-v="d" aria-pressed="false">D · 选择器</button>
+  </div>
+  <div class="seg" id="seg-scheme">
+    <button data-scheme="light" aria-pressed="true">浅色</button>
+    <button data-scheme="dark" aria-pressed="false">深色</button>
+  </div>
+  <div class="seg" id="seg-width">
+    <button data-width="wide" aria-pressed="true">桌面宽</button>
+    <button data-width="narrow" aria-pressed="false">窄窗口</button>
+  </div>
+  <div class="seg" id="seg-hubs">
+    <button data-hubs="some" aria-pressed="true">有历史 hub</button>
+    <button data-hubs="none" aria-pressed="false">首次使用</button>
+  </div>
+  <span class="note">点「连接」只有提示，不真连</span>
+</div>
+<p class="caption" id="caption"></p>
+
+<div class="stage">
+  <div class="frame">
+
+    <!-- A: the shipped one, centred column (Zed's focus, code-server's single input) -->
+    <section class="variant v-a active" data-v="a">
+      <div class="col">
+        <div class="brand">
+          <img class="mark" src="calli-icon.png" alt="" />
+          <h1>Calli</h1>
+          <p class="lead has-hubs">连接到 hub，开始用你的 agent。</p>
+          <p class="lead first-run-only">还没有 hub。填入它的地址开始。</p>
+        </div>
+        <div class="has-hubs">
+          <p class="group">最近连接</p>
+          <ul>
+            <li><button class="row connect" data-name="Work hub"><span class="host-glyph"></span><span class="meta"><span class="label">Work hub</span><span class="url">http://10.1.2.3:8787</span></span><span class="last">上次</span></button></li>
+            <li><button class="row connect" data-name="Lab machine"><span class="host-glyph"></span><span class="meta"><span class="label">Lab machine</span><span class="url">http://10.9.8.7:8787</span></span></button></li>
+          </ul>
+        </div>
+        <form onsubmit="return false">
+          <input placeholder="主机:端口" />
+          <input placeholder="访问 token（不填，连上后再输）" type="password" autocomplete="current-password" />
+          <button class="primary wide connect" data-name="新地址">连接</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- B: split hero — the desktop app's own selling points on the left -->
+    <section class="variant v-b" data-v="b">
+      <div class="hero">
+        <img class="mark" src="calli-icon.png" alt="" />
+        <h1>Calli</h1>
+        <p class="pitch">你的 agent 远程跑，这台 Mac 随手看、随手批。</p>
+        <div class="points">
+          <div class="point"><span class="dot"></span><span>系统通知：agent 等你时，Mac 会说</span></div>
+          <div class="point"><span class="dot"></span><span>Dock 徽标：运行与等待一目了然</span></div>
+          <div class="point"><span class="dot"></span><span>菜单快捷键：⌘N 新会话，⌘K 换机器</span></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="col">
+          <div>
+            <h2 class="has-hubs">回到你的 hub</h2>
+            <h2 class="first-run-only">连接到 hub</h2>
+          </div>
+          <form onsubmit="return false">
+            <input placeholder="主机:端口" />
+            <input placeholder="访问 token（不填，连上后再输）" type="password" autocomplete="current-password" />
+            <button class="primary connect" data-name="新地址" style="width:100%">连接</button>
+          </form>
+          <ul class="has-hubs">
+            <li><button class="row connect" data-name="Work hub"><span class="host-glyph"></span><span class="meta"><span class="label">Work hub</span><span class="url">http://10.1.2.3:8787</span></span><span class="used">上次</span></button></li>
+            <li><button class="row connect" data-name="Lab machine"><span class="host-glyph"></span><span class="meta"><span class="label">Lab machine</span><span class="url">http://10.9.8.7:8787</span></span><span class="used">3 天前</span></button></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- C: the command palette the web app already speaks, as the whole screen -->
+    <section class="variant v-c" data-v="c">
+      <div style="width: min(560px, 100%)">
+        <div class="brandline"><img src="calli-icon.png" alt="" /><b>连接到 hub</b></div>
+        <div class="palette">
+          <div class="query">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-3.8-3.8"/></svg>
+            <input id="c-input" placeholder="输入 hub 地址，或选一个最近的…" />
+            <span class="kbd">⏎</span>
+          </div>
+          <div class="query" style="border-top:1px solid var(--border); padding:10px 16px">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="flex:none;color:var(--muted)"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>
+            <input type="password" placeholder="访问 token（不填，连上后再输）" style="font-size:14px" />
+          </div>
+          <div class="results has-hubs" id="c-results">
+            <button class="item sel connect" data-name="Work hub"><span class="host-glyph"></span><span class="meta"><span class="label">Work hub</span><span class="url">http://10.1.2.3:8787</span></span><span class="go">连接</span></button>
+            <button class="item connect" data-name="Lab machine"><span class="host-glyph"></span><span class="meta"><span class="label">Lab machine</span><span class="url">http://10.9.8.7:8787</span></span><span class="go">连接</span></button>
+          </div>
+          <div class="results first-run-only"><p class="newonly">第一次见。输入 hub 的「主机:端口」再按回车。</p></div>
+          <div class="hint"><span>↑↓ 选择</span><span>⏎ 连接</span><span>esc 退出</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- D: the picker — big rows for people who live across several hubs -->
+    <section class="variant v-d" data-v="d">
+      <div class="col">
+        <header>
+          <img src="calli-icon.png" alt="" />
+          <div>
+            <h1>打开一个 hub</h1>
+            <p class="sub">agent、线程和文件都留在那台机器上。</p>
+          </div>
+        </header>
+        <ul class="has-hubs">
+          <li><button class="row connect" data-name="Work hub"><span class="host-glyph"></span><span class="meta"><span class="label">Work hub</span><span class="url">http://10.1.2.3:8787 · 8 个会话</span></span><span class="used">今天用过</span></button></li>
+          <li><button class="row connect" data-name="Lab machine"><span class="host-glyph"></span><span class="meta"><span class="label">Lab machine</span><span class="url">http://10.9.8.7:8787 · 3 个会话</span></span><span class="used">3 天前</span></button></li>
+        </ul>
+        <p class="lead first-run-only" style="color:var(--muted);margin:0">还没有 hub。加第一个：</p>
+        <footer id="d-footer">
+          <button class="ghost has-hubs" id="d-add">＋ 添加 hub</button>
+          <form class="add-inline first-run-only" onsubmit="return false" style="display:flex">
+            <input placeholder="主机:端口" />
+            <input placeholder="访问 token（不填，连上后再输）" type="password" autocomplete="current-password" />
+            <button class="primary connect" data-name="新地址">添加</button>
+          </form>
+        </footer>
+        <form class="add-inline has-hubs" id="d-form" onsubmit="return false" style="display:none">
+          <input placeholder="主机:端口" />
+          <button class="primary connect" data-name="新地址">添加</button>
+        </form>
+      </div>
+    </section>
+
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+  // Playground wiring: segments flip body state; nothing leaves this page.
+  const captions = {
+    a: '<b>A · 居中卡（现行版）</b> — Zed 的单一焦点 + code-server 的单输入。最克制，信息最少。',
+    b: '<b>B · 分栏品牌</b> — 左边讲这个桌面 app 的卖点（通知/徽标/快捷键），右边连接。像 Warp 的欢迎页；窄窗口自动收成单列。',
+    c: '<b>C · 命令面板</b> — 把 web 端的命令面板基因做成整屏（Raycast/Spotlight 风）：一个大输入 + 最近 hub 当建议，↑↓⏎ 键盘流。',
+    d: '<b>D · 选择器</b> — Obsidian 的 vault 选择器思路：大列表行、行内有元信息，添加收成底部一个低调按钮。适合手里多台 hub 的人。',
+  };
+  const caption = document.getElementById('caption');
+  caption.innerHTML = captions.a;
+
+  for (const [segId, attr] of [['seg-variant', 'v'], ['seg-scheme', 'scheme'], ['seg-width', 'width'], ['seg-hubs', 'hubs']]) {
+    const seg = document.getElementById(segId);
+    seg.addEventListener('click', (event) => {
+      const button = event.target.closest('button');
+      if (!button) return;
+      for (const b of seg.querySelectorAll('button')) b.setAttribute('aria-pressed', String(b === button));
+      if (attr === 'v') {
+        document.body.dataset.v = button.dataset.v;
+        for (const section of document.querySelectorAll('.variant')) section.classList.toggle('active', section.dataset.v === button.dataset.v);
+        caption.innerHTML = captions[button.dataset.v];
+      } else {
+        document.body.dataset[attr] = button.dataset[attr];
+      }
+      if (attr === 'hubs') {
+        const adding = document.getElementById('d-form');
+        if (adding) adding.style.display = 'none';
+      }
+    });
+  }
+
+  // Every "connect" is a toast; this is a picture, not a client.
+  const toast = document.getElementById('toast');
+  let toastTimer;
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('.connect');
+    if (!button) return;
+    toast.textContent = `（示意）这里会连接到「${button.dataset.name}」`;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 1600);
+  });
+
+  // D's add button toggles its inline form.
+  const dAdd = document.getElementById('d-add');
+  const dForm = document.getElementById('d-form');
+  if (dAdd && dForm) dAdd.addEventListener('click', () => { dForm.style.display = dForm.style.display === 'none' ? 'flex' : 'none'; });
+
+  // C's keyboard flow: up/down move the selection, enter "connects".
+  const items = () => [...document.querySelectorAll('.v-c .item')];
+  document.addEventListener('keydown', (event) => {
+    if (document.body.dataset.v !== 'c') return;
+    const list = items().filter((item) => item.offsetParent !== null);
+    if (!list.length) return;
+    const current = list.findIndex((item) => item.classList.contains('sel'));
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (current >= 0) list[current].classList.remove('sel');
+      const next = (current + (event.key === 'ArrowDown' ? 1 : -1) + list.length) % list.length;
+      list[next].classList.add('sel');
+    } else if (event.key === 'Enter' && document.activeElement && document.activeElement.tagName !== 'INPUT') {
+      const chosen = list[Math.max(0, current)];
+      if (chosen) chosen.click();
+    } else if (event.key === 'Enter') {
+      toast.textContent = '（示意）这里会连接到输入的地址';
+      toast.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('show'), 1600);
+    }
+  });
+</script>
+</body>
+</html>

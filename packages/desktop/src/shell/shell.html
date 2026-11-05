@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Calli</title>
+  <link rel="stylesheet" href="shell.css" />
+</head>
+<body>
+  <main id="app" class="welcome">
+    <header class="brand">
+      <img class="mark" src="./calli-icon.png" alt="" width="76" height="76" />
+      <h1>Calli</h1>
+      <p id="lead" class="lead"></p>
+    </header>
+
+    <!-- The hub that could not be reached: say so, offer to try again or pick another. -->
+    <section id="offline" hidden>
+      <p id="offline-title" class="offline-title"></p>
+      <p id="offline-url" class="offline-url"></p>
+      <div class="row">
+        <button id="retry" class="primary"></button>
+        <button id="change-hub" class="ghost"></button>
+      </div>
+    </section>
+
+    <!-- Where to go: the hubs used before, one large row each. -->
+    <section id="picking">
+      <h2 id="recent" class="group" hidden></h2>
+      <ul id="hubs" class="hubs"></ul>
+
+      <form id="add">
+        <label class="field">
+          <span id="address-label" class="sr-only"></span>
+          <input id="address" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span id="token-label" class="sr-only"></span>
+          <input id="token" type="password" autocomplete="current-password" spellcheck="false" />
+        </label>
+        <p id="error" class="error" role="alert" hidden></p>
+        <button id="add-button" type="submit" class="primary wide"></button>
+      </form>
+    </section>
+  </main>
+  <script src="shell.js"></script>
+</body>
+</html>

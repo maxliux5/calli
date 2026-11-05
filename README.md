@@ -124,6 +124,17 @@ GitHub Pages 通过 `.github/workflows/pages.yml` 发布：推送到 `main` 后�
 - 使用 HTTP + token。VPN 已加密传输，项目不额外处理证书。
 - 注意：`http://<IP>` 不是安全上下文，因此 PWA 的离线缓存和"添加到主屏幕"不可用，网页里的"拷贝"按钮需要降级处理。
 
+## Mac 桌面版
+
+除了浏览器，也可以用原生 Mac 壳（Electron）：同一个 hub 地址，外加系统通知、Dock 徽标、菜单快捷键和 `calli://` 深链；界面仍由 hub 服务，与浏览器零版本偏差。
+
+```bash
+npm run dist:mac        # 组装未签名的 Mac 包（默认 arm64，可 x64）
+npm run dev:desktop     # 本机起 Electron 调试
+```
+
+包未签名，首次打开若被拦，`xattr -cr Calli.app` 后再开。设计与实现口径见 [Mac 桌面版设计](docs/desktop-app-design.md)。
+
 ## 管理另一台机器
 
 浏览器只连主 hub；主 hub 通过 SSH 隧道访问另一台机器上的 daemon。线程、文件和 agent 都留在各自机器上。

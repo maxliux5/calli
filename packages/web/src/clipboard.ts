@@ -1,9 +1,20 @@
 /**
  * Copies text. The hub is usually reached over plain http on a VPN address, which is not a
- * "secure context", so navigator.clipboard is missing there. The fallback selects a hidden
- * textarea and uses execCommand, which still works on such pages when called from a click.
+ * "secure context", so navigator.clipboard is missing there. Inside the Mac app the desktop
+ * bridge is tried first; the browser path then selects a hidden textarea and uses execCommand,
+ * which still works on such pages when called from a click.
  */
+import { desktop } from './desktop';
+
 export async function copyText(text: string): Promise<boolean> {
+  if (desktop) {
+    try {
+      desktop.copyText(text);
+      return true;
+    } catch {
+      // The bridge refused: fall through to the page's own means.
+    }
+  }
   try {
     if (window.isSecureContext && navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
