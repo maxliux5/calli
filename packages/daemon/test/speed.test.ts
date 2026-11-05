@@ -91,12 +91,13 @@ test('HTTP speed validates models, survives restore, and clears incompatible tie
   } finally { await manager.shutdown(); await new Promise<void>(r => server.close(() => r())); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('Claude discovers Fast per model, preserves cleared intent across unsupported models, and reports native fallback', async () => {
+test('Claude keeps the catalog lightweight and drives speed through the session config', async () => {
   const { ClaudeAcpAdapter } = await import('../src/adapters/claude.js');
   const adapter = new ClaudeAcpAdapter([process.execPath, join(here, 'fixtures/fake-acp.mjs')], { FAKE_ACP_SPEED: '1', FAKE_ACP_SPEED_REVOKED: '1' });
   const models = await adapter.models();
-  assert.deepEqual(models.find(m => m.id === 'big')?.speeds?.map(s => s.id), ['default', 'fast']);
-  assert.equal(models.find(m => m.id === 'big')?.speeds?.[1].isFast, true);
+  // The catalog is read from the agent's announcement without switching models (PLAN: Claude does
+  // not probe per model), so per-model speeds are the session's business, not the list's.
+  assert.equal(models.find(m => m.id === 'big')?.speeds, undefined);
   assert.equal(models.find(m => m.id === 'small')?.speeds, undefined);
   const changes: string[] = [];
   const s = await adapter.start({ cwd: here, model: 'big', speed: 'fast', onSpeed: speed => changes.push(speed) });
