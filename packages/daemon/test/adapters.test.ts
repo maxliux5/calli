@@ -8,7 +8,7 @@ import { DshAcpAdapter } from '../src/adapters/dsh.js';
 import { TraexAcpAdapter } from '../src/adapters/traex.js';
 import { mapPiEvent, mapPiStats, piEfforts, PiRpcAdapter } from '../src/adapters/pi.js';
 import type { EmittedEvent } from '../src/events.js';
-import type { ApprovalDecision, ApprovalRequest, TurnHooks, TurnInput } from '../src/adapters/types.js';
+import type { ApprovalDecision, ApprovalRequest, TurnHooks, TurnInput, TurnResult } from '../src/adapters/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fakeAcp = join(here, 'fixtures', 'fake-acp.mjs');
@@ -101,6 +101,37 @@ test('ClaudeAcpAdapter: prompt streams events and returns end_turn', async () =>
   assert.deepEqual(types, ['reasoning.delta', 'tool.start', 'tool.end', 'message.delta']);
   assert.equal(events.at(-1)?.data.text, 'echo:hello');
   await session.close();
+});
+
+// Only root IDs from this prompt survive completion; missing, failed and cancelled turns stay unmarked.
+test('ACP completion captures the root boundary without inheriting replay or previous IDs', async (t) => {
+  const adapter = new ClaudeAcpAdapter([process.execPath, fakeAcp]);
+  const session = await adapter.start({ cwd: here, resumeId: 'hist-replay' });
+  t.after(() => session.close());
+  assert.deepEqual(await session.prompt(turn('hello'), collectingHooks().hooks), { stopReason: 'end_turn' });
+  assert.deepEqual(await session.prompt(turn('nested fork ids'), collectingHooks().hooks), { stopReason: 'end_turn', forkRef: 'live-1-answer' });
+  assert.deepEqual(await session.prompt(turn('no fork id'), collectingHooks().hooks), { stopReason: 'end_turn' });
+  assert.deepEqual(await session.prompt(turn('missing final fork ids'), collectingHooks().hooks), { stopReason: 'end_turn' });
+  const slow = session.prompt(turn('slow fork ids'), collectingHooks().hooks);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  await session.cancel();
+  assert.deepEqual(await slow, { stopReason: 'cancelled' });
+  assert.equal((await session.prompt(turn('fork ids out of plan'), collectingHooks().hooks)).forkRef, undefined);
+});
+
+// Background work has a separate lifecycle and keeps its last root ID, not a nested agent's ID.
+test('ACP background completion keeps its own native boundary and clears it before another prompt', async (t) => {
+  const session = await new ClaudeAcpAdapter([process.execPath, fakeAcp]).start({ cwd: here });
+  t.after(() => session.close());
+  let finish!: (result: TurnResult) => void;
+  const completed = new Promise<TurnResult>(resolve => { finish = resolve; });
+  session.setSessionHooks!({
+    turnStarted: () => collectingHooks().hooks,
+    turnFinished: (_id, result) => finish(result),
+  });
+  assert.deepEqual(await session.prompt(turn('background later fork ids'), collectingHooks().hooks), { stopReason: 'end_turn' });
+  assert.deepEqual(await completed, { stopReason: 'end_turn', forkRef: 'live-1-background' });
+  assert.deepEqual(await session.prompt(turn('no fork id'), collectingHooks().hooks), { stopReason: 'end_turn' });
 });
 
 test('Claude and TRAE: context updates use each live protocol without inventing cost', async (t) => {

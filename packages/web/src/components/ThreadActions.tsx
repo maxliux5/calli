@@ -54,9 +54,9 @@ type DialogState =
 export type ThreadAction = 'rename' | 'pin' | 'fork' | 'archive' | 'restore' | 'delete';
 
 /** Why a thread cannot be forked right now, or null when it can. */
-export function forkBlocked(thread: Thread, turnId?: string): string | null {
+export function forkBlocked(thread: Thread, _turnId?: string): string | null {
   if (!thread.agentSessionId) return t('actions.forkEmpty');
-  if (thread.status === 'running' && !turnId) return t('actions.forkRunning');
+  // The daemon selects the latest completed boundary when the source thread is still running.
   return null;
 }
 
@@ -110,7 +110,7 @@ export function useThreadActions(deps: Deps) {
         return setDialog({ kind: 'fork', thread, turnId, branch: options.worktree.branch ?? null, changes: options.worktree.changes ?? 0 });
       }
     }
-    toast({ message: where === 'worktree' ? t('actions.forkingWorktree') : t('actions.forking'), busy: true });
+    toast({ message: where === 'worktree' ? t('actions.forkingWorktree') : thread.status === 'running' && !turnId ? t('actions.forkingSnapshot') : t('actions.forking'), busy: true });
     try {
       const copy = await api.forkThread(thread.id, { turnId, worktree: where === 'worktree' });
       onThreadOpen(copy);
@@ -119,7 +119,9 @@ export function useThreadActions(deps: Deps) {
       toast(null);
       // The agent keeps its own record of the conversation. A turn it has no record of (one that
       // never reached it, say) is not a place its copy can stop.
-      if (turnId && e instanceof Error && /own history|cannot stop a copy|whole conversation/.test(e.message)) {
+      if (e instanceof Error && /no completed turn/.test(e.message)) return toast({ message: t('actions.forkNoCompleted') });
+      if (e instanceof Error && /wait for this turn to finish/.test(e.message)) return toast({ message: t('actions.forkRunning') });
+      if (e instanceof Error && /own history|cannot stop a copy|whole conversation/.test(e.message)) {
         return toast({ message: t('actions.forkMismatch') });
       }
       onError(e);

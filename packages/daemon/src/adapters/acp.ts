@@ -229,7 +229,8 @@ export class AcpSession implements AgentSession {
    * Work the agent started between prompts, e.g. Claude Code waking up when a background task
    * finishes. It runs as a turn of its own so the thread shows it and holds new prompts behind it.
    */
-  private background: { id: string; hooks: TurnHooks } | null = null;
+  private background: { id: string; hooks: TurnHooks; forkRef?: string } | null = null;
+  private promptForkRef: string | undefined;
   private backgroundTurns = 0;
   private workMode: WorkMode = 'execute';
   private permissionMode: PermissionMode = 'ask';
@@ -263,7 +264,9 @@ export class AcpSession implements AgentSession {
     const turn = this.background;
     if (!turn) return;
     this.background = null;
-    this.sessionHooks?.turnFinished(turn.id, { stopReason });
+    this.sessionHooks?.turnFinished(turn.id, { stopReason,
+      ...(stopReason === 'end_turn' && turn.forkRef ? { forkRef: turn.forkRef } : {}),
+    });
   }
 
   /** Called by the peer for every session/update notification. */
@@ -296,6 +299,15 @@ export class AcpSession implements AgentSession {
     }
     const hooks = this.turnHooks;
     if (!hooks) return; // replay during session/load, or stray updates
+    // Only root assistant message IDs are native fork points; nested-agent and stream-event IDs
+    // cannot stop a copy of this session. Keep prompt and background ownership separate.
+    if (['agent_message_chunk', 'agent_thought_chunk'].includes(value?.sessionUpdate)
+      && value._meta?.claudeCode?.parentToolUseId == null) {
+      const ref = typeof value.messageId === 'string' && value.messageId.trim() ? value.messageId : undefined;
+      // Missing metadata on a later root answer invalidates an earlier thought's boundary.
+      if (this.hooks) this.promptForkRef = ref;
+      else if (this.background) this.background.forkRef = ref;
+    }
     const costed = value?.sessionUpdate === 'usage_update' && typeof value.cost?.amount === 'number' && Number.isFinite(value.cost.amount) && value.cost.amount >= 0;
     if (costed) {
       this.costReported = true;
@@ -449,6 +461,7 @@ export class AcpSession implements AgentSession {
     // The hub holds prompts until the agent's own work ends; if one gets through, it owns what follows.
     this.finishBackground('end_turn');
     this.hooks = hooks;
+    this.promptForkRef = undefined;
     this.costBefore = this.costReading;
     this.costReported = false;
     try {
@@ -466,7 +479,9 @@ export class AcpSession implements AgentSession {
         ? { amount: this.costReading.amount - this.costBefore.amount, currency: this.costReading.currency, estimated: true } : undefined;
       samples = acpUsage(res, `prompt-${++this.usageId}`, cost);
       const stop = String(res?.stopReason ?? 'end_turn');
-      return { stopReason: stop === 'cancelled' ? 'cancelled' : 'end_turn' };
+      return { stopReason: stop === 'cancelled' ? 'cancelled' : 'end_turn',
+        ...(stop !== 'cancelled' && this.promptForkRef ? { forkRef: this.promptForkRef } : {}),
+      };
     } catch (err) {
       return { stopReason: 'error', error: err instanceof Error ? err.message : String(err) };
     } finally {
@@ -477,6 +492,7 @@ export class AcpSession implements AgentSession {
         if (remainder) emit(timedUsage(remainder, start));
       }
       this.hooks = null;
+      this.promptForkRef = undefined;
     }
   }
 

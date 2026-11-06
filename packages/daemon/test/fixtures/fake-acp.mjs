@@ -11,7 +11,7 @@ if (process.argv.includes('--version')) { process.stdout.write('fixture 1.2.3\n'
 import { claudeUsage } from './live-usage.mjs';
 import { personalFixture } from './personal.mjs';
 import { coordinationFixture } from './coordination.mjs';
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 import { recordSession } from './fake-session-store.mjs';
@@ -141,7 +141,27 @@ const sessionInfo = () => ({
 });
 const awaitingPermission = new Map(); // request id -> prompt id
 
-const update = (u) => out({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: u } });
+// Opt-in native transcripts let separate fork processes validate and copy the actual prefix.
+let activeSessionId = sessionId;
+const forkDir = process.env.FAKE_ACP_FORK_DIR;
+const nativePath = id => join(forkDir, `${id}.jsonl`);
+const nativeRecords = id => forkDir && existsSync(nativePath(id))
+  ? readFileSync(nativePath(id), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
+function recordNative(uuid, type, message) {
+  const records = nativeRecords(activeSessionId);
+  const existing = records.findLast(record => record.uuid === uuid);
+  appendFileSync(nativePath(activeSessionId), JSON.stringify({ uuid,
+    parentUuid: existing ? existing.parentUuid : records.at(-1)?.uuid ?? null,
+    type, message, timestamp: new Date().toISOString(),
+  }) + '\n');
+}
+const update = (u) => {
+  if (forkDir && u.messageId && ['agent_message_chunk', 'agent_thought_chunk'].includes(u.sessionUpdate)
+    && u._meta?.claudeCode?.parentToolUseId == null) {
+    recordNative(u.messageId, 'assistant', { id: u.messageId, content: [u.content] });
+  }
+  out({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: activeSessionId, update: u } });
+};
 
 rl.on('line', (line) => {
   const msg = JSON.parse(line);
@@ -218,20 +238,32 @@ rl.on('line', (line) => {
       {
         // The real agent reads where to stop from this extension field: the id of the last message to keep.
         const at = msg.params._meta?.jetbrains?.air?.fork;
-        if (at && (at.version !== 1 || !HIST_MESSAGE_IDS.includes(at.messageId))) {
+        const records = nativeRecords(msg.params.sessionId);
+        const boundary = records.findLastIndex(record => record.type === 'assistant' && record.message?.id === at?.messageId);
+        if (at && (at.version !== 1 || (forkDir ? boundary < 0 : !HIST_MESSAGE_IDS.includes(at.messageId)))) {
           return out({ jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: `Fork point message ${at.messageId} was not found` } });
         }
         // Asked for from a worktree, the copy is one that runs there; its id says so.
         const cwd = String(msg.params.cwd ?? '');
         const into = basename(dirname(cwd)) === '.worktrees' ? `-in-${basename(cwd)}` : '';
-        return out({ jsonrpc: '2.0', id: msg.id, result: { sessionId: `${msg.params.sessionId}-fork${at ? `-at-${at.messageId}` : ''}${into}` } });
+        const copyId = `${msg.params.sessionId}-fork${at ? `-at-${at.messageId}` : ''}${into}`;
+        if (forkDir) writeFileSync(nativePath(copyId), (at ? records.slice(0, boundary + 1) : records).map(record => JSON.stringify(record)).join('\n') + '\n');
+        return out({ jsonrpc: '2.0', id: msg.id, result: { sessionId: copyId } });
       }
     case 'session/load': {
       if (dsh) return out({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'not found' } });
       // Tests read this file to see which account resumed which session.
       if (process.env.FAKE_ACP_LOAD_LOG) appendFileSync(process.env.FAKE_ACP_LOAD_LOG, `${process.env.CLAUDE_CONFIG_DIR ?? ''}\t${msg.params.sessionId}\n`);
       const replay = (u) => out({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: msg.params.sessionId, update: u } });
-      if (String(msg.params.sessionId).startsWith('hist-')) {
+      activeSessionId = msg.params.sessionId;
+      if (forkDir) {
+        for (const record of nativeRecords(activeSessionId)) {
+          replay({ sessionUpdate: record.type === 'user' ? 'user_message_chunk' : 'agent_message_chunk',
+            messageId: record.message.id ?? record.uuid,
+            content: typeof record.message.content === 'string' ? { type: 'text', text: record.message.content } : record.message.content[0],
+          });
+        }
+      } else if (String(msg.params.sessionId).startsWith('hist-')) {
         // A two-turn conversation, replayed the way the real agent does: all of it before the response.
         replay({ sessionUpdate: 'user_message_chunk', messageId: 'u1', content: { type: 'text', text: 'first ' } });
         replay({ sessionUpdate: 'user_message_chunk', messageId: 'u1', content: { type: 'text', text: 'question' } });
@@ -303,9 +335,13 @@ rl.on('line', (line) => {
       out({ jsonrpc: '2.0', id: msg.id, result: {} }); return;
     }
     case 'session/prompt': {
-      recordSession(dsh ? 'dsh' : traex ? 'traex' : 'claude', msg.params.sessionId);
+      activeSessionId = msg.params.sessionId;
+      if (!forkDir) recordSession(dsh ? 'dsh' : traex ? 'traex' : 'claude', msg.params.sessionId);
       const blocks = msg.params.prompt;
       const text = blocks.filter((p) => p.type === 'text').map((p) => p.text).join('');
+      const ordinal = nativeRecords(activeSessionId).filter(record => record.type === 'user').length + 1;
+      const ids = (forkDir || text.includes('fork ids')) && !text.includes('no fork id');
+      if (forkDir) recordNative(`live-${ordinal}-user`, 'user', { content: text });
       // A naming request from 自动取名: a title wrapped the way real agents sometimes answer, with an
       // emoji only when the rules ask for one. `slow name` keeps it waiting until cancelled;
       // `later name` answers after a moment, so a test can act while the naming agent thinks.
@@ -328,7 +364,8 @@ rl.on('line', (line) => {
           if (text.includes('hold')) return;
           backgroundWork = setTimeout(() => {
             update({ sessionUpdate: 'tool_call_update', toolCallId: 'bg1', status: 'completed', rawOutput: 'done' });
-            update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'background done' } });
+            update({ sessionUpdate: 'agent_message_chunk', ...(ids ? { messageId: `live-${ordinal}-background` } : {}), content: { type: 'text', text: 'background done' } });
+            if (ids) update({ sessionUpdate: 'agent_message_chunk', messageId: 'nested-answer', _meta: { claudeCode: { parentToolUseId: 'child-tool' } }, content: { type: 'text', text: 'child done' } });
             update({ sessionUpdate: 'usage_update', used: 1000, size: 200000, cost: { amount: 0.01, currency: 'USD' } });
           }, 150);
         }, 100);
@@ -461,10 +498,11 @@ rl.on('line', (line) => {
         // dsh reports context pressure only; the costed usage report is Claude's own shape.
         update({ sessionUpdate: 'usage_update', used: 52000, size: 200000, ...(!dsh ? { cost: { amount: 0.42, currency: 'USD' } } : {}) });
       }
-      update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } });
+      update({ sessionUpdate: 'agent_thought_chunk', ...(ids ? { messageId: `live-${ordinal}-thought` } : {}), content: { type: 'text', text: 'thinking' } });
       update({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Run ls', kind: 'execute', status: 'pending', rawInput: { command: 'ls' } });
       update({ sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed', rawOutput: 'a.txt' });
-      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `echo:${text}` } });
+      update({ sessionUpdate: 'agent_message_chunk', ...(ids && !text.includes('missing final') ? { messageId: `live-${ordinal}-answer` } : {}), content: { type: 'text', text: `echo:${text}` } });
+      if (text.includes('nested fork ids')) update({ sessionUpdate: 'agent_message_chunk', messageId: 'nested-answer', _meta: { claudeCode: { parentToolUseId: 'child-tool' } }, content: { type: 'text', text: 'child done' } });
       if (text.includes('model?')) {
         update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `model:${currentModel};mode:${currentMode};effort:${currentEffort}` } });
         return out({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });

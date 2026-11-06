@@ -1,3 +1,4 @@
+import { DatabaseSync } from 'node:sqlite';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -1175,12 +1176,20 @@ test('fork: the copy has the same history and pictures, its own agent session, a
   await api(`/api/sections/${section.id}`, { method: 'DELETE' });
 });
 
-test('fork: refused while a turn is running, and a failure on the agent side leaves no thread behind', async () => {
+// Menu forks of a running thread stop at its latest completed answer and leave the writer running.
+test('fork: a running thread copies its completed boundary, and agent failure leaves no thread behind', async () => {
   const busy = await newThread({ agent: 'claude' });
-  await api(`/api/threads/${busy.id}/turns`, { method: 'POST', body: JSON.stringify({ text: 'hi' }) });
+  await api(`/api/threads/${busy.id}/turns`, { method: 'POST', body: JSON.stringify({ text: 'first question' }) });
   await finishedEvents(busy.id);
+  // This fixture's canned native history knows the completed question and its message ID.
+  store.updateThread(busy.id, { agentSessionId: 'hist-menu-fork' });
   await api(`/api/threads/${busy.id}/turns`, { method: 'POST', body: JSON.stringify({ text: 'slow' }) });
-  assert.equal((await api(`/api/threads/${busy.id}/fork`, { method: 'POST' })).status, 409);
+  const snapshot = await api(`/api/threads/${busy.id}/fork`, { method: 'POST' });
+  assert.equal(snapshot.status, 201, await snapshot.clone().text());
+  const copy = await snapshot.json() as { id: string; agentSessionId: string };
+  assert.match(copy.agentSessionId, /-fork-at-m1b$/);
+  assert.deepEqual((await events(copy.id)).filter(event => event.type === 'turn.started').map(event => event.data.text), ['first question']);
+  assert.equal((await api(`/api/threads/${busy.id}`).then(response => response.json()) as { status: string }).status, 'running');
   await api(`/api/threads/${busy.id}/cancel`, { method: 'POST' });
   await waitFor(async () => {
     const t = (await (await api(`/api/threads/${busy.id}`)).json()) as { status: string };
@@ -1196,6 +1205,65 @@ test('fork: refused while a turn is running, and a failure on the agent side lea
   assert.equal(((await (await api('/api/threads')).json()) as unknown[]).length, before + 1, 'only the thread made for this test was added');
 
   assert.equal((await api('/api/threads/no-such-thread/fork', { method: 'POST' })).status, 404);
+});
+
+// No safe snapshot exists until at least one turn has completed; the running source is untouched.
+test('fork: a first turn still running has no completed menu boundary', async () => {
+  const source = await newThread({ agent: 'claude' });
+  const turn = await api(`/api/threads/${source.id}/turns`, { method: 'POST', body: JSON.stringify({ text: 'slow' }) });
+  assert.equal(turn.status, 202);
+  await waitFor(async () => (await (await api(`/api/threads/${source.id}`)).json()).agentSessionId || null);
+  const response = await api(`/api/threads/${source.id}/fork`, { method: 'POST' });
+  assert.equal(response.status, 409);
+  assert.match(await response.text(), /no completed turn/);
+  assert.equal((await (await api(`/api/threads/${source.id}`)).json()).status, 'running');
+  await api(`/api/threads/${source.id}/cancel`, { method: 'POST' });
+});
+
+// Separate native fork processes keep completed background output, not a later turn's live tip.
+test('fork: completed Claude background replies work while a later prompt runs, including legacy hub records', async (t) => {
+  const configDir = join(dataDir, 'fork-native');
+  const nativeDir = join(configDir, 'projects', 'fixture-project');
+  mkdirSync(nativeDir, { recursive: true });
+  const adapters = (manager as unknown as { adapters: Map<string, AgentAdapter> }).adapters;
+  const original = adapters.get('claude')!;
+  adapters.set('claude', new ClaudeAcpAdapter([process.execPath, join(here, 'fixtures', 'fake-acp.mjs')], {
+    CLAUDE_CONFIG_DIR: configDir, FAKE_ACP_FORK_DIR: nativeDir, FAKE_ACP_SESSION: 'live-fork-source',
+  }));
+  t.after(() => { adapters.set('claude', original); });
+  const source = await newThread({ agent: 'claude' });
+  t.after(async () => { await api(`/api/threads/${source.id}/cancel`, { method: 'POST' }); });
+  await api(`/api/threads/${source.id}/turns`, { method: 'POST', body: JSON.stringify({ text: 'background later' }) });
+  const background = await waitFor(async () => {
+    const starts = store.listEventsOfType(source.id, 'turn.started');
+    const start = starts.find(event => event.data.source === 'background');
+    return start && store.listEventsOfType(source.id, 'turn.done').some(event => event.turnId === start.turnId) ? start : null;
+  });
+  assert.equal(store.listEventsOfType(source.id, 'turn.done').find(event => event.turnId === background.turnId)?.data.forkRef, 'live-1-background');
+  await api(`/api/threads/${source.id}/turns`, { method: 'POST', body: JSON.stringify({ text: 'slow later prompt' }) });
+  await waitFor(async () => (await events(source.id)).find(event => event.type === 'message.delta' && String(event.data.text).includes('slow later prompt')));
+  for (const body of [{ turnId: background.turnId }, {}]) {
+    const response = await api(`/api/threads/${source.id}/fork`, { method: 'POST', body: JSON.stringify(body) });
+    assert.equal(response.status, 201, await response.clone().text());
+    const copy = await response.json() as { id: string; agentSessionId: string };
+    assert.match(copy.agentSessionId, /-fork-at-live-1-background$/);
+    const copied = await events(copy.id);
+    assert.equal(copied.filter(event => event.type === 'turn.started').length, 2);
+    assert.ok(copied.some(event => event.type === 'message.delta' && event.data.text === 'background done'));
+    assert.equal(copied.some(event => String(event.data.text).includes('slow later prompt')), false);
+    const native = readFileSync(join(nativeDir, `${copy.agentSessionId}.jsonl`), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(native.at(-1).message.id, 'live-1-background');
+    assert.equal(native.some(record => record.type === 'user' && record.message.content.includes('slow later prompt')), false);
+  }
+  // Simulate a hub written before completion IDs were captured. Its native transcript stays untouched.
+  const db = new DatabaseSync(join(dataDir, 'hub.db'));
+  try {
+    db.prepare("UPDATE events SET data = json_remove(data, '$.forkRef') WHERE thread_id = ? AND type = 'turn.done'").run(source.id);
+  } finally { db.close(); }
+  const legacy = await api(`/api/threads/${source.id}/fork`, { method: 'POST', body: JSON.stringify({ turnId: background.turnId }) });
+  assert.equal(legacy.status, 201, await legacy.clone().text());
+  assert.match((await legacy.json()).agentSessionId, /-fork-at-live-1-background$/);
+  assert.equal((await (await api(`/api/threads/${source.id}`)).json()).status, 'running');
 });
 
 test('fork works for pi too, and agents say whether they can import and fork', async () => {
@@ -1372,6 +1440,58 @@ test('new thread in a worktree: offered for a git directory, made under .worktre
   assert.equal((await api(`/api/threads/${thread.id}?worktree=1`, { method: 'DELETE' })).status, 409);
   assert.equal((await api(`/api/threads/${thread.id}?worktree=1&force=1`, { method: 'DELETE' })).status, 204);
   assert.equal(existsSync(root), false);
+});
+
+test('fork: Claude keeps old boundaries after compaction and distinguishes prompts with the same prefix', async () => {
+  const configDir = mkdtempSync(join(tmpdir(), 'calli-test-claude-history-'));
+  const project = join(configDir, 'projects', 'fixture-project');
+  mkdirSync(project, { recursive: true });
+  const prefix = '[Calli interrupted-turn context]\n' + 'shared context '.repeat(20);
+  const prompts = [prefix + 'first follow-up', prefix + 'second follow-up', 'last question'];
+  const transcript = [
+    { uuid: 'u1', parentUuid: null, type: 'user', message: { content: prompts[0] } },
+    { uuid: 'a1', parentUuid: 'u1', type: 'assistant', message: { id: 'm1b', content: [{ type: 'text', text: 'first answer' }] } },
+    { uuid: 'u2', parentUuid: 'a1', type: 'user', message: { content: prompts[1] } },
+    { uuid: 'a2', parentUuid: 'u2', type: 'assistant', message: { id: 'm1a', content: [{ type: 'text', text: 'second answer' }] } },
+    { uuid: 'compact', parentUuid: null, logicalParentUuid: 'a2', type: 'system', subtype: 'compact_boundary' },
+    { uuid: 'summary', parentUuid: 'compact', type: 'user', isCompactSummary: true, message: { content: 'This session is being continued from a previous conversation that ran out of context.' } },
+    { uuid: 'u3', parentUuid: 'summary', type: 'user', message: { content: prompts[2] } },
+    { uuid: 'a3', parentUuid: 'u3', type: 'assistant', message: { id: 'm2', content: [{ type: 'text', text: 'last answer' }] } },
+  ];
+  writeFileSync(join(project, 'hist-compacted.jsonl'), transcript.map(record => JSON.stringify(record)).join('\n') + '\n');
+  const adapters = (manager as unknown as { adapters: Map<string, AgentAdapter> }).adapters;
+  const original = adapters.get('claude')!;
+  adapters.set('claude', new ClaudeAcpAdapter([process.execPath, join(here, 'fixtures', 'fake-acp.mjs')], { CLAUDE_CONFIG_DIR: configDir, FAKE_ACP_SESSION: 'hist-compacted' }));
+  try {
+    const thread = await newThread({ agent: 'claude' });
+    for (const text of prompts) {
+      const response = await api(`/api/threads/${thread.id}/turns`, { method: 'POST', body: JSON.stringify({ text }) });
+      assert.equal(response.status, 202, await response.clone().text());
+      await waitFor(async () => ((await (await api(`/api/threads/${thread.id}`)).json()) as { status: string }).status === 'idle' ? true : null);
+    }
+    store.updateThread(thread.id, { agentSessionId: 'hist-compacted' });
+    const starts = (await events(thread.id)).filter(event => event.type === 'turn.started');
+    assert.equal(starts.length, 3);
+    for (const [index, ref] of [[0, 'm1b'], [1, 'm1a']] as const) {
+      const response = await api(`/api/threads/${thread.id}/fork`, { method: 'POST', body: JSON.stringify({ turnId: starts[index].turnId }) });
+      assert.equal(response.status, 201, await response.clone().text());
+      const copy = await response.json() as { id: string; agentSessionId: string };
+      assert.equal(copy.agentSessionId, `hist-compacted-fork-at-${ref}`);
+      assert.deepEqual((await events(copy.id)).filter(event => event.type === 'turn.started').map(event => event.data.text), prompts.slice(0, index + 1));
+    }
+    // A prompt never kept by the agent must not borrow the next prompt's identical context prefix.
+    const missingFirst = [{ ...transcript[2], parentUuid: null }, ...transcript.slice(3)];
+    writeFileSync(join(project, 'hist-compacted.jsonl'), missingFirst.map(record => JSON.stringify(record)).join('\n') + '\n');
+    const missing = await api(`/api/threads/${thread.id}/fork`, { method: 'POST', body: JSON.stringify({ turnId: starts[0].turnId }) });
+    assert.equal(missing.status, 409);
+    assert.match((await missing.json() as { error: string }).error, /own history/);
+    const second = await api(`/api/threads/${thread.id}/fork`, { method: 'POST', body: JSON.stringify({ turnId: starts[1].turnId }) });
+    assert.equal(second.status, 201, await second.clone().text());
+    assert.equal((await second.json() as { agentSessionId: string }).agentSessionId, 'hist-compacted-fork-at-m1a');
+  } finally {
+    adapters.set('claude', original);
+    rmSync(configDir, { recursive: true, force: true });
+  }
 });
 
 test('fork into a worktree: a checkout and a branch of its own, the uncommitted work brought along', async () => {

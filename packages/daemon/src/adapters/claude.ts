@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { copyClaudeAccount, startClaudeLogin } from './claude-account.js';
 import { claudeLiveUsage } from './session-usage.js';
+import { readClaudeForkHistory, readClaudeForkRef } from './claude-history.js';
 import { readTraexModelStatus } from './traex.js';
 import { ferryModelKey, readFerryQueueObservations } from './ferry.js';
 import type { UsageSample } from '../telemetry.js';
@@ -246,6 +247,18 @@ export class ClaudeAcpAdapter extends AcpAdapter {
    */
   protected override isAgentNote(text: string): boolean {
     return CLAUDE_INTERRUPT_NOTE.test(text);
+  }
+
+  /** ACP replay exposes the compacted branch; native copy boundaries remain in the full transcript. */
+  async loadForkHistory(agentSessionId: string, cwd: string) {
+    const { sessionPath } = await this.sessionLocation(agentSessionId, cwd);
+    return sessionPath ? readClaudeForkHistory(sessionPath) : this.loadHistory(agentSessionId, cwd);
+  }
+
+  /** Older hub turns did not store ACP message IDs; recover only a proven main-chain boundary. */
+  async resolveForkRef(agentSessionId: string, cwd: string, startedAt: string, finishedAt: string) {
+    const { sessionPath } = await this.sessionLocation(agentSessionId, cwd);
+    return sessionPath ? readClaudeForkRef(sessionPath, startedAt, finishedAt) : undefined;
   }
 
   protected readonly modeIds = CLAUDE_MODE_IDS;

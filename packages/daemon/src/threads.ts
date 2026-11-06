@@ -225,7 +225,8 @@ function shellQuote(value: string): string {
 
 /** A turn's identity for matching hub turns against the agent's history. */
 function turnKey(text: string): string {
-  return text.trim().slice(0, 200);
+  // Interrupted follow-ups can share a long context prefix; only the full prompt identifies a turn.
+  return text.trim();
 }
 
 /**
@@ -553,7 +554,8 @@ export class ThreadManager {
   /**
    * Copies a thread into a new one that can go its own way. The agent copies its side of the
    * conversation; the hub copies the event log and the images. With `turnId` the copy ends where
-   * that turn ended, on both sides; without it, or when that turn is the last, it is the whole thread.
+   * that turn ended, on both sides. An idle thread's last turn copies the whole thread; a running
+   * thread always uses an explicit completed boundary, selecting the latest one for a menu fork.
    */
   async forkThread(id: string, opts: { turnId?: string; worktree?: boolean } = {}): Promise<ThreadView> {
     const thread = this.getThread(id);
@@ -561,22 +563,32 @@ export class ThreadManager {
     if (!adapter?.capabilities.fork || !adapter.forkSession) throw new HttpError(400, `${thread.agent} cannot fork a conversation`);
     if (!thread.agentSessionId) throw new HttpError(400, 'there is nothing to fork yet; send a message first');
     const running = this.running.has(id);
-    if (running && !opts.turnId) throw new HttpError(409, 'wait for the running turn to finish before forking');
+    const starts = this.store.listEventsOfType(id, 'turn.started');
+    let turnId = opts.turnId;
+    if (running && !turnId) {
+      // A live thread's menu copies its latest completed boundary, never an unfinished tool cycle.
+      const completed = new Set(this.store.listEventsOfType(id, 'turn.done')
+        .filter((ev) => ev.data.stopReason !== 'cancelled').map((ev) => ev.turnId));
+      turnId = [...starts].reverse().find((ev) => completed.has(ev.turnId))?.turnId ?? undefined;
+      if (!turnId) throw new HttpError(409, 'there is no completed turn to fork yet');
+    }
 
-    // Where the hub's copy stops, and which of its turns that is. Null: the whole thread.
-    let cut: { upToSeq: number; hubIndex: number; hubKeys: string[] } | null = null;
-    if (opts.turnId) {
-      const starts = this.store.listEventsOfType(id, 'turn.started');
-      const hubIndex = starts.findIndex((ev) => ev.turnId === opts.turnId);
+    // Where the hub's copy stops, and which of its turns that is. Null: the whole idle thread.
+    let cut: { upToSeq: number; start: StoredEvent; end?: StoredEvent; hubKeys: string[] } | null = null;
+    if (turnId) {
+      const hubIndex = starts.findIndex((ev) => ev.turnId === turnId);
       if (hubIndex < 0) throw new HttpError(404, 'no such turn in this thread');
       // A turn the user stopped is not a place to go on from: the agent may not have kept it at all.
-      const end = this.store.listEventsOfType(id, 'turn.done').find((ev) => ev.turnId === opts.turnId);
+      const end = this.store.listEventsOfType(id, 'turn.done').find((ev) => ev.turnId === turnId);
       if (running && !end) throw new HttpError(409, 'wait for this turn to finish before forking from it');
       if (end?.data.stopReason === 'cancelled') throw new HttpError(409, 'this turn was stopped, so a copy cannot end there');
-      if (hubIndex < starts.length - 1) {
-        // Match only through the requested boundary. Later turns may be running or divergent, and
-        // they are not part of the copy being made.
-        cut = { upToSeq: starts[hubIndex + 1].seq - 1, hubIndex, hubKeys: starts.slice(0, hubIndex + 1).map((ev) => turnKey(String(ev.data.text ?? ''))) };
+      if (running || hubIndex < starts.length - 1) {
+        // Capture the boundary before awaiting native history; the writer can keep producing events.
+        const next = starts[hubIndex + 1];
+        cut = { upToSeq: next ? next.seq - 1 : end!.seq, start: starts[hubIndex], end,
+          // Background replies belong to a native prompt, not to synthetic empty user prompts.
+          hubKeys: starts.slice(0, hubIndex + 1).filter(ev => ev.data.source !== 'background').map(ev => turnKey(String(ev.data.text ?? ''))),
+        };
       }
     }
 
@@ -591,7 +603,7 @@ export class ThreadManager {
 
     let forkedSessionId: string;
     try {
-      const forkRef = cut ? await this.agentForkRef(thread, adapter, cut.hubIndex, cut.hubKeys) : undefined;
+      const forkRef = cut ? await this.agentForkRef(thread, adapter, cut.start, cut.end, cut.hubKeys, running) : undefined;
       if (opts.worktree) {
         const plan = await this.worktreePlan(thread);
         if (!plan.checkout) throw new HttpError(400, WORKTREE_REFUSALS[plan.reason]);
@@ -670,32 +682,36 @@ export class ThreadManager {
     return { checkout };
   }
 
-  /**
-   * What the agent needs to stop its copy where one of the hub's turns ended. The agent numbers
-   * and names its turns its own way, so its history is read and lined up with the hub's by what
-   * was asked in each turn. Undefined when the agent has nothing after that turn: then its whole
-   * conversation is the copy.
-   */
-  private async agentForkRef(thread: ThreadRecord, adapter: AgentAdapter, hubIndex: number, hubKeys: string[]): Promise<string | undefined> {
-    if (!adapter.capabilities.forkAt || !adapter.loadHistory || !thread.agentSessionId) {
+  /** Prefer saved native completion IDs; older turns use read-only recovery and prompt alignment. */
+  private async agentForkRef(thread: ThreadRecord, adapter: AgentAdapter, start: StoredEvent, end: StoredEvent | undefined, hubKeys: string[], active: boolean): Promise<string | undefined> {
+    if (!adapter.capabilities.forkAt || !thread.agentSessionId) {
       throw new HttpError(400, `${thread.agent} can only fork a whole conversation`);
     }
-    const active = this.running.has(thread.id);
+    if (typeof end?.data.forkRef === 'string' && end.data.forkRef) return end.data.forkRef;
     const retryDelays = active ? [0, 50, 150] : [0];
     for (const delayMs of retryDelays) {
       // A second app-server can briefly see the active writer's history one turn behind. Only
       // retry that prefix case; a real text disagreement still fails immediately.
       if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
-      const agentTurns = await adapter.loadHistory(thread.agentSessionId, thread.cwd);
+      if (end && adapter.resolveForkRef) {
+        const ref = await adapter.resolveForkRef(thread.agentSessionId, thread.cwd, start.ts, end.ts);
+        if (ref) return ref;
+      }
+      // A legacy background turn has no user prompt to align. Never substitute the native tip.
+      if (start.data.source === 'background') continue;
+      if (!adapter.loadForkHistory && !adapter.loadHistory) break;
+      const agentTurns = await (adapter.loadForkHistory
+        ? adapter.loadForkHistory(thread.agentSessionId, thread.cwd)
+        : adapter.loadHistory!(thread.agentSessionId, thread.cwd));
       const matched = matchTurns(agentTurns.map((t) => turnKey(t.text)), hubKeys, ThreadManager.SYNC_SKIP_TOLERANCE);
-      const agentIndex = matched?.hubToAgent[hubIndex] ?? -1;
+      const agentIndex = matched?.hubToAgent[hubKeys.length - 1] ?? -1;
       if (agentIndex < 0) {
         if (matched && delayMs !== retryDelays.at(-1)) continue;
         break;
       }
-      // During a live turn the read snapshot may end at this older boundary even though the writer
-      // has already started another turn. Pass the explicit ref instead of cloning its moving tip.
-      if (!active && agentIndex === agentTurns.length - 1) return undefined;
+      // A source that was running at snapshot time always needs a ref, even if it finishes while
+      // we read it. Idle native tips (e.g. pi has no next-user boundary) retain whole-copy support.
+      if (!active && !this.running.has(thread.id) && agentIndex === agentTurns.length - 1) return undefined;
       const ref = agentTurns[agentIndex].forkRef;
       if (!ref) throw new HttpError(409, `${thread.agent} cannot stop a copy at this turn`);
       return ref;
@@ -2708,7 +2724,10 @@ export class ThreadManager {
           ...(code ? { code, ...(code === 'permission_refused' ? { refused: result.refused ?? [] } : {}) } : {}),
         });
       } else {
-        this.emitThreadEvent(thread.id, turnId, 'turn.done', { stopReason: result.stopReason });
+        // Native completion IDs also cover background replies that have no human prompt to match.
+        this.emitThreadEvent(thread.id, turnId, 'turn.done', { stopReason: result.stopReason,
+          ...(result.stopReason !== 'cancelled' && result.forkRef ? { forkRef: result.forkRef } : {}),
+        });
         if (result.stopReason !== 'cancelled' && this.reportTurns.has(turnId)) this.recordProgress(thread.id, turnId);
       }
     } catch (err) {
@@ -3017,7 +3036,9 @@ export class ThreadManager {
         }
         if (!this.store.getThread(thread.id)) return;
         this.emitThreadEvent(thread.id, turnId, result.stopReason === 'error' ? 'turn.error' : 'turn.done',
-          result.stopReason === 'error' ? { message: result.error ?? 'agent error' } : { stopReason: result.stopReason });
+          result.stopReason === 'error' ? { message: result.error ?? 'agent error' } : { stopReason: result.stopReason,
+            ...(result.stopReason !== 'cancelled' && result.forkRef ? { forkRef: result.forkRef } : {}),
+          });
         if (this.running.get(thread.id)?.turnId === turnId) {
           this.running.delete(thread.id);
           this.clearModelQueue(thread.id, turnId);

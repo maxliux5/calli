@@ -1724,7 +1724,9 @@ export const en: Messages = {
 
   // Thread actions
   'actions.forkEmpty': 'Nothing to fork yet; send a message first',
-  'actions.forkRunning': 'Wait for this turn to end before forking',
+  'actions.forkRunning': 'This reply is not finished; fork from an earlier completed reply',
+  'actions.forkNoCompleted': 'No completed reply to fork yet; the original thread keeps running',
+  'actions.forkingSnapshot': 'Forking from the latest completed reply; the original keeps running…',
   'actions.forkingWorktree': 'Creating a worktree and forking…',
   'actions.forking': 'Forking…',
   'actions.forkedWorktree': (branch: string) => `Forked into a new worktree, branch ${branch}`,

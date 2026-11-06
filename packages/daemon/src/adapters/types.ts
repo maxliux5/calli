@@ -58,7 +58,7 @@ export interface SessionHooks {
    */
   turnStarted(nativeTurnId: string, opts?: { background?: boolean }): TurnHooks;
   /** That turn ended, in the adapter's own stop-reason vocabulary. */
-  turnFinished(nativeTurnId: string, result: { stopReason: string; error?: string }): void;
+  turnFinished(nativeTurnId: string, result: TurnResult): void;
 }
 
 /** Callbacks an adapter uses while a turn is running. */
@@ -72,6 +72,8 @@ export interface TurnHooks {
 export interface TurnResult {
   stopReason: 'end_turn' | 'cancelled' | 'error' | string;
   error?: string;
+  /** Native boundary of a completed turn, including work the agent started between prompts. */
+  forkRef?: string;
   /**
    * Set for errors the UI can explain better than a raw message.
    * `permission_refused`: the agent could not ask for approval, so it refused `refused` and stopped.
@@ -251,6 +253,9 @@ export interface HistoryTurn {
   forkBeforeRef?: string;
 }
 
+/** Prompt and native copy boundaries, without replaying answer or tool payloads. */
+export type HistoryBoundary = Pick<HistoryTurn, 'text' | 'forkRef' | 'forkBeforeRef'>;
+
 /** An account of an adapter that is already signed in on this host, ready to become an instance. */
 export interface DiscoveredAccount {
   /** The account's login, as the agent itself reports it, to tell accounts apart. */
@@ -421,6 +426,13 @@ export interface AgentAdapter {
   getSession?(agentSessionId: string): Promise<AgentSessionSummary | null>;
   /** The past turns of a conversation. Reading must not change the conversation. With capabilities.history. */
   loadHistory?(agentSessionId: string, cwd: string): Promise<HistoryTurn[]>;
+  /**
+   * Read copy boundaries that may have been compacted out of normal history replay. Used only
+   * when forking or editing a message; other adapters use loadHistory for the same information.
+   */
+  loadForkHistory?(agentSessionId: string, cwd: string): Promise<HistoryBoundary[]>;
+  /** Recover an older completed turn's native boundary from its recorded interval, read-only. */
+  resolveForkRef?(agentSessionId: string, cwd: string, startedAt: string, finishedAt: string): Promise<string | undefined>;
   /**
    * Folders outside the thread's directory where the agent keeps files it made for this session.
    * Images in them may be shown in the thread, like images in the thread's own directory.

@@ -1,6 +1,6 @@
 import { mergeHistory, watchHistory } from '../history';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Api, type AgentMention, type Thread } from '../api';
+import { Api, ApiError, type AgentMention, type Thread } from '../api';
 import type { PreparedImage } from '../images';
 import { restoreVideos, type PreparedVideo } from '../videos';
 import { folderName } from '../paths';
@@ -26,8 +26,8 @@ interface Props {
   /**
    * Set while that thread can be forked: the side chat is then an ephemeral fork of it, the way
    * Codex's side conversation works — the questions land with the whole conversation as context,
-   * while the panel itself starts empty. Null (agent cannot fork, no session yet, or a turn is
-   * running) falls back to a fresh thread carrying the quoted passage alone.
+   * while the panel itself starts empty. A running source copies its latest completed boundary;
+   * no session, unsupported forking or no completed boundary falls back to the quote alone.
    */
   forkSourceId: string | null;
   /** Why pictures cannot be attached, or null when they can. */
@@ -124,13 +124,17 @@ export function SideChat({
     const title = t('sideChat.threadTitle', quoteText.replace(/\s+/g, ' ').slice(0, 24));
     let created: Thread;
     let firstText = text;
-    if (forkSourceId) {
+    const forked = forkSourceId ? await api.forkThread(forkSourceId).catch(error => {
+      // A first live turn has no snapshot yet; retain the fresh-thread fallback, not a broken fork.
+      if (error instanceof ApiError && error.status === 409 && /no completed turn/.test(error.message)) return null;
+      throw error;
+    }) : null;
+    if (forked) {
       // The fork carries the conversation the passage was selected from, so the first question
       // already lands with all its context. The message itself stays just the quote and the
       // question: the history around it is the attribution. The boundary between inherited
       // history and this panel's turns is read before the question is sent, or the question
       // could be counted as inherited.
-      const forked = await api.forkThread(forkSourceId);
       created = await api.updateThread(forked.id, { title });
       baseSeq.current = (await api.historyPosition(created.id)).snapshotSeq;
     } else {
