@@ -79,7 +79,7 @@ async function gatewayModels(url: string, headers: Record<string, string>, env: 
       const effort = model.capabilities?.effort;
       const image = model.capabilities?.image_input?.supported;
       models.push({
-        id: model.id, label: model.display_name || model.id,
+        id: model.id, label: model.id,
         ...(model.id === defaultModel ? { isDefault: true } : {}),
         ...(effort ? { efforts: CLAUDE_EFFORTS.filter(level => typeof effort[level] === 'object' && effort[level].supported === true) } : {}),
         ...(typeof image === 'boolean' ? { images: image } : {}),

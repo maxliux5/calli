@@ -1839,29 +1839,29 @@ export class Api {
 
   /** Calli extensions this daemon ships, and which are installed on its machine. */
   autotitleSettings(): Promise<{ settings: import('@calli/extension-api/web').AutoTitleSettings; status: import('@calli/extension-api/web').AutoTitleStatus; pass: import('@calli/extension-api/web').AutoTitlePass | null; defaultRules: string }> {
-    return this.send('GET', '/api/extensions/autotitle/settings');
+    return this.request('GET', '/api/extensions/autotitle/settings');
   }
   saveAutotitleSettings(patch: Partial<import('@calli/extension-api/web').AutoTitleSettings>): Promise<import('@calli/extension-api/web').AutoTitleSettings> {
-    return this.send('PUT', '/api/extensions/autotitle/settings', patch);
+    return this.request('PUT', '/api/extensions/autotitle/settings', patch);
   }
   previewAutotitle(threadId: string): Promise<{ title: string }> {
-    return this.send('POST', '/api/extensions/autotitle/preview', { threadId });
+    return this.request('POST', '/api/extensions/autotitle/preview', { threadId });
   }
   organizeAutotitle(): Promise<{ queued: number }> {
-    return this.send('POST', '/api/extensions/autotitle/organize');
+    return this.request('POST', '/api/extensions/autotitle/organize');
   }
   /** The person's "name it again": the auto-titles extension names the thread now. */
   autotitle(threadId: string): Promise<{ title: string }> {
-    return this.send('POST', `/api/threads/${encodeURIComponent(threadId)}/autotitle`);
+    return this.request('POST', `/api/threads/${encodeURIComponent(threadId)}/autotitle`);
   }
   memorySources(extensionId: string): Promise<import('@calli/extension-api').MemorySource[]> {
-    return this.send('GET', `/api/extensions/${encodeURIComponent(extensionId)}/memory/sources`);
+    return this.request('GET', `/api/extensions/${encodeURIComponent(extensionId)}/memory/sources`);
   }
   memoryList(extensionId: string, sourceId: string): Promise<import('@calli/extension-api').MemoryIndex> {
-    return this.send('GET', `/api/extensions/${encodeURIComponent(extensionId)}/memory/${encodeURIComponent(sourceId)}/files`);
+    return this.request('GET', `/api/extensions/${encodeURIComponent(extensionId)}/memory/${encodeURIComponent(sourceId)}/files`);
   }
   memoryRead(extensionId: string, sourceId: string, fileId: string): Promise<import('@calli/extension-api').MemoryDocument> {
-    return this.send('GET', `/api/extensions/${encodeURIComponent(extensionId)}/memory/${encodeURIComponent(sourceId)}/document?id=${encodeURIComponent(fileId)}`);
+    return this.request('GET', `/api/extensions/${encodeURIComponent(extensionId)}/memory/${encodeURIComponent(sourceId)}/document?id=${encodeURIComponent(fileId)}`);
   }
 
   extensions(): Promise<ExtensionState[]> {

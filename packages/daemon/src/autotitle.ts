@@ -251,7 +251,7 @@ export class AutoTitle implements DaemonExtension {
     const firstAnswer = answer ? turnAnswer(this.store.listEvents(threadId, 0, -1), first.turnId).trim() || null : null;
     try {
       const reply = await this.manager.askOnce(settings.agent!, namingPrompt(settings.rules, first.text, firstAnswer), {
-        model: settings.model, title: `${this.manifest.name.zh} · ${threadId.slice(0, 8)}`, timeoutMs: 60_000,
+        model: settings.model, title: `${this.manifest.name.zh} · ${threadId.slice(0, 8)}`, timeoutMs: 120_000,
       });
       const title = cleanTitle(reply);
       if (!title) throw new HttpError(502, '取名的 agent 没有给出标题');
