@@ -1981,12 +1981,19 @@ html.list-open body {
   color: var(--muted);
 }
 
-/* The thought in progress: a glimpse of its latest lines, never the whole stream. */
+/* The thought in progress reads in a window of fixed height — three lines of it, followed inside
+   the window as it is written, so the page around the block never moves while the stream writes.
+   Where the window cuts into what has scrolled by, the top fades, like the streaming plan. */
 .thinking-live {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  height: calc(13px * 1.55 * 3 + 3px * 2);
   overflow: hidden;
+}
+
+.thinking-live.overflow {
+  mask-image: linear-gradient(transparent 0, #000 26px);
 }
 
 .thinking-para {

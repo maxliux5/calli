@@ -374,6 +374,38 @@ rl.on('line', (line) => {
         }, 2900);
         return;
       }
+      // "longthink" streams one long thought a sentence at a time, so a UI test can watch the live
+      // thinking window follow it. The stream runs well past the window's three lines, and each
+      // sentence starts short: exactly the writing that used to bounce the page up and down.
+      if (cmd.message.includes('longthink')) {
+        const sentences = [
+          '先把请求里提到的文件找出来，确认它们各自管什么。',
+          '路由注册在一个地方，但每个页面的数据是在组件里单独取的。',
+          '这样改的话，列表页要跟着动，先把列表页读完再决定。',
+          '列表页把筛选条件直接写进了 useState，刷新以后就丢了。',
+          '筛选条件得搬到 URL 的查询参数里，刷新和分享才都能保住。',
+          '类目是从接口拉的，价格是本地输入，两种参数的编码方式不一样。',
+          '中文类目名要 encodeURIComponent，不然分享出去的链接会坏。',
+          '价格区间用 min 和 max 两个参数，空的那边不传。',
+          '再把默认排序也带上，不传就按后端默认的来。',
+          '组件这边，把读参数和写参数封成一个 hook，页面里就干净了。',
+          'hook 里用 useSearchParams，配合 Suspense 边界，不然整个页面的渲染都要降级。',
+          '改动范围差不多定了：hook 一个文件，列表页一个文件。',
+          '最后过一遍现有的测试，看有没有直接断言旧 URL 结构的。',
+          '有两处，改完一起更新掉，再补一条带中文类目的用例。',
+        ];
+        sentences.forEach((s, i) => setTimeout(() => {
+          out({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: s + ' ' } });
+          if (i === sentences.length - 1) {
+            setTimeout(() => {
+              out({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '想清楚了：筛选进 URL，封装成 hook，改动两个文件。' } });
+              running = false;
+              out({ type: 'agent_settled', aborted: false });
+            }, 300);
+          }
+        }, 250 + i * 250));
+        return;
+      }
       // "manysteps" is a turn that looks around a lot before it says anything: four calls in a
       // row, a remark, then two more with the last one slow. The view folds each finished run of
       // calls into one line that counts them, and keeps the call in flight on screen.
