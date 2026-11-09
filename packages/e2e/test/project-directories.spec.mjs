@@ -164,6 +164,22 @@ test('older remote daemons keep configured browsing and explain the home upgrade
   } finally { await page.context().close(); }
 });
 
+test('manual add is the picker\'s own sub-dialog: closing it comes back to the picker', async () => {
+  const page = await newPage();
+  try {
+    const dialog = await openPicker(page);
+    await dialog.getByRole('button', { name: '手动添加目录…' }).click();
+    const roots = page.getByRole('dialog', { name: '可用目录', exact: true });
+    await roots.waitFor();
+    await roots.getByRole('button', { name: '关闭', exact: true }).click();
+    await roots.waitFor({ state: 'detached' });
+    // The picker it was opened from is standing there again, not gone; its added locations remain
+    // one step away, the way they were before the detour.
+    await page.getByRole('dialog', { name: '在哪个目录里工作？' }).getByRole('button', { name: '可用目录', exact: true }).click();
+    await page.getByRole('dialog', { name: '在哪个目录里工作？' }).getByText('已添加的项目位置').waitFor();
+  } finally { await page.context().close(); }
+});
+
 test('a failed add keeps the draft unchanged and can be retried; long lists stay inside the dialog', async () => {
   const project = join(remoteHome, '待添加项目');
   mkdirSync(project);

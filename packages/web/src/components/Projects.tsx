@@ -145,7 +145,7 @@ function explain(e: unknown): string {
 }
 
 /** Shared frame for the two dialogs here: the app's own modal, closed with Escape or a click outside. */
-function Frame({ title, onCancel, children }: { title: string; onCancel: () => void; children: ReactNode }) {
+function Frame({ title, machine, onCancel, children }: { title: string; /** Names the machine whose folders these are, when it is not this one. */ machine?: string; onCancel: () => void; children: ReactNode }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onCancel();
@@ -157,7 +157,10 @@ function Frame({ title, onCancel, children }: { title: string; onCancel: () => v
     <div className="dialog-scrim" onClick={onCancel}>
       <div className="dialog project-dialog" role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
         <div className="project-dialog-head">
-          <h2 className="dialog-title">{title}</h2>
+          <div className="project-dialog-heading">
+            <h2 className="dialog-title">{title}</h2>
+            {machine && <span className="project-browser-machine">{machine}</span>}
+          </div>
           <button type="button" className="icon-btn" aria-label={t('common.close')} onClick={onCancel}>
             <IconClose size={16} />
           </button>
@@ -264,12 +267,14 @@ export function NewProjectDialog({ api, roots, onCreated, onCancel }: NewProject
 interface RootsProps {
   api: Api;
   roots: NonNullable<WorkdirsConfig['roots']>;
+  /** Names the machine whose folders these are, when it is not this one. */
+  machine?: string;
   onChange: (config: WorkdirsConfig) => void;
   onCancel: () => void;
 }
 
 /** Which folders the hub lets agents work in: the ones it was started with, and ones added here. */
-export function RootsDialog({ api, roots, onChange, onCancel }: RootsProps) {
+export function RootsDialog({ api, roots, machine, onChange, onCancel }: RootsProps) {
   const [path, setPath] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -293,7 +298,7 @@ export function RootsDialog({ api, roots, onChange, onCancel }: RootsProps) {
   };
 
   return (
-    <Frame title={t('dir.available')} onCancel={onCancel}>
+    <Frame title={t('dir.available')} machine={machine} onCancel={onCancel}>
       <p className="dialog-message">{t('projects.rootsHint')}</p>
       <div className="roots-list">
         {roots.map((root) => (

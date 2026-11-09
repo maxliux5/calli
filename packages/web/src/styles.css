@@ -2901,6 +2901,13 @@ a.pop-item {
   margin: -6px -8px 10px 0;
 }
 
+.project-dialog-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
 .project-dialog-head .dialog-title {
   margin: 0;
 }
