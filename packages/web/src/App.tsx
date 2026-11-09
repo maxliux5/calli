@@ -30,6 +30,7 @@ import {
 } from './api';
 import type { HubAction } from './commands';
 import { buildProjectOptions } from './projects';
+import { rootRows, withWorkdirs } from './workdirs';
 import { isBounce, useAppHistory } from './appHistory';
 import { useAppearance, useInTitlebar, useIsCompact, useListSwipe, useMinWidth, useStoredFlag } from './hooks';
 import { mergeAgentChoice, parseAgentChoices, type AgentChoices } from './agent-choice';
@@ -533,7 +534,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const [projectDialog, setProjectDialog] = useState<'new' | 'roots' | null>(null);
   const applyWorkdirs = useCallback((c: WorkdirsConfig) => {
     setWorkdirs(c.workdirs);
-    setRoots(c.roots ?? c.workdirs.map((path) => ({ path, removable: false })));
+    setRoots(rootRows(c));
     setScratchAvailable(c.scratch === true);
   }, []);
   // The list last read from this machine stands in until the live one arrives: switching machines
@@ -639,7 +640,8 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   // Folders last chosen for members on each machine, offered first next time.
   const recentRemoteDirs = (host: string): string[] => { try { return JSON.parse(localStorage.getItem(`calli.collab.dirs.${host}`) ?? '[]'); } catch { return []; } };
   const rememberRemoteDir = (host: string, cwd: string) => localStorage.setItem(`calli.collab.dirs.${host}`, JSON.stringify([cwd, ...recentRemoteDirs(host).filter((d) => d !== cwd)].slice(0, 5)));
-  const [remotePick, setRemotePick] = useState<{ host: string; api: Api; machine: string; roots: string[]; selected: string; choose: (cwd: string) => void } | null>(null);
+  /** While set, the roots dialog stands in for the picker: its rows, with each root's own remove flag. */
+  const [remotePick, setRemotePick] = useState<{ host: string; api: Api; machine: string; roots: string[]; selected: string; manage: Array<{ path: string; removable: boolean }> | null; choose: (cwd: string) => void } | null>(null);
   // Instances on the other machines, for a collaboration led from this hub: each with that machine's folders.
   const [remoteAgents, setRemoteAgents] = useState<Array<AgentInfo & { host: string; directories: string[] }>>([]);
   useEffect(() => {
@@ -652,6 +654,17 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     })).then((lists) => { if (alive) setRemoteAgents(lists.flat()); });
     return () => { alive = false; };
   }, [token, hostId, hostsKey, api]);
+  /** A machine's folder list changed from the page: the open picker and every cached agent of that
+      machine carry it on, so the next picker starts from the fresh list instead of a stale copy. */
+  const applyRemoteWorkdirs = useCallback((host: string, config: WorkdirsConfig) => {
+    setRemotePick((p) => (p && p.host === host ? { ...p, roots: config.workdirs } : p));
+    setRemoteAgents((list) => withWorkdirs(list, host, config));
+  }, []);
+  /** The machine's own rows for the roots dialog, which then stands in for the picker until closed. */
+  const openRemoteRoots = (host: string, config: WorkdirsConfig) => {
+    applyRemoteWorkdirs(host, config);
+    setRemotePick((p) => (p && p.host === host ? { ...p, manage: rootRows(config) } : p));
+  };
   /** Bumped by daemon broadcasts, so the open plan page reloads. */
   const [personal, setPersonal] = useState<PersonalSettings | null>(null);
   const [personalError, setPersonalError] = useState('');
@@ -2819,29 +2832,40 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       onPointerDownCapture={() => { startupPending.current = false; }}
       onKeyDownCapture={() => { startupPending.current = false; }}
     >
-      {remotePick && (
+      {remotePick && (remotePick.manage ? (
+        <RootsDialog
+          api={remotePick.api}
+          roots={remotePick.manage}
+          machine={remotePick.machine}
+          onChange={(config) => openRemoteRoots(remotePick.host, config)}
+          onCancel={() => setRemotePick((p) => (p ? { ...p, manage: null } : p))}
+        />
+      ) : (
         <DirectoryPicker
           api={remotePick.api}
           roots={remotePick.roots}
           selected={remotePick.selected}
           machine={remotePick.machine}
-          onRootsChange={(config) => setRemotePick((p) => (p ? { ...p, roots: config.workdirs } : p))}
-          onManageRoots={() => setRemotePick(null)}
+          onRootsChange={(config) => applyRemoteWorkdirs(remotePick.host, config)}
+          onManageRoots={() => {
+            // The dialog needs each root's own remove flag, so the machine is asked before it opens;
+            // a machine that cannot answer leaves the picker standing with the error said.
+            void remotePick.api.workdirs().then((config) => openRemoteRoots(remotePick.host, config)).catch(handleError);
+          }}
           onSelect={(cwd) => { rememberRemoteDir(remotePick.host, cwd); remotePick.choose(cwd); }}
           onClose={() => setRemotePick(null)}
         />
-      )}
-      {showDirPicker && (
+      ))}
+      {/* The roots dialog stands in for the picker it was opened from, the way it does remotely;
+          from the project menu it still stands alone, with no picker behind it. */}
+      {showDirPicker && projectDialog !== 'roots' && (
         <DirectoryPicker
           api={api}
           roots={workdirs}
           selected={draftCwd}
           machine={host?.label ?? (hostId ? t('app.remoteMachine') : t('hosts.local'))}
           onRootsChange={applyWorkdirs}
-          onManageRoots={() => {
-            setShowDirPicker(false);
-            setProjectDialog('roots');
-          }}
+          onManageRoots={() => setProjectDialog('roots')}
           onSelect={(cwd) => {
             setDraftCwd(cwd);
             setDraftScratch(false);
@@ -3335,7 +3359,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           mentionExtra={(m) => { const a = agents.find((v) => v.id === m.id); return a ? memberModel(a) : null; }}
           onBrowseMentionDir={(m, choose) => {
             const a = remoteAgents.find((v) => v.id === m.id);
-            if (a && token) setRemotePick({ host: a.host, api: new Api(token, '', a.host), machine: hosts.find((h) => h.id === a.host)?.label ?? a.host, roots: a.directories, selected: m.cwd ?? '', choose });
+            if (a && token) setRemotePick({ host: a.host, api: new Api(token, '', a.host), machine: hosts.find((h) => h.id === a.host)?.label ?? a.host, roots: a.directories, selected: m.cwd ?? '', manage: null, choose });
           }}
           mentionDirectories={coordination?.directories ?? (collaborationDirectories.length ? collaborationDirectories : [activeCwd])}
           onStop={stop}
