@@ -3231,6 +3231,8 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
               // body's footer can offer to go there — the person's own navigation, nothing sideways.
               memberThreadId={coordination ? (name) => coordination.members.find(m => m.name === name)?.id ?? null : undefined}
               onOpenMemberThread={(id) => {
+                // A member on another machine has its thread there; the member panel reads it from that machine.
+                if (coordination?.members.find(m => m.id === id)?.host) { setAgentsStart(id); setAgentsOpen(true); setFiles(null); return; }
                 const known = threads.find(t => t.id === id);
                 if (known) { openThread(known); return; }
                 if (api) void api.thread(id).then(openThread).catch(handleError);
