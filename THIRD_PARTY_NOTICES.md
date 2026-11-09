@@ -2,7 +2,7 @@
 
 ## persona
 
-The machine token metering (`packages/daemon/src/machine-usage.ts`, `packages/daemon/src/adapters/transcript-usage.ts`) and the machine usage charts' counting rules (cache hit rate, per-minute throughput, offline gaps) follow nwverse/persona's design and adapt parts of its implementation (`server/internal/node/usage.go`, `web/src/lib/tokens.ts`, `web/src/views/machines/UsageSection.tsx`), rewritten in TypeScript for this repository's daemon and web UI.
+The machine token metering (`packages/daemon/src/machine-usage.ts`, `packages/daemon/src/adapters/transcript-usage.ts`) and the machine usage page (`packages/web/src/machine-usage.ts`, `packages/web/src/components/MachineUsagePage.tsx` — counting rules, chart drawing rules, the today card and the machine cards) follow nwverse/persona's design and adapt parts of its implementation (`server/internal/node/usage.go`, `web/src/lib/tokens.ts`, `web/src/views/machines/Machines.tsx`, `web/src/views/machines/UsageSection.tsx`), rewritten in TypeScript for this repository's daemon and web UI.
 
 MIT License
 

@@ -925,7 +925,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   }, [api, demo]);
   /** The terminal a login started; null attaches to the newest live one. */
   const [terminalTarget, setTerminalTarget] = useState<string | null>(null);
-  const [observabilityTab, setObservabilityTab] = useState<'usage' | 'diagnostics'>('usage');
+  const [observabilityTab, setObservabilityTab] = useState<'usage' | 'diagnostics' | 'machines'>('usage');
   const [observabilityFocus, setObservabilityFocus] = useState<string | undefined>(undefined);
   // Bumped on every visit so the page opens on the requested tab, even when it is already showing.
   const [observabilityKey, setObservabilityKey] = useState(0);
@@ -2284,7 +2284,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     setDrawer(false);
   });
 
-  const openObservability = (tab: 'usage' | 'diagnostics', focusAgent?: string) => navigate(() => {
+  const openObservability = (tab: 'usage' | 'diagnostics' | 'machines', focusAgent?: string) => navigate(() => {
     setSelectedId(null);
     setObservabilityTab(tab);
     setObservabilityFocus(focusAgent);
@@ -2853,7 +2853,10 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       ...(importAgents.length ? [{ id: 'import', label: t('import.title'), icon: IconImport, render: () => <ImportPanel api={api} agents={importAgents} onImported={openThread} onOpen={threadId => void openImported(threadId)} onError={handleError} /> }] : []),
       ...(agents.some(a => !a.hidden && a.capabilities.quota) ? [{ id: 'quota', label: t('app.quota'), icon: IconGauge, render: () => <QuotaBoard api={api} agents={agents} current={activeAgent} account={quotaAccount(settingsPath)} onAccount={id => openSettings(`quota/${encodeURIComponent(id)}`)} /> }] : []),
       { id: 'activity', label: t('activity.title'), icon: IconActivity, render: () => <ActivityPage api={api} agents={agents} onOpenThread={pick} onError={handleError} /> },
-      ...(!demo ? [{ id: 'observability', label: t('obs.title'), icon: IconGauge, render: () => <ObservabilityPage api={api} agents={agents} initial="usage" /> }] : []),
+      ...(demo
+        // The demo has only the machines' made-up usage; that tab is what its entry opens.
+        ? [{ id: 'observability', label: t('obs.tab.machines'), icon: IconServer, render: () => <ObservabilityPage api={api} agents={agents} token={token} hosts={hosts} initial="machines" /> }]
+        : [{ id: 'observability', label: t('obs.title'), icon: IconGauge, render: () => <ObservabilityPage api={api} agents={agents} token={token} hosts={hosts} initial="usage" /> }]),
       ...enabledViews(extensions ?? []).filter(v => v.view.sidebar?.pinned === false).map(v => ({ id: `ext:${v.extensionId}/${v.view.id}`, label: v.view.title[locale()], icon: (props: { size?: number }) => <HostIcon name={v.view.icon} {...props} />, onOpen: () => openExtensionView(extensionHash(v)) })),
     ] },
     { label: t('settings.account'), entries: [demo
@@ -3185,6 +3188,8 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
               key={`${hostId ?? 'local'}:${observabilityKey}`}
               api={api}
               agents={agents}
+              token={token}
+              hosts={hosts}
               initial={observabilityTab}
               focusAgent={observabilityFocus}
               onResult={(result) => { if (result.state === 'ready' || result.state === 'empty') setModelsByAgent(previous => ({ ...previous, [result.agent]: result.models })); }}
