@@ -13,7 +13,6 @@ import {
   runSummary,
   splitThinking,
   splitUserQuote,
-  thinkingPreview,
   stepDurationLabel,
   stepStatusLabel,
   stepTitle,
@@ -668,16 +667,6 @@ test('a turn that says something and ends on a tool call still has an answer: it
   const [, work, answer] = tl.items;
   assert.deepEqual(work.kind === 'work' && work.entries.map((e) => e.kind), ['step']);
   assert.equal(answer.kind === 'assistant' && answer.text, '我来写文件。');
-});
-
-test('thinkingPreview shows where a long thought has got to, not where it began', () => {
-  assert.equal(thinkingPreview([]), '');
-  assert.equal(thinkingPreview(['first.', 'short last.']), 'short last.');
-  const long = `${'start of a long plan '.repeat(20)}and this is the end of it.`;
-  const preview = thinkingPreview(['earlier', long]);
-  assert.ok(preview.startsWith('…') && preview.endsWith('and this is the end of it.'));
-  assert.ok(preview.length < 160);
-  assert.ok(thinkingPreview(['思'.repeat(300)]).length <= 141, 'text without spaces is cut as it is');
 });
 
 test('a tool that finishes after text began still updates the row it started in', () => {

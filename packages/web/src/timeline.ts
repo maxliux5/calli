@@ -1216,22 +1216,6 @@ export function splitThinking(text: string): string[] {
   return out;
 }
 
-/** How much of the thinking in progress is shown under "Thinking". */
-const THINKING_PREVIEW_CHARS = 140;
-
-/**
- * The latest of a thinking stream in progress: the end of its last paragraph, cut to a few lines.
- * It is the end that is shown, because that is where the stream is being written.
- */
-export function thinkingPreview(paragraphs: string[]): string {
-  const last = paragraphs.at(-1) ?? '';
-  if (last.length <= THINKING_PREVIEW_CHARS) return last;
-  const tail = last.slice(-THINKING_PREVIEW_CHARS);
-  // Start at a word where there is one to start at; CJK text has no spaces and is cut as it is.
-  const space = tail.indexOf(' ');
-  return `…${space >= 0 && space < 24 ? tail.slice(space + 1) : tail}`;
-}
-
 /** Items of one turn, in order. A turn starts at its user item; stray items share the '' group. */
 export interface TurnGroup {
   turnId: string;
