@@ -64,7 +64,7 @@ test('the compact thread menu preserves nested actions, keyboard return and the 
         if (shots) await page.screenshot({ path: join(shots, `menu-root-${width}-${theme}.png`) });
 
         await openList();
-        assert.deepEqual(await root.locator(':scope > .menu-cell .menu-label').allTextContents(), ['置顶', '移到分区', '关联到计划', '归档', '永久删除']);
+        assert.deepEqual(await root.locator(':scope > .menu-cell .menu-label').allTextContents(), ['置顶', '标记为未读', '重命名', '移到分区', '关联到计划', '归档', '永久删除']);
         assert.equal(await root.getByRole('meter').count(), 0, 'a row menu carries no quota header');
         if (shots) await page.screenshot({ path: join(shots, `menu-list-${width}-${theme}.png`) });
         await page.keyboard.press('Escape'); await root.waitFor({ state: 'detached' });

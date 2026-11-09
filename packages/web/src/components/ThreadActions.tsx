@@ -188,6 +188,13 @@ export function useThreadActions(deps: Deps) {
     const planChoices = todos.filter((todo) => !todo.parentId).slice(0, 30);
     return [
       { id: 'pin', label: thread.pinned ? t('actions.unpin') : t('actions.pin'), icon: IconPin, onSelect: () => run('pin', thread) },
+      {
+        id: 'unread',
+        label: thread.unread ? t('actions.markRead') : t('actions.markUnread'),
+        icon: IconDot,
+        onSelect: () => void patch(thread, { unread: !thread.unread }, thread.unread ? undefined : () => onMarkedUnread(thread)),
+      },
+      { id: 'rename', label: t('actions.rename'), icon: IconEdit, onSelect: () => run('rename', thread) },
       ...(autotitle ? [{ id: 'autotitle', label: t('actions.autotitle'), icon: IconSparkle, onSelect: () => void autoName(thread) }] : []),
       {
         id: 'section',
