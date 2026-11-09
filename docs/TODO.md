@@ -476,3 +476,11 @@
 - [x] **P2** v2 排版：宽面板、文章排版、【待补】〔补〕上色、Mermaid 跟主题、读写同一张纸（透明 textarea 叠高亮层，Markdown 标记调淡）、阶段收成一个胶囊；对话栏保底 440px 不被挤窄。*无头 Chromium 1280/1440/1920 桌面、390 手机亮暗看过，真机未看*
 - [x] **P2** 写作习惯：`~/.calli/notes/writing.md`，每阶段先读；说「复盘」提炼习惯标〔新〕等确认；任何线程可打开编辑，胶囊菜单有入口
 - [ ] **P3** 每一稿留快照，方便对比
+
+## 22. 本机 agent、会话与用量
+
+参考 persona（MIT，`docs/server/machines.md`「Token usage」）：它的 node 扫本机所有 agent 会话文件，按分钟/模型/启动器统计 token。我们做同样的事，分三步走：自动加入本机 agent 与账号、本机会话混进线程列表并计量 token 用量、机器页照 persona 重做。
+
+- [x] **P1** 自动加入本机 agent 和账号（阶段 1）：daemon 启动时和之后每 10 分钟，`AgentRegistry.autoJoin()` 把 `discover()`（PATH 上已知 agent 的副本 CLI）和 `discoverAccounts()`（多账号 agent 已登录的账号，如 `~/.claude-2`）找到的直接加进 agents.json，与页面「发现/添加」一键加入走同一条 `add()` 路径；自动加入的实例在列表里不做额外标记。用户删过的记住不再加回：按可执行文件真实路径（symlink 归一）和账号 env 记录（如 `CLAUDE_CONFIG_DIR=…`）存 dataDir 下 `removed-agents.json`，重启后仍然生效；手动「发现/添加」不受限制。*daemon `agents.ts`（autoJoin/startAutoJoin/removed 记忆）、`index.ts` 启动接线；`test/agents.test.ts` 覆盖自动加入、重复扫描幂等、删过的 CLI 和账号不再加回（含重启后）。npm run typecheck/test/build 通过*
+- [ ] **P1** 本机会话混在线程列表（阶段 2，方案 B 全部混在一个列表按时间排序）：定期扫描器经各适配器 `listSessions()` 列出本机会话缓存（不逐请求起 agent 进程），受 allowedWorkdirs 限制；外部会话行标记 `external: true` 与普通线程混排，点击时才 `importSession` 回放；数量大（本机一个 Claude 配置目录 869 个会话），前端只渲染可见部分、接口按时间截取支持继续加载。同一扫描器读 Claude（所有配置目录含 subagents）和 Codex rollout 会话文件增量部分，按 分钟 × 模型 × 启动器 汇总 token（口径照 persona machines.md：Claude usage 四项、跳过 `<synthetic>`；Codex last_token_usage 输入含缓存要拆开、缓存写恒 0；按 message id 去重），分钟粒度保 26 小时后归并成 10 分钟、共保 7 天；与现有 `telemetry_samples`（ObservabilityPage 用）完全独立、互不重复计数。新接口 `GET /api/machine-usage?hours=1|24|168&model=&launcher=`
+- [ ] **P2** 机器页照 persona 重做（阶段 3）：机器列表卡片（今日 token 合计、当前每分钟用量小图、占比条），机器详情用量区（1h/24h/7d、模型/启动器筛选、合计/分类、四数字、吞吐堆叠面积图含离线灰色、缓存命中率折线、按模型/按启动器）；示例模式要有数据；桌面/手机 × 亮/暗截图看过

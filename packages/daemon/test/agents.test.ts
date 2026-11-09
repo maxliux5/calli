@@ -403,3 +403,103 @@ test('AgentRegistry.fromEnv supports an explicitly empty agents array', () => {
   });
   assert.deepEqual(registry.list(), []);
 });
+
+/** A machine with only what the test put there: PATH holds one bin directory plus the system's
+ *  own (shell stubs need coreutils; agent CLIs live elsewhere, so discovery sees only the test's),
+ *  HOME is empty, and the claude CLI is a stub that does not exist, so accounts find nothing. */
+function isolatedMachine(): { dataDir: string; bin: string; restore: () => void } {
+  const dataDir = mkdtempSync(join(tmpdir(), 'calli-autojoin-'));
+  const home = mkdtempSync(join(tmpdir(), 'calli-autojoin-home-'));
+  const bin = join(dataDir, 'bin');
+  mkdirSync(bin);
+  const oldPath = process.env.PATH;
+  const oldHome = process.env.HOME;
+  const oldBin = process.env.CALLI_CLAUDE_BIN;
+  process.env.PATH = `${bin}:/usr/bin:/bin`;
+  process.env.HOME = home;
+  process.env.CALLI_CLAUDE_BIN = join(home, 'no-such-claude');
+  return {
+    dataDir,
+    bin,
+    restore: () => {
+      process.env.PATH = oldPath;
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      if (oldBin === undefined) delete process.env.CALLI_CLAUDE_BIN;
+      else process.env.CALLI_CLAUDE_BIN = oldBin;
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    },
+  };
+}
+
+test('auto-join adds discovered CLIs, and repeated scans add nothing new', async () => {
+  const machine = isolatedMachine();
+  try {
+    writeFileSync(join(machine.bin, 'agy2'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(machine.bin, 'ping'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const registry = AgentRegistry.fromEnv({ dataDir: machine.dataDir, env: {}, defaults });
+    const added = await registry.autoJoin();
+    // 'ping' only looks like an agent; 'agy2' joins on its own, as the page's one-click entry does.
+    assert.deepEqual(added.map((i) => i.id), ['agy2']);
+    assert.deepEqual(added[0].command, [join(machine.bin, 'agy2')]);
+    assert.equal(added[0].label, 'agy2');
+    assert.deepEqual(await registry.autoJoin(), []);
+    // A restarted daemon reads the same agents.json and still finds nothing new.
+    const reloaded = AgentRegistry.fromEnv({ dataDir: machine.dataDir, env: {}, defaults });
+    assert.deepEqual(await reloaded.autoJoin(), []);
+    assert.ok(reloaded.adapters.has('agy2'));
+  } finally {
+    machine.restore();
+  }
+});
+
+test('a removed CLI is not auto-joined back, not even after a restart', async () => {
+  const machine = isolatedMachine();
+  try {
+    writeFileSync(join(machine.bin, 'agy2'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const registry = AgentRegistry.fromEnv({ dataDir: machine.dataDir, env: {}, defaults });
+    await registry.autoJoin();
+    await registry.remove('agy2');
+    // Discovery would offer it again — no instance runs it now — but auto-join leaves it out.
+    assert.ok((await registry.discover()).some((f) => f.id === 'agy2'));
+    assert.deepEqual(await registry.autoJoin(), []);
+    // The memory is `removed-agents.json`, so a restart keeps it out too.
+    const reloaded = AgentRegistry.fromEnv({ dataDir: machine.dataDir, env: {}, defaults });
+    assert.deepEqual(await reloaded.autoJoin(), []);
+  } finally {
+    machine.restore();
+  }
+});
+
+test('auto-join links signed-in accounts, and a removed account stays out', async () => {
+  const machine = isolatedMachine();
+  const home = fakeClaudeHome();
+  const oldBin = process.env.CALLI_CLAUDE_BIN;
+  const oldHome = process.env.HOME;
+  process.env.CALLI_CLAUDE_BIN = fakeClaudeBin(home);
+  process.env.HOME = home;
+  try {
+    const registry = AgentRegistry.fromEnv({ dataDir: machine.dataDir, env: {}, defaults });
+    // The built-in claude claims the default account (~/.claude); the other two sign-ins join.
+    const added = await registry.autoJoin();
+    assert.deepEqual(added.map((i) => i.id), ['claude-2', 'claude-3']);
+    assert.equal(added[0].account, '.claude-2@claude-2');
+    assert.deepEqual(added[0].env, { CLAUDE_CONFIG_DIR: join(home, '.claude-2') });
+
+    // Removing one keeps it out: its config directory is remembered, the account stays signed in.
+    await registry.remove('claude-2');
+    assert.deepEqual(await registry.autoJoin(), []);
+    assert.equal(registry.adapters.has('claude-2'), false);
+    assert.equal(registry.adapters.has('claude-3'), true);
+    const reloaded = AgentRegistry.fromEnv({ dataDir: machine.dataDir, env: {}, defaults });
+    assert.deepEqual(await reloaded.autoJoin(), []);
+  } finally {
+    if (oldBin === undefined) delete process.env.CALLI_CLAUDE_BIN;
+    else process.env.CALLI_CLAUDE_BIN = oldBin;
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+    machine.restore();
+  }
+});
