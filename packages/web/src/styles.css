@@ -1271,6 +1271,32 @@ html.list-open body {
 
 .thread-note.waiting { color: var(--warn); }
 .thread-note.error { color: var(--danger); }
+.thread-note.external { color: var(--muted); }
+
+/* A conversation the agent already has, sitting among the threads until someone opens it: quieter
+   than a thread, since nothing is running and opening it takes a moment (importing). */
+.thread-row.external .thread-title {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* Asking for the next page of the machine's sessions: where the list ended. */
+.sidebar-more-sessions {
+  display: block;
+  margin: 2px 10px 10px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.sidebar-more-sessions:hover {
+  background: var(--hover);
+  color: var(--text);
+}
 
 /* Which agent runs a thread matters less than what the thread is: the mark stays out of the way. */
 .thread-meta .agent-mark { opacity: 0.7; }

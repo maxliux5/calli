@@ -1753,6 +1753,10 @@ export const en: Messages = {
   // Sidebar
   'sidebar.unread': 'New result',
   'sidebar.failed': 'Failed',
+  'sidebar.externalHint': 'A conversation this machine already has; click to bring it in and continue',
+  'sidebar.externalImporting': 'Bringing in…',
+  'sidebar.externalFailed': (title: string) => `Could not bring in “${title}”`,
+  'sidebar.moreExternal': 'Show more local conversations',
   'sidebar.worktree': (branch: string) => `Worktree ${branch}`,
   'sidebar.inWorktree': (branch: string) => `In a worktree, branch ${branch}`,
   'sidebar.fork': 'Fork',

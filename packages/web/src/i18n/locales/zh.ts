@@ -1753,6 +1753,10 @@ export const zh = {
   // Sidebar
   'sidebar.unread': '有新结果',
   'sidebar.failed': '出错了',
+  'sidebar.externalHint': '这台机器上已有的会话，点一下接进来继续',
+  'sidebar.externalImporting': '接入中…',
+  'sidebar.externalFailed': (title: string) => `接入「${title}」失败`,
+  'sidebar.moreExternal': '显示更多本机会话',
   'sidebar.worktree': (branch: string) => `工作树 ${branch}`,
   'sidebar.inWorktree': (branch: string) => `在工作树里，分支 ${branch}`,
   'sidebar.fork': '分叉',

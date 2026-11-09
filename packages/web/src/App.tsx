@@ -16,6 +16,7 @@ import {
   AuthError,
   MAX_QUEUED,
   type AgentInfo,
+  type ExternalSession,
   type PersonalSettings,
   type GeneralSettings,
   type GoalView,
@@ -636,6 +637,75 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     const timer = setInterval(() => { if (!document.hidden) read(); }, 20_000);
     return () => { alive = false; clearInterval(timer); };
   }, [merging, token, hostId, hostsKey]);
+  // This machine's agent sessions that are not threads yet, mixed into the list by their time.
+  // A page at a time (a machine can hold hundreds), refreshed on the daemon's own scan cadence
+  // while someone is looking; importing one makes it the thread it opens.
+  const [externalSessions, setExternalSessions] = useState<ExternalSession[]>([]);
+  const [externalCursor, setExternalCursor] = useState<string | null>(null);
+  const [externalLoaded, setExternalLoaded] = useState(0);
+  const [externalState, setExternalState] = useState<'off' | 'loading' | 'ready' | 'failed'>('off');
+  const [externalError, setExternalError] = useState<{ message: string; retry?: () => void } | null>(null);
+  const [importingExternal, setImportingExternal] = useState<string | null>(null);
+  const externalScope = api.demo ? 'demo' : hostId ?? '';
+  useEffect(() => {
+    // The merged every-machine view lists threads only; so does a machine that cannot be asked.
+    if (api.demo || merging) { setExternalSessions([]); setExternalCursor(null); setExternalLoaded(0); setExternalState('off'); return; }
+    let alive = true;
+    const read = async () => {
+      if (document.hidden) return;
+      setExternalState((old) => (old === 'off' ? 'loading' : old));
+      try {
+        const page = await api.localSessions(null, Math.max(externalLoaded, 60));
+        if (!alive) return;
+        setExternalSessions(page.sessions);
+        setExternalCursor(page.nextCursor);
+        setExternalLoaded(page.sessions.length);
+        setExternalState('ready');
+        setExternalError(null);
+      } catch (e) {
+        if (!alive || e instanceof AuthError) return;
+        setExternalState('failed');
+      }
+    };
+    void read();
+    const timer = setInterval(read, 60_000);
+    return () => { alive = false; clearInterval(timer); };
+    // `externalLoaded` grows only through "show more", which re-reads deliberately.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, externalScope, merging]);
+  const loadMoreExternal = () => {
+    if (!externalCursor) return;
+    setExternalState('loading');
+    api.localSessions(externalCursor)
+      .then((page) => {
+        setExternalSessions((prev) => {
+          const seen = new Set(prev.map((s) => `${s.agent}:${s.sessionId}`));
+          return [...prev, ...page.sessions.filter((s) => !seen.has(`${s.agent}:${s.sessionId}`))];
+        });
+        setExternalCursor(page.nextCursor);
+        setExternalLoaded((n) => n + page.sessions.length);
+        setExternalState('ready');
+      })
+      .catch(() => setExternalState('failed'));
+  };
+  const importExternal = (session: ExternalSession) => {
+    const key = `${session.agent}:${session.sessionId}`;
+    setExternalError(null);
+    setImportingExternal(key);
+    api.importSession(session.agent, session.sessionId)
+      .then((thread) => {
+        setThreads((prev) => [thread, ...prev.filter((t) => t.id !== thread.id)]);
+        setExternalSessions((prev) => prev.filter((s) => `${s.agent}:${s.sessionId}` !== key));
+        setSelectedId(thread.id);
+        setImportingExternal(null);
+      })
+      .catch((e) => {
+        setImportingExternal(null);
+        // A bad token ends the session; anything else is said beside the rows, where the click was.
+        if (e instanceof AuthError) handleError(e);
+        else setExternalError({ message: t('sidebar.externalFailed', session.title || session.cwd), retry: () => importExternal(session) });
+      });
+  };
   // Folders last chosen for members on each machine, offered first next time.
   const recentRemoteDirs = (host: string): string[] => { try { return JSON.parse(localStorage.getItem(`calli.collab.dirs.${host}`) ?? '[]'); } catch { return []; } };
   const rememberRemoteDir = (host: string, cwd: string) => localStorage.setItem(`calli.collab.dirs.${host}`, JSON.stringify([cwd, ...recentRemoteDirs(host).filter((d) => d !== cwd)].slice(0, 5)));
@@ -2896,6 +2966,13 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           ].sort((a, b) => (a.hostId === null ? -1 : b.hostId === null ? 1 : hosts.findIndex((h) => h.id === a.hostId) - hosts.findIndex((h) => h.id === b.hostId))) : null}
           onAll={keepThreads && hosts.length > 0 ? () => setAllHosts(true) : undefined}
           onOpenElsewhere={onHost && ((id, thread) => onHost(id, { thread }))}
+          external={externalSessions}
+          externalState={externalState}
+          onImportExternal={importExternal}
+          importingExternal={importingExternal}
+          externalError={externalError}
+          moreExternal={externalCursor !== null}
+          onLoadMoreExternal={loadMoreExternal}
           onHide={compact ? undefined : toggleSidebar}
           onThreadMenu={threadActions.openThreadMenu}
           onSectionMenu={threadActions.openSectionMenu}

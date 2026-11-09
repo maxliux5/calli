@@ -456,7 +456,8 @@ function snippetAround(text: string, terms: string[]): string {
 }
 
 export class Store {
-  private readonly db: DatabaseSync;
+  /** Shared with the services the store hosts (telemetry) and the machine's own metering. */
+  readonly db: DatabaseSync;
   readonly telemetry: Telemetry;
   readonly activity: Activity;
   readonly history: HistoryStore;
@@ -958,6 +959,15 @@ export class Store {
       .prepare('SELECT * FROM threads WHERE agent = ? AND agent_session_id = ? LIMIT 1')
       .get(agent, agentSessionId) as ThreadRow | undefined;
     return row ? toThread(row) : this.getThread(this.messageEdits.owner(agent, agentSessionId) ?? '');
+  }
+
+  /** Every agent-side session the hub has a thread for: sessionId → agent instance id. The
+   *  machine's token meter names the launcher of a transcript through this. */
+  agentSessionOwners(): Map<string, string> {
+    const rows = this.db
+      .prepare('SELECT agent, agent_session_id AS session FROM threads WHERE agent_session_id IS NOT NULL')
+      .all() as Array<{ agent: string; session: string }>;
+    return new Map(rows.map((row) => [row.session, row.agent]));
   }
 
   /** Copies a thread's whole event log to another thread, keeping order and timestamps. */

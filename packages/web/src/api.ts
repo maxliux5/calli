@@ -309,6 +309,11 @@ export interface Thread {
   cwdReal: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Set only on rows this page builds for sessions that are not threads yet (never sent by the
+   * daemon): the row mixes into the list by time, and clicking it imports the session.
+   */
+  external?: ExternalSession;
 }
 
 /** A thread's native goal, as the goal card shows it. Served by the daemon, then updated by events. */
@@ -823,6 +828,24 @@ export interface AgentSession {
   updatedAt: string | null;
   /** Set when this session is already a thread here (possibly an archived one). */
   threadId: string | null;
+}
+
+/** A conversation an agent on this machine already has, that is not a thread here yet. It mixes
+ *  into the thread list by its time; opening it imports it and continues it as a thread. */
+export interface ExternalSession {
+  /** The agent instance id, as threads store it. */
+  agent: string;
+  sessionId: string;
+  cwd: string;
+  title: string;
+  updatedAt: string | null;
+}
+
+/** One page of `GET /api/local-sessions`. */
+export interface LocalSessionPage {
+  sessions: ExternalSession[];
+  nextCursor: string | null;
+  scannedAt: string | null;
 }
 
 /** A web terminal, as the daemon lists it. Exited ones are not listed. */
@@ -1589,6 +1612,13 @@ export class Api {
   /** Makes a thread out of an existing agent session, history included. */
   importSession(agent: string, sessionId: string): Promise<Thread> {
     return this.request('POST', '/api/threads/import', { agent, sessionId });
+  }
+
+  /** This machine's agent sessions that are not threads here, newest first, one page at a time. */
+  localSessions(cursor?: string | null, limit = 60): Promise<LocalSessionPage> {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (cursor) query.set('cursor', cursor);
+    return this.request('GET', `/api/local-sessions?${query}`);
   }
 
   /**

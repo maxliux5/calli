@@ -1751,6 +1751,10 @@ export const ja: Messages = {
   // Sidebar
   'sidebar.unread': '新しい結果',
   'sidebar.failed': 'エラー',
+  'sidebar.externalHint': 'このマシンにある会話。クリックで取り込んで続けます',
+  'sidebar.externalImporting': '取り込み中…',
+  'sidebar.externalFailed': (title: string) => `「${title}」を取り込めませんでした`,
+  'sidebar.moreExternal': 'ローカルの会話をさらに表示',
   'sidebar.worktree': (branch: string) => `worktree ${branch}`,
   'sidebar.inWorktree': (branch: string) => `worktree 内、ブランチ ${branch}`,
   'sidebar.fork': 'フォーク',
