@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
-import { ApiError, AuthError, type Api, type HostFailure, type HostInfo } from '../api';
+import { Api, ApiError, AuthError, type HostFailure, type HostInfo } from '../api';
 import { hostProblem, hostStatus } from '../hosts';
+import { todayTokens, totalTokens } from '../machine-usage';
+import { compactLabel } from '../observability';
 import { Dialog } from './Dialog';
 import { SettingsSection, usePageDraft } from './PageNavigation';
 import { IconCheck, IconChevron, IconClose, IconComputer, IconGlobe, IconPlus, IconServer, IconSettings } from './icons';
@@ -10,6 +12,38 @@ import { t } from '../i18n';
 /** ssh's own words, for whoever has to fix it. When no daemon answered there is nothing of ssh's to quote. */
 const SshSaid = ({ host }: { host: Pick<HostInfo, 'code' | 'error'> }) =>
   host.error && host.code !== 'daemon_missing' ? <code className="host-error">{host.error}</code> : null;
+
+/**
+ * A machine's tokens today, as the short number on its row: reading the usage is separate from
+ * managing the machine, so the number is a button of its own and never touches the row's actions.
+ * Unknown (still reading, offline, or a hub too old to meter) stays a dash, never a zero.
+ */
+function MachineToday({ token, host, onOpen }: { token: string; host: HostInfo | null; onOpen: () => void }) {
+  const [today, setToday] = useState<number | null>(null);
+  useEffect(() => {
+    let alive = true;
+    // A machine that is down cannot answer; its number waits as a dash, not as a failure.
+    if (host?.status === 'offline') {
+      setToday(null);
+      return;
+    }
+    const api = new Api(token, '', host?.id ?? null);
+    const read = async () => {
+      try {
+        const day = await api.machineUsage(24);
+        if (alive) setToday(totalTokens(todayTokens(day)));
+      } catch {
+        if (alive) setToday(null);
+      }
+    };
+    void read();
+    const timer = setInterval(() => { if (!document.hidden) void read(); }, 60_000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [token, host?.id, host?.status]);
+  return <button type="button" className="host-today" disabled={today === null} title={t('machine.today')} aria-label={t('machine.openUsage')} onClick={onOpen}>
+    {today === null ? '—' : compactLabel(today)}
+  </button>;
+}
 
 const StatusDot = ({ status }: { status: HostInfo['status'] }) => (
   <span className={`host-dot ${status}`} role="img" aria-label={hostStatus(status)} title={hostStatus(status)} />
@@ -124,18 +158,22 @@ export function HostDown({ host, onRetry }: { host: HostInfo; onRetry: () => Pro
 
 interface PanelProps {
   api: Api;
+  /** For asking each machine its own usage: the page's token, which every proxy call reuses. */
+  token: string;
   hosts: HostInfo[];
   /** Called after machines were added, removed or retried, so the rest of the page hears of it. */
   onChanged: () => Promise<void>;
   onClose: () => void;
   onError: (e: unknown) => void;
+  /** Opens the machine's usage detail: reading it is separate from managing the machine. */
+  onOpenUsage?: (machine: string | null) => void;
 }
 
 /**
  * The machines this hub shows besides its own. Adding one takes only what ssh calls it: the hub
  * signs in, finds the Calli running there, and keeps a connection to it.
  */
-export function HostsPanel({ api, hosts, onChanged, onClose, onError }: PanelProps) {
+export function HostsPanel({ api, token, hosts, onChanged, onClose, onError, onOpenUsage }: PanelProps) {
   const [candidates, setCandidates] = useState<string[] | null>(null);
   const [candidatesError, setCandidatesError] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -202,6 +240,20 @@ export function HostsPanel({ api, hosts, onChanged, onClose, onError }: PanelPro
     <>
     <SettingsSection title={t('hosts.machines')} hint={t('hosts.hint')} className="hosts-settings">
         <div className="panel-list">
+          {/* The hub's own machine reads here too: its usage is one click away like the rest. */}
+          {onOpenUsage && (
+            <div className="panel-row single host-row">
+              <div className="panel-row-main">
+                <div className="panel-row-title">
+                  <StatusDot status="online" /> {t('hosts.local')}
+                </div>
+                <div className="panel-row-meta">
+                  <span>{t('hosts.localHint')}</span>
+                </div>
+              </div>
+              <MachineToday token={token} host={null} onOpen={() => onOpenUsage(null)} />
+            </div>
+          )}
           {hosts.map((h) => (
             <div key={h.id} className="panel-row single host-row">
               <div className="panel-row-main">
@@ -220,6 +272,7 @@ export function HostsPanel({ api, hosts, onChanged, onClose, onError }: PanelPro
                   </p>
                 )}
               </div>
+              {onOpenUsage && <MachineToday token={token} host={h} onOpen={() => onOpenUsage(h.id)} />}
               {h.status !== 'online' && (
                 <button className="text-btn" disabled={busy !== null} onClick={() => void retry(h)}>
                   {t('common.retry')}

@@ -112,15 +112,15 @@ function TodayCard({ machines, summaries }: { machines: Machine[]; summaries: Ma
   const missing = machines.filter(m => summaries.get(m.id ?? '')?.state !== 'ok').length;
   // Persona's shading: the first machine's ink at full strength, each later one a step lighter.
   const shade = (i: number) => Math.max(0.85 - i * 0.2, 0.2);
+  // Nothing answered yet: the number is unknown, not zero, and the card keeps its shape.
+  const unknown = !shares.length && missing > 0;
   return <section className="mu-today">
     <span>{t('machine.today')}</span>
-    <strong title={numberLabel(total)}>{total ? compactLabel(total) : '0'}</strong>
-    {total > 0 && <>
-      <div className="mu-share-bar" role="img" aria-label={shares.map(s => `${s.machine.label} ${compactLabel(s.tokens)}`).join(', ')}>
-        {shares.map((s, i) => <i key={s.machine.id ?? ''} style={{ width: `${(s.tokens / total) * 100}%`, opacity: shade(i) }} title={`${s.machine.label} · ${compactLabel(s.tokens)}`} />)}
-      </div>
-      <div className="mu-share-legend">{shares.map((s, i) => <span key={s.machine.id ?? ''}><i style={{ opacity: shade(i) }} />{s.machine.label} · {compactLabel(s.tokens)}</span>)}</div>
-    </>}
+    <strong title={unknown ? undefined : numberLabel(total)} className={unknown ? 'unknown' : ''}>{unknown ? '—' : total ? compactLabel(total) : '0'}</strong>
+    <div className="mu-share-bar" role={unknown ? undefined : 'img'} aria-hidden={unknown || undefined} aria-label={unknown ? undefined : shares.map(s => `${s.machine.label} ${compactLabel(s.tokens)}`).join(', ')}>
+      {total > 0 && shares.map((s, i) => <i key={s.machine.id ?? ''} style={{ width: `${(s.tokens / total) * 100}%`, opacity: shade(i) }} title={`${s.machine.label} · ${compactLabel(s.tokens)}`} />)}
+    </div>
+    {total > 0 && <div className="mu-share-legend">{shares.map((s, i) => <span key={s.machine.id ?? ''}><i style={{ opacity: shade(i) }} />{s.machine.label} · {compactLabel(s.tokens)}</span>)}</div>}
     {missing > 0 && <small>{t('machine.todayMissing', missing)}</small>}
   </section>;
 }
@@ -137,14 +137,12 @@ function MachineList({ machines, summaries, onOpen }: { machines: Machine[]; sum
             <strong>{machine.label}</strong>
             <small>{machine.host ? hostStatus(machine.host.status) : t('hosts.localHint')}</small>
           </span>
-          {state === 'ok' && summary?.day && <>
-            <span className="mu-card-stat">
-              <span className="mu-card-today">{t('machine.today')} <strong title={numberLabel(totalTokens(summary.day))}>{compactLabel(totalTokens(summary.day))}</strong></span>
-              <span className="mu-card-now">{summary.hour ? t('machine.nowPerMinute', compactLabel(currentPerMinute(summary.hour))) : ''}</span>
-            </span>
-            <Spark report={summary.hour} />
-          </>}
-          {state === 'loading' && <span className="mu-card-note" aria-busy="true">{t('obs.loading')}</span>}
+          <span className="mu-card-stat">
+            <span className="mu-card-today">{t('machine.today')} <strong title={state === 'ok' && summary?.day ? numberLabel(totalTokens(summary.day)) : undefined}>{state === 'ok' && summary?.day ? compactLabel(totalTokens(summary.day)) : '—'}</strong></span>
+            <span className="mu-card-now">{state === 'ok' && summary?.hour ? t('machine.nowPerMinute', compactLabel(currentPerMinute(summary.hour))) : state === 'loading' ? '—' : ''}</span>
+          </span>
+          {/* The line keeps its place before and after the numbers arrive, so the grid does not jump. */}
+          <Spark report={state === 'ok' ? summary?.hour ?? null : null} />
           {state === 'old' && <span className="mu-card-note">{t('machine.oldDaemon')}</span>}
           {state === 'failed' && <span className="mu-card-note">{machine.host?.status === 'offline' ? hostStatus('offline') : t('machine.loadFailed')}</span>}
         </button>;
@@ -156,15 +154,39 @@ function MachineList({ machines, summaries, onOpen }: { machines: Machine[]; sum
 const PAD = { top: 10, right: 12, bottom: 26, left: 48 };
 const at = (t: number) => new Date(t * 1000);
 
-/** Tokens per minute over the range: stacked by kind (or one total line), a crosshair readout on
- *  hover, touch and arrow keys, a clickable legend with each kind's total, and grey over the
- *  offline steps. */
-function ThroughputChart({ report, hidden, mode, onToggleKind }: { report: MachineUsageReport; hidden: ReadonlySet<UsageKind>; mode: 'kinds' | 'total'; onToggleKind: (kind: UsageKind) => void }) {
-  const n = report.points.length;
-  const stepMinutes = report.step / 60;
+/** The report's four numbers as one plain row (persona's UsageSection): a label over a figure,
+ *  no boxes of their own. Unknown ones hold a dash in the number's place. */
+function Figures({ report }: { report: MachineUsageReport | null }) {
+  const figures = report
+    ? [
+      [t('machine.total'), compactLabel(totalTokens(report.total)), numberLabel(totalTokens(report.total))],
+      [t('machine.output'), compactLabel(report.total.output), numberLabel(report.total.output)],
+      [t('machine.hitRate'), percentText(hitRate(report.total)), undefined],
+      [t('machine.replies'), numberLabel(report.total.replies), undefined],
+    ] as Array<[string, string, string | undefined]>
+    : ([t('machine.total'), t('machine.output'), t('machine.hitRate'), t('machine.replies')] as string[]).map(label => [label, '—', undefined]);
+  return <div className="mu-figures">
+    {figures.map(([label, value, title]) => <div key={label}><span>{label}</span><strong title={title}>{value}</strong></div>)}
+  </div>;
+}
+
+/** While the report is on its way the charts keep their final shape, so nothing jumps when it lands. */
+const EMPTY_REPORT: MachineUsageReport = {
+  hours: 1, step: 60,
+  total: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, replies: 0 },
+  points: [], models: [], launchers: [],
+};
+
+/** Tokens per minute over the range: the four numbers on top, then stacked by kind (or one total
+ *  line), a crosshair readout on hover, touch and arrow keys, a clickable legend with each kind's
+ *  total, and grey over the offline steps. A null report draws the same card empty. */
+function ThroughputChart({ report, hidden, mode, onToggleMode, onToggleKind }: { report: MachineUsageReport | null; hidden: ReadonlySet<UsageKind>; mode: 'kinds' | 'total'; onToggleMode: (mode: 'kinds' | 'total') => void; onToggleKind: (kind: UsageKind) => void }) {
+  const report1 = report ?? EMPTY_REPORT;
+  const n = report1.points.length;
+  const stepMinutes = report1.step / 60;
   const kinds = USAGE_KINDS.filter(kind => !hidden.has(kind));
-  const layers = stackLayers(report.points, report.step, kinds.length ? kinds : USAGE_KINDS);
-  const totals = report.points.map(point => perMinute(totalTokens(point), report.step));
+  const layers = stackLayers(report1.points, report1.step, kinds.length ? kinds : USAGE_KINDS);
+  const totals = report1.points.map(point => perMinute(totalTokens(point), report1.step));
   const peak = Math.max(1, ...layers.flatMap(l => l.values.map(v => v.y1)), ...totals);
   const ticks = niceTicks(peak);
   const top = ticks[ticks.length - 1];
@@ -177,13 +199,13 @@ function ThroughputChart({ report, hidden, mode, onToggleKind }: { report: Machi
   const plotH = height - PAD.top - PAD.bottom;
   const x = (i: number) => PAD.left + (n > 1 ? i / (n - 1) : 0.5) * plotW;
   const y = (v: number) => PAD.top + plotH - (Math.min(v, top) / top) * plotH;
-  const gaps = offlineRuns(report.points, report.step);
-  const series = { stepMinutes, points: report.points.map(p => ({ at: at(p.t).toISOString(), tpm: 0 })) };
+  const gaps = offlineRuns(report1.points, report1.step);
+  const series = { stepMinutes, points: report1.points.map(p => ({ at: at(p.t).toISOString(), tpm: 0 })) };
   const xTicks = timeTicks(series, Math.max(3, Math.floor(plotW / 75)) + 2);
   const xLabels = xTicks.indexes.filter(i => x(i) - PAD.left >= 16 && PAD.left + plotW - x(i) >= 16);
-  const rangeTotals = Object.fromEntries(USAGE_KINDS.map(kind => [kind, report.points.reduce((sum, p) => sum + p[USAGE_FIELD[kind]], 0)])) as Record<UsageKind, number>;
+  const rangeTotals = Object.fromEntries(USAGE_KINDS.map(kind => [kind, report1.points.reduce((sum, p) => sum + p[USAGE_FIELD[kind]], 0)])) as Record<UsageKind, number>;
   const busy = totals.indexOf(Math.max(...totals));
-  const point = active !== null ? report.points[active] : null;
+  const point = active !== null ? report1.points[active] : null;
 
   const pick = (clientX: number) => {
     const left = box.current?.getBoundingClientRect().left ?? 0;
@@ -196,10 +218,18 @@ function ThroughputChart({ report, hidden, mode, onToggleKind }: { report: Machi
     setActive(Math.max(0, Math.min(n - 1, moves[event.key])));
   };
 
-  return <section className="obs-chart" aria-label={t('machine.throughput')}>
+  return <section className="obs-chart" aria-label={t('machine.throughput')} aria-busy={report ? undefined : true}>
+    <Figures report={report} />
     <header className="obs-chart-head">
-      <span>{t('machine.throughput')} · {t('machine.perMinuteUnit')} · {stepLabel(stepMinutes)}</span>
-      {totals[busy] > 0 && <span>{t('chart.peak')} <strong>{compactLabel(totals[busy])}</strong> · {dayLabel(at(report.points[busy].t))} {clockLabel(at(report.points[busy].t))}</span>}
+      <span>{t('machine.throughput')} · {t('machine.perMinuteUnit')}{report ? ` · ${stepLabel(stepMinutes)}` : ''}</span>
+      <span className="mu-head-side">
+        {totals[busy] > 0 && <span>{t('chart.peak')} <strong>{compactLabel(totals[busy])}</strong> · {dayLabel(at(report1.points[busy].t))} {clockLabel(at(report1.points[busy].t))}</span>}
+        {/* persona keeps the by-kind/total choice here, beside the chart it changes. */}
+        <span className="mu-mode" role="group" aria-label={t('machine.display')}>
+          <button type="button" aria-pressed={mode === 'kinds'} className={mode === 'kinds' ? 'selected' : ''} onClick={() => onToggleMode('kinds')}>{t('machine.modeKinds')}</button>
+          <button type="button" aria-pressed={mode === 'total'} className={mode === 'total' ? 'selected' : ''} onClick={() => onToggleMode('total')}>{t('machine.modeTotal')}</button>
+        </span>
+      </span>
     </header>
     <div ref={box} className="obs-chart-plot" style={{ height }} tabIndex={0} role="group"
       aria-label={t('machine.throughput')}
@@ -212,23 +242,23 @@ function ThroughputChart({ report, hidden, mode, onToggleKind }: { report: Machi
           <text className="obs-chart-axis" x={PAD.left - 8} y={y(v)} dy="0.32em" textAnchor="end">{compactLabel(v)}</text>
         </g>)}
         {xLabels.map(i => <text key={i} className="obs-chart-axis" x={x(i)} y={height - 6} textAnchor="middle">
-          {xTicks.every < 1440 ? clockLabel(at(report.points[i].t)) : dayLabel(at(report.points[i].t))}
+          {xTicks.every < 1440 ? clockLabel(at(report1.points[i].t)) : dayLabel(at(report1.points[i].t))}
         </text>)}
         {/* Offline steps: grey over the plot, so quiet reads as quiet and gone reads as gone. */}
         {gaps.map(([start, end], i) => {
-          const from = (start - report.points[0].t) / (report.step * n);
-          const to = (end - report.points[0].t) / (report.step * n);
+          const from = (start - report1.points[0].t) / (report1.step * n);
+          const to = (end - report1.points[0].t) / (report1.step * n);
           return <rect key={i} className="mu-offline" x={PAD.left + from * plotW} width={Math.max(0, (to - from) * plotW)} y={PAD.top} height={plotH} />;
         })}
-        {mode === 'kinds' ? layers.map(layer => {
+        {mode === 'kinds' ? (n > 0 ? layers.map(layer => {
           const up = layer.values.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v.y1).toFixed(1)}`).join('');
           const down = [...layer.values.keys()].reverse().map(i => `L${x(i).toFixed(1)},${y(layer.values[i].y0).toFixed(1)}`).join('');
           // The 2px surface stroke is the gap the stacked kinds keep from each other.
           return <path key={layer.kind} d={`${up}${down}Z`} className="mu-stack" style={{ fill: USAGE_COLOR[layer.kind] }} />;
-        }) : <>
+        }) : null) : n > 0 ? <>
           <path className="obs-chart-area" d={`M${x(0).toFixed(1)},${y(totals[0]).toFixed(1)}${totals.map((v, i) => `L${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('')}L${x(n - 1).toFixed(1)},${y(0)}L${x(0).toFixed(1)},${y(0)}Z`} />
           <path className="obs-chart-line" style={{ stroke: 'var(--chart-total)' }} d={totals.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('')} />
-        </>}
+        </> : null}
         {active !== null && <line className="obs-chart-cross" x1={x(active)} x2={x(active)} y1={PAD.top} y2={PAD.top + plotH} />}
       </svg>}
       {point && width > 0 && <div className="obs-chart-tip" style={{ left: Math.max(0, Math.min(width - 200, x(active!) + 12)) }}>
@@ -237,19 +267,21 @@ function ThroughputChart({ report, hidden, mode, onToggleKind }: { report: Machi
           ? <div className="obs-chart-tip-row"><strong>{compactLabel(totals[active!])}</strong><span>{t('machine.total')}</span></div>
           : <>
             {layers.map(layer => <div key={layer.kind} className="obs-chart-tip-row">
-              <i style={{ borderColor: USAGE_COLOR[layer.kind], borderTopStyle: 'solid' }} /><strong>{compactLabel(perMinute(point[USAGE_FIELD[layer.kind]], report.step))}</strong><span>{KIND_LABEL[layer.kind]}</span>
+              <i style={{ borderColor: USAGE_COLOR[layer.kind], borderTopStyle: 'solid' }} /><strong>{compactLabel(perMinute(point[USAGE_FIELD[layer.kind]], report1.step))}</strong><span>{KIND_LABEL[layer.kind]}</span>
             </div>)}
-            <div className="obs-chart-tip-row"><strong>{compactLabel(perMinute(totalTokens(point), report.step))}</strong><span>{t('machine.total')}</span></div>
+            <div className="obs-chart-tip-row"><strong>{compactLabel(perMinute(totalTokens(point), report1.step))}</strong><span>{t('machine.total')}</span></div>
           </>}
         <div className="obs-chart-tip-row"><strong>{numberLabel(point.replies)}</strong><span>{t('machine.replies')}</span></div>
       </div>}
     </div>
+    {/* The legend keeps its row while the report loads (a dash where the total will be), so the
+        card does not grow under the reader when the data lands. */}
     {mode === 'kinds' && <div className="obs-chart-legend" aria-label={t('machine.kinds')}>
       {USAGE_KINDS.map(kind => {
         const on = !hidden.has(kind);
-        return <button key={kind} type="button" aria-pressed={on} disabled={on && kinds.length <= 1}
+        return <button key={kind} type="button" aria-pressed={on} disabled={!report || (on && kinds.length <= 1)}
           title={on ? t('chart.hide', KIND_LABEL[kind]) : t('chart.show', KIND_LABEL[kind])} onClick={() => onToggleKind(kind)}>
-          <i style={{ borderColor: USAGE_COLOR[kind], borderTopStyle: 'solid' }} />{KIND_LABEL[kind]}<em>{compactLabel(rangeTotals[kind])}</em>
+          <i style={{ borderColor: USAGE_COLOR[kind], borderTopStyle: 'solid' }} />{KIND_LABEL[kind]}<em>{report ? compactLabel(rangeTotals[kind]) : '—'}</em>
         </button>;
       })}
     </div>}
@@ -258,10 +290,11 @@ function ThroughputChart({ report, hidden, mode, onToggleKind }: { report: Machi
 
 /** Cache hit rate over the range: one line, broken where replies were too few or the machine was
  *  offline (persona draws the same rule). */
-function HitChart({ report }: { report: MachineUsageReport }) {
-  const n = report.points.length;
-  const stepMinutes = report.step / 60;
-  const runs = hitRuns(report.points);
+function HitChart({ report }: { report: MachineUsageReport | null }) {
+  const report1 = report ?? EMPTY_REPORT;
+  const n = report1.points.length;
+  const stepMinutes = report1.step / 60;
+  const runs = report ? hitRuns(report1.points) : [];
   const box = useRef<HTMLDivElement>(null);
   const width = useWidth(box, report);
   const [rawActive, setActive] = useState<number | null>(null);
@@ -271,10 +304,10 @@ function HitChart({ report }: { report: MachineUsageReport }) {
   const plotH = height - PAD.top - PAD.bottom;
   const x = (i: number) => PAD.left + (n > 1 ? i / (n - 1) : 0.5) * plotW;
   const y = (v: number) => PAD.top + plotH - v * plotH;
-  const series = { stepMinutes, points: report.points.map(p => ({ at: at(p.t).toISOString(), tpm: 0 })) };
+  const series = { stepMinutes, points: report1.points.map(p => ({ at: at(p.t).toISOString(), tpm: 0 })) };
   const xTicks = timeTicks(series, Math.max(3, Math.floor(plotW / 75)) + 2);
   const xLabels = xTicks.indexes.filter(i => x(i) - PAD.left >= 16 && PAD.left + plotW - x(i) >= 16);
-  const point = active !== null ? report.points[active] : null;
+  const point = active !== null ? report1.points[active] : null;
   const pointRate = point ? hitRate(point) : null;
 
   const pick = (clientX: number) => {
@@ -304,15 +337,15 @@ function HitChart({ report }: { report: MachineUsageReport }) {
           <text className="obs-chart-axis" x={PAD.left - 8} y={y(v)} dy="0.32em" textAnchor="end">{Math.round(v * 100)}%</text>
         </g>)}
         {xLabels.map(i => <text key={i} className="obs-chart-axis" x={x(i)} y={height - 6} textAnchor="middle">
-          {xTicks.every < 1440 ? clockLabel(at(report.points[i].t)) : dayLabel(at(report.points[i].t))}
+          {xTicks.every < 1440 ? clockLabel(at(report1.points[i].t)) : dayLabel(at(report1.points[i].t))}
         </text>)}
         {runs.map((run, i) => <path key={i} className="obs-chart-line" style={{ stroke: 'var(--chart-total)' }}
           d={run.map((p, j) => {
-            const index = report.points.findIndex(pp => pp.t === p.t);
+            const index = report1.points.findIndex(pp => pp.t === p.t);
             return `${j ? 'L' : 'M'}${x(index).toFixed(1)},${y(p.v).toFixed(1)}`;
           }).join('')} />)}
       </svg>}
-      {runs.length === 0 && <p className="mu-chart-empty">{t('machine.hitEmpty')}</p>}
+      {report && runs.length === 0 && <p className="mu-chart-empty">{t('machine.hitEmpty')}</p>}
       {point && width > 0 && <div className="obs-chart-tip" style={{ left: Math.max(0, Math.min(width - 200, x(active!) + 12)) }}>
         <span>{bucketLabel(at(point.t).toISOString(), stepMinutes)}</span>
         <div className="obs-chart-tip-row"><strong>{percentText(pointRate)}</strong><span>{t('machine.hitRate')}</span></div>
@@ -393,41 +426,43 @@ function MachineDetail({ machine, onBack }: { machine: Machine; onBack: () => vo
       <button type="button" className="text-btn" onClick={onBack}><IconBack size={16} />{t('machine.back')}</button>
       <h2>{machine.label}</h2>
     </div>
-    <div className="obs-toolbar">
-      <Select label={t('activity.range')} value={String(hours)} options={[{ id: '1', label: t('obs.lastHour') }, { id: '24', label: t('obs.last24h') }, { id: '168', label: t('obs.last7d') }]} onPick={id => setHours(Number(id) as 1 | 24 | 168)} />
+    {/* One row: a compact range control and the two filters, scrolling sideways when narrow
+        (the by-kind/total choice lives in the chart's own header, where persona keeps it). */}
+    <div className="mu-toolbar">
+      <div className="mu-range" role="group" aria-label={t('activity.range')}>
+        {([[1, 'machine.rangeHour'], [24, 'machine.rangeDay'], [168, 'machine.rangeWeek']] as const).map(([value, key]) =>
+          <button key={value} type="button" aria-pressed={hours === value} className={hours === value ? 'selected' : ''} onClick={() => setHours(value)}>{t(key)}</button>)}
+      </div>
       <Select label={t('machine.model')} value={model ?? ''} options={[{ id: '', label: t('machine.allModels') }, ...(report?.models ?? []).map(m => ({ id: m.name, label: m.name }))]} onPick={id => setModel(id || null)} />
       <Select label={t('machine.launcher')} value={launcher ?? ''} options={[{ id: '', label: t('machine.allLaunchers') }, ...(report?.launchers ?? []).map(l => ({ id: l.name || '-', label: launcherLabel(l.name) }))]} onPick={id => setLauncher(id === '' ? null : id === '-' ? '' : id)} />
-      <Select label={t('machine.display')} value={mode} options={[{ id: 'kinds', label: t('machine.modeKinds') }, { id: 'total', label: t('machine.modeTotal') }]} onPick={id => { setMode(id as 'kinds' | 'total'); setHidden(new Set()); }} />
       <button className="icon-btn" aria-label={t('obs.refresh')} onClick={() => setRefresh(n => n + 1)}><IconRefresh size={16} /></button>
     </div>
     {failed && <p role="alert" className="obs-error">{old ? t('machine.oldDaemon') : t('machine.loadFailed')}</p>}
-    {!report && !failed && <p className="panel-empty">{t('obs.loading')}</p>}
-    {report && <>
-      <div className="mu-numbers">
-        <div><span>{t('machine.total')}</span><strong title={numberLabel(totalTokens(report.total))}>{compactLabel(totalTokens(report.total))}</strong></div>
-        <div><span>{t('machine.output')}</span><strong title={numberLabel(report.total.output)}>{compactLabel(report.total.output)}</strong></div>
-        <div><span>{t('machine.hitRate')}</span><strong>{percentText(hitRate(report.total))}</strong></div>
-        <div><span>{t('machine.replies')}</span><strong>{numberLabel(report.total.replies)}</strong></div>
+    <div className="mu-detail">
+      <div className="mu-charts">
+        <ThroughputChart report={report} hidden={hidden} mode={mode} onToggleMode={next => { setMode(next); setHidden(new Set()); }} onToggleKind={toggleKind} />
+        <HitChart report={report} />
       </div>
-      <div className="mu-detail">
-        <div className="mu-charts">
-          <ThroughputChart report={report} hidden={hidden} mode={mode} onToggleKind={toggleKind} />
-          <HitChart report={report} />
-        </div>
-        <div className="mu-side">
-          <ShareList title={t('machine.byModel')} shares={report.models} active={model} label={name => name} onPick={setModel} />
-          <ShareList title={t('machine.byLauncher')} shares={report.launchers} active={launcher} label={launcherLabel} onPick={setLauncher} />
-        </div>
+      <div className="mu-side">
+        {report
+          ? <>
+            <ShareList title={t('machine.byModel')} shares={report.models} active={model} label={name => name} onPick={setModel} />
+            <ShareList title={t('machine.byLauncher')} shares={report.launchers} active={launcher} label={launcherLabel} onPick={setLauncher} />
+            {report.models.length === 0 && <p className="obs-note">{t('machine.nothing')}</p>}
+          </>
+          : [t('machine.byModel'), t('machine.byLauncher')].map(title => <section key={title} className="mu-shares" aria-busy="true">
+            <h3>{title}</h3>
+            <div className="mu-share-skeleton" /><div className="mu-share-skeleton" />
+          </section>)}
       </div>
-      {report.models.length === 0 && <p className="obs-note">{t('machine.nothing')}</p>}
-    </>}
+    </div>
   </>;
 }
 
 /** The machines tab: every machine's cards, and one machine's detail behind its card. */
-export function MachineUsagePage({ api, token, hosts }: { api: Api; token: string; hosts: HostInfo[] }) {
+export function MachineUsagePage({ api, token, hosts, openMachine }: { api: Api; token: string; hosts: HostInfo[]; openMachine?: string | null }) {
   // undefined is the list; '' the local machine's detail; a host id a remote's.
-  const [open, setOpen] = useState<string | undefined>(undefined);
+  const [open, setOpen] = useState<string | undefined>(openMachine === undefined ? undefined : openMachine || '');
   const machines = useMemo<Machine[]>(() => [
     // In the demo the local machine is the demo api itself: nothing else is there to answer.
     { id: null, label: t('hosts.local'), host: null, api: api.demo ? api : new Api(token) },

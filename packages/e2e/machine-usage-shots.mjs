@@ -65,6 +65,40 @@ try {
 
   const browser = await launchBrowser();
   try {
+    // The first look: everything in its loading shape (the usage routes held back a moment), then
+    // the same views settled — the two must differ only in content, never in layout.
+    for (const [name, viewport, scheme] of [
+      ['desktop-light', { width: 1440, height: 900 }, 'light'],
+      ['phone-light', { width: 390, height: 844 }, 'light'],
+    ]) {
+      const page = await browser.newPage({ viewport, colorScheme: scheme });
+      await page.route('**/api/machine-usage*', async (route) => {
+        await new Promise((r) => setTimeout(r, 1500));
+        // A request the page gave up on may already be settled: the hold is all we wanted.
+        await route.continue().catch(() => undefined);
+      });
+      await openUi(page, daemon);
+      await page.goto(daemon.base + '/#/observability');
+      await page.locator('.obs-tabs button').nth(2).click();
+      await page.locator('.mu-card').first().waitFor({ timeout: 20_000 });
+      await page.waitForTimeout(400);
+      await page.screenshot({ path: join(out, `loading-list-${name}.png`) });
+      console.log('loading list', name);
+
+      await page.locator('.mu-card').first().click();
+      await page.locator('.mu-figures').waitFor({ timeout: 20_000 });
+      await page.locator('.obs-chart-plot').nth(1).waitFor({ timeout: 20_000 });
+      await page.waitForTimeout(400);
+      await page.screenshot({ path: join(out, `loading-detail-${name}.png`) });
+      console.log('loading detail', name);
+
+      await page.unroute('**/api/machine-usage*');
+      await page.waitForTimeout(2500);
+      await page.screenshot({ path: join(out, `loading-settled-${name}.png`) });
+      console.log('settled', name);
+      await page.close();
+    }
+
     for (const [name, viewport, scheme] of [
       ['desktop-light', { width: 1440, height: 900 }, 'light'],
       ['desktop-dark', { width: 1440, height: 900 }, 'dark'],
@@ -82,10 +116,10 @@ try {
       await page.screenshot({ path: join(out, `list-${name}.png`) });
       console.log('list', name);
 
-      // The detail: four numbers, the stacked chart with its offline stretch, the hit rate line.
+      // The detail: the figures row, the stacked chart with its offline stretch, the hit rate line.
       await page.locator('.mu-card').first().click();
-      await page.locator('.mu-numbers').waitFor({ timeout: 20_000 });
-      await page.locator('.obs-chart').nth(1).waitFor({ timeout: 20_000 });
+      await page.locator('.mu-figures').waitFor({ timeout: 20_000 });
+      await page.locator('.obs-chart-plot').nth(1).waitFor({ timeout: 20_000 });
       await page.waitForTimeout(400);
       await page.screenshot({ path: join(out, `detail-${name}.png`) });
       console.log('detail', name);
@@ -99,12 +133,31 @@ try {
           await page.waitForTimeout(200);
           await page.screenshot({ path: join(out, 'detail-hover-desktop-light.png') });
         }
-        await page.locator('.obs-select').nth(3).click();
-        await page.getByRole('menuitemradio', { name: '合计' }).click();
+        await page.locator('.mu-mode button').nth(1).click();
         await page.waitForTimeout(300);
         await page.screenshot({ path: join(out, 'detail-total-desktop-light.png') });
         console.log('hover and total', name);
       }
+      await page.close();
+    }
+
+    // The entry from 配置 → 机器: each machine's row carries today's tokens, and the number (not
+    // the row's management buttons) opens that machine's usage detail.
+    for (const [name, viewport, scheme] of [
+      ['desktop-light', { width: 1440, height: 900 }, 'light'],
+      ['phone-light', { width: 390, height: 844 }, 'light'],
+    ]) {
+      const page = await browser.newPage({ viewport, colorScheme: scheme });
+      await openUi(page, daemon);
+      await page.goto(daemon.base + '/#/settings/machines');
+      await page.locator('.host-today').first().waitFor({ timeout: 20_000 });
+      await page.waitForTimeout(400);
+      await page.screenshot({ path: join(out, `hosts-${name}.png`) });
+      await page.locator('.host-today').first().click();
+      await page.locator('.mu-figures').waitFor({ timeout: 20_000 });
+      await page.waitForTimeout(400);
+      await page.screenshot({ path: join(out, `hosts-open-${name}.png`) });
+      console.log('hosts row', name);
       await page.close();
     }
     console.log(`shots in ${out}`);

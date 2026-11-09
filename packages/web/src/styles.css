@@ -10504,16 +10504,25 @@ button.coord-row-name { cursor: pointer; }
 .mu-offline { fill: var(--border); }
 .mu-chart-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; margin: 0; color: var(--muted); font-size: 12px; pointer-events: none; }
 
-/* One machine's detail: the four numbers, then the charts beside the share lists. */
+/* One machine's detail: one filter row, then the charts beside the share lists. */
 .mu-detail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 .mu-detail-head h2 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.2px; }
-.mu-numbers { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
-.mu-numbers > div { padding: 14px 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.mu-numbers span { color: var(--muted); font-size: 12px; }
-.mu-numbers strong { font-size: 20px; font-weight: 550; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+/* One row however narrow: the range control and the two filters scroll sideways together. */
+.mu-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
+.mu-range { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill); flex: none; }
+.mu-range button { border: 0; background: none; padding: 3px 10px; border-radius: var(--radius-pill); color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.mu-range button.selected { background: var(--active); color: var(--text); }
 .mu-detail { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
 .mu-charts { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .mu-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+/* The chart card's own top: the four numbers as one plain row (persona), no boxes of their own. */
+.mu-figures { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px 16px; padding: 2px 2px 12px; }
+.mu-figures span { display: block; color: var(--muted); font-size: 11px; }
+.mu-figures strong { font-size: 20px; font-weight: 550; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.mu-head-side { display: inline-flex; align-items: center; gap: 12px; margin-left: auto; }
+.mu-mode { display: inline-flex; gap: 2px; padding: 1px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill); }
+.mu-mode button { border: 0; background: none; padding: 2px 9px; border-radius: var(--radius-pill); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
+.mu-mode button.selected { background: var(--active); color: var(--text); }
 .mu-shares { padding: 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .mu-shares h3 { margin: 0 0 8px; font-size: 12px; font-weight: 550; color: var(--muted); }
 .mu-shares button { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 9px 10px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer; min-width: 0; }
@@ -10522,9 +10531,22 @@ button.coord-row-name { cursor: pointer; }
 .mu-share-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mu-share-numbers { display: flex; align-items: baseline; gap: 8px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .mu-share-numbers small { color: var(--muted); font-size: 11px; }
+/* The share lists while the report is on its way: rows of the same height, no text to be wrong. */
+.mu-share-skeleton { height: 34px; border-radius: var(--radius-sm); background: var(--hover); margin: 6px 0; }
+/* Both columns' first cards start flush with the grid's top edge (the chart card's own margin
+   would otherwise drop it below the share card beside it). */
+.mu-detail > * > :first-child { margin-top: 0; }
+.mu-today > strong.unknown { color: var(--faint); }
+/* The machines page's own number on a machine's row in 配置 → 机器: reading it is separate from
+   managing the machine, so it is a button of its own. */
+.host-today { flex: none; min-width: 56px; text-align: right; padding: 4px 8px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; cursor: pointer; }
+.host-today:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.host-today:disabled { cursor: default; }
 @media (max-width: 900px) {
   .mu-detail { grid-template-columns: minmax(0, 1fr); }
-  .mu-numbers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 480px) {
+  .mu-figures strong { font-size: 16px; }
 }
 
 /* ---------- Plan document and the bottom sheet ---------- */

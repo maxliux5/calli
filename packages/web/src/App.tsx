@@ -927,6 +927,8 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const [terminalTarget, setTerminalTarget] = useState<string | null>(null);
   const [observabilityTab, setObservabilityTab] = useState<'usage' | 'diagnostics' | 'machines'>('usage');
   const [observabilityFocus, setObservabilityFocus] = useState<string | undefined>(undefined);
+  /** The machine whose usage detail the machines tab opens on, when it is entered from a row. */
+  const [observabilityMachine, setObservabilityMachine] = useState<string | null | undefined>(undefined);
   // Bumped on every visit so the page opens on the requested tab, even when it is already showing.
   const [observabilityKey, setObservabilityKey] = useState(0);
   /** Other agent CLIs found on this host, added from the settings menu — not the picker. */
@@ -2284,10 +2286,11 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     setDrawer(false);
   });
 
-  const openObservability = (tab: 'usage' | 'diagnostics' | 'machines', focusAgent?: string) => navigate(() => {
+  const openObservability = (tab: 'usage' | 'diagnostics' | 'machines', focusAgent?: string, machine?: string | null) => navigate(() => {
     setSelectedId(null);
     setObservabilityTab(tab);
     setObservabilityFocus(focusAgent);
+    setObservabilityMachine(machine);
     setObservabilityKey((n) => n + 1);
     setView('observability');
     setDrawer(false);
@@ -2842,7 +2845,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       ...(!demo ? [
         { id: 'agents', label: t('agents.title'), icon: IconAgents, render: () => <AgentsPage api={api} agents={agents} onAdd={() => { setOnboardStep('results'); setOnboardOpen(true); }} onReload={reloadAgents} onLogin={openAgentLogin} /> },
         { id: 'teams', label: t('teams.title'), icon: IconAgents, render: () => <TeamsPage api={api} agents={agents} onReload={reloadTeams} /> },
-        { id: 'machines', label: t('hosts.machines'), icon: IconServer, render: () => <HostsPanel api={api} hosts={hosts} onChanged={reloadHosts} onClose={closeSettings} onError={handleError} /> },
+        { id: 'machines', label: t('hosts.machines'), icon: IconServer, render: () => <HostsPanel api={api} token={token} hosts={hosts} onChanged={reloadHosts} onClose={closeSettings} onError={handleError} onOpenUsage={machine => openObservability('machines', undefined, machine)} /> },
         { id: 'skills', label: t('composerMenu.skills'), icon: IconSparkle, render: () => <SkillsPage api={api} token={token} hostId={hostId} hosts={hosts} agents={agents} onError={handleError} /> },
         { id: 'mcp', label: 'MCP', icon: IconGlobe, render: () => <McpPage api={api} token={token} hostId={hostId} hosts={hosts} agents={agents} onError={handleError} /> },
       ] : []),
@@ -3191,6 +3194,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
               token={token}
               hosts={hosts}
               initial={observabilityTab}
+              initialMachine={observabilityMachine}
               focusAgent={observabilityFocus}
               onResult={(result) => { if (result.state === 'ready' || result.state === 'empty') setModelsByAgent(previous => ({ ...previous, [result.agent]: result.models })); }}
             />

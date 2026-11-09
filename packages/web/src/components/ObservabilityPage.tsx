@@ -134,7 +134,7 @@ function DiagnosticRow({ api, agent, onResult }: { api: Api; agent: AgentInfo; o
   </article>;
 }
 
-export function ObservabilityPage({ api, agents, token = '', hosts = [], initial = 'usage', focusAgent, onResult }: { api: Api; agents: AgentInfo[]; token?: string; hosts?: HostInfo[]; initial?: 'usage' | 'diagnostics' | 'machines'; focusAgent?: string; onResult?: (data: AgentDiagnostic) => void }) {
+export function ObservabilityPage({ api, agents, token = '', hosts = [], initial = 'usage', initialMachine, focusAgent, onResult }: { api: Api; agents: AgentInfo[]; token?: string; hosts?: HostInfo[]; initial?: 'usage' | 'diagnostics' | 'machines'; initialMachine?: string | null; focusAgent?: string; onResult?: (data: AgentDiagnostic) => void }) {
   const [tab, setTab] = useState(initial);
   const ordered = [...agents].sort((a, b) => Number(b.id === focusAgent) - Number(a.id === focusAgent));
   // The demo has data for the machines only; the other two tabs are the real thing's.
@@ -142,7 +142,7 @@ export function ObservabilityPage({ api, agents, token = '', hosts = [], initial
   return <section className="obs-page">
     <h1>{t('obs.title')}</h1>
     <nav className="obs-tabs" aria-label={t('obs.tabs')}>{tabs.map(([id, label]) => <button key={id} className={tab === id ? 'selected' : ''} aria-pressed={tab === id} onClick={() => setTab(id)}>{label}</button>)}</nav>
-    <div className="obs-body">{tab === 'usage' ? <UsageView api={api} agents={agents} /> : tab === 'machines' ? <MachineUsagePage api={api} token={token} hosts={hosts} /> : <>
+    <div className="obs-body">{tab === 'usage' ? <UsageView api={api} agents={agents} /> : tab === 'machines' ? <MachineUsagePage api={api} token={token} hosts={hosts} openMachine={initialMachine} /> : <>
       <p className="obs-note">{t('diag.note')}</p>
       {ordered.map(agent => <DiagnosticRow key={agent.id} api={api} agent={agent} onResult={onResult} />)}
     </>}</div>
