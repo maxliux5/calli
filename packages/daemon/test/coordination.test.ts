@@ -396,6 +396,7 @@ test('imported and terminal-synced member turns never deliver collaboration resu
 });
 
 test('running unconfigured threads queue collaboration without refreshing until earlier turns finish', async () => {
+  // Queued turns still start in order when cancellation adds a hidden request envelope.
   const h = await setup();
   try {
     await h.manager.startTurn(h.root.id, { text: 'slow' });
@@ -410,7 +411,7 @@ test('running unconfigured threads queue collaboration without refreshing until 
     assert.equal(h.manager.threadView(h.root.id).status, 'running');
     assert.deepEqual(h.manager.threadView(h.root.id).queued[1].targets, ['Claude Code']);
     await h.manager.cancelTurn(h.root.id, { keepQueue: true });
-    await wait(() => h.store.listEvents(h.root.id, 0, -1).some(e => e.type === 'turn.started' && e.data.text === 'slow earlier'));
+    await wait(() => h.store.listEvents(h.root.id, 0, -1).some(e => e.type === 'turn.started' && (e.data.displayText ?? e.data.text) === 'slow earlier'));
     assert.equal(h.team.view(h.root.id), null, 'an earlier queued turn must not gain collaboration');
     await h.manager.cancelTurn(h.root.id, { keepQueue: true });
     await wait(() => h.store.listEvents(h.root.id, 0, -1).some(e => e.type === 'turn.started' && String(e.data.text).includes('一起分析')));
@@ -444,6 +445,7 @@ test('unconfigured queued collaboration can be withdrawn with all targets and pe
 });
 
 test('failed collaboration does not block queued work or new messages while idle, and can be retried', async () => {
+  // Hidden carry-over must not change visible messages or the queue's error/retry behavior.
   const h = await setup();
   try {
     await h.manager.startTurn(h.root.id, { text: 'slow' });
@@ -454,7 +456,7 @@ test('failed collaboration does not block queued work or new messages while idle
     const enable = h.team.enable.bind(h.team);
     h.team.enable = async () => { throw new Error('setup unavailable'); };
     await h.manager.cancelTurn(h.root.id, { keepQueue: true });
-    await wait(() => h.store.listEvents(h.root.id, 0, -1).some(e => e.type === 'turn.started' && e.data.text === 'next message'));
+    await wait(() => h.store.listEvents(h.root.id, 0, -1).some(e => e.type === 'turn.started' && (e.data.displayText ?? e.data.text) === 'next message'));
     await wait(() => h.manager.threadView(h.root.id).status !== 'running');
     const queue = h.manager.threadView(h.root.id).queued;
     assert.equal(queue.length, 1);
@@ -475,6 +477,7 @@ test('failed collaboration does not block queued work or new messages while idle
 });
 
 test('withdrawing an idle failed item restores mentions and the remaining queued message starts', async () => {
+  // Withdrawal still releases the next visible request after an interrupted turn.
   const h = await setup();
   let unsubscribe = () => {};
   try {
@@ -495,7 +498,7 @@ test('withdrawing an idle failed item restores mentions and the remaining queued
       taken = h.manager.removeQueued(h.root.id, queued.id);
     });
     await h.manager.cancelTurn(h.root.id, { keepQueue: true });
-    await wait(() => h.store.listEvents(h.root.id, 0, -1).some(e => e.type === 'turn.started' && e.data.text === 'after withdrawal'));
+    await wait(() => h.store.listEvents(h.root.id, 0, -1).some(e => e.type === 'turn.started' && (e.data.displayText ?? e.data.text) === 'after withdrawal'));
     assert.deepEqual(taken, { text: 'review this', images: [], mentions });
     await wait(() => h.manager.threadView(h.root.id).status !== 'running');
     assert.equal(h.manager.threadView(h.root.id).queued.length, 0);

@@ -1619,7 +1619,8 @@ const untilIdle = (id: string) =>
     const t = await viewOf(id);
     return t.status !== 'running' && t.queued.length === 0 ? t : null;
   });
-const turnTexts = async (id: string) => (await events(id)).filter((e) => e.type === 'turn.started').map((e) => e.data.text);
+const turnTexts = async (id: string) => (await events(id)).filter((e) => e.type === 'turn.started').map((e) => e.data.displayText ?? e.data.text);
+const rawTurnTexts = async (id: string) => (await events(id)).filter((e) => e.type === 'turn.started').map((e) => e.data.text);
 
 test('unread: a finished turn marks the thread, reading clears it, and a stopped turn does not mark it', async () => {
   const thread = await newThread({ agent: 'claude' });
@@ -1809,6 +1810,7 @@ test('queue: a waiting message can be taken back, the queue has a limit, and sto
 });
 
 test('queue: "send now" interrupts the running turn and puts that message first', async () => {
+  // An urgent queued message carries the interrupted ask, without exposing its prompt envelope.
   const thread = await newThread({ agent: 'pi' });
   await post(`/api/threads/${thread.id}/turns`, { text: 'slow start' });
   await waitFor(async () => (await events(thread.id)).find((e) => e.type === 'message.delta'));
@@ -1819,8 +1821,129 @@ test('queue: "send now" interrupts the running turn and puts that message first'
   assert.equal((await post(`/api/threads/${thread.id}/queue/${urgent.id}/now`)).status, 204);
   await untilIdle(thread.id);
   assert.deepEqual(await turnTexts(thread.id), ['slow start', 'urgent', 'later']);
+  const raw = await rawTurnTexts(thread.id);
+  assert.equal(raw[1].includes('Interrupted user request:\nslow start'), true);
+  assert.equal(raw[1].includes('Current user message:\nurgent'), true);
   const ends = (await events(thread.id)).filter((e) => e.type === 'turn.done').map((e) => e.data.stopReason);
   assert.deepEqual(ends, ['cancelled', 'end_turn', 'end_turn']);
+});
+
+test('queue: a manual stop carries the interrupted request into the next follow-up without changing visible text', async () => {
+  // The next request keeps its visible text, and a completed follow-up stops carrying old context.
+  const thread = await newThread({ agent: 'pi' });
+  await post(`/api/threads/${thread.id}/turns`, { text: 'slow original question' });
+  await waitFor(async () => (await events(thread.id)).find((e) => e.type === 'message.delta'));
+  await post(`/api/threads/${thread.id}/cancel`);
+  await untilIdle(thread.id);
+
+  await post(`/api/threads/${thread.id}/turns`, { text: 'what is it for' });
+  await untilIdle(thread.id);
+
+  assert.deepEqual(await turnTexts(thread.id), ['slow original question', 'what is it for']);
+  const raw = await rawTurnTexts(thread.id);
+  assert.equal(raw[1].includes('Interrupted user request:\nslow original question'), true);
+  assert.equal(raw[1].includes('Current user message:\nwhat is it for'), true);
+  assert.equal((await events(thread.id)).find((e) => e.type === 'turn.started' && e.data.displayText === 'what is it for')?.data.interruptedFollowup, true);
+
+  await post(`/api/threads/${thread.id}/turns`, { text: 'another topic' });
+  await untilIdle(thread.id);
+  const next = store.listEventsOfType(thread.id, 'turn.started').at(-1)!;
+  assert.equal(next.data.interruptedFollowup, undefined);
+  assert.equal(String(next.data.text).includes('[Calli interrupted-turn context]'), false);
+});
+
+test('follow-up context: carried requests remain bounded across interrupted turns', async () => {
+  // Persisted carry-over takes precedence over visible/protocol text and is capped before reuse.
+  const thread = await newThread({ agent: 'pi' });
+  const carried = 'discarded-prefix ' + 'context '.repeat(1800) + ' previous ask';
+  store.appendEvent(thread.id, 'cut', 'turn.started', { text: 'protocol-only', displayText: 'visible-only', followupContextText: carried });
+  store.appendEvent(thread.id, 'cut', 'turn.error', { code: 'interrupted' });
+
+  await post(`/api/threads/${thread.id}/turns`, { text: 'next request' });
+  await untilIdle(thread.id);
+  const first = store.listEventsOfType(thread.id, 'turn.started').at(-1)!;
+  assert.ok(String(first.data.text).includes('Interrupted user request:\n' + carried.slice(-12_000)));
+  assert.equal(String(first.data.text).includes('discarded-prefix'), false);
+  assert.equal(first.data.followupContextText, (carried.slice(-12_000) + '\n\nnext request').slice(-12_000));
+
+  store.appendEvent(thread.id, 'cut-again', 'turn.started', { text: 'another envelope', displayText: 'next request', followupContextText: first.data.followupContextText });
+  store.appendEvent(thread.id, 'cut-again', 'turn.done', { stopReason: 'cancelled' });
+  await post(`/api/threads/${thread.id}/turns`, { text: 'final request' });
+  await untilIdle(thread.id);
+  const last = store.listEventsOfType(thread.id, 'turn.started').at(-1)!;
+  assert.equal(last.data.followupContextText, (String(first.data.followupContextText) + '\n\nfinal request').slice(-12_000));
+  assert.equal(String(last.data.followupContextText).length, 12_000);
+  assert.ok(String(last.data.followupContextText).endsWith('next request\n\nfinal request'));
+});
+
+test('follow-up context: unrelated failures and internal previous turns are not carried', async () => {
+  // Only interrupted user turns are eligible; internal envelopes and ordinary errors stay out.
+  const cases: Array<{ data: Record<string, unknown>; ending: 'turn.done' | 'turn.error'; end: Record<string, unknown> }> = [
+    { data: {}, ending: 'turn.done', end: { stopReason: 'end_turn' } },
+    { data: {}, ending: 'turn.error', end: { code: 'provider_error' } },
+    ...['handover', 'coordination', 'control', 'imported', 'fromTerminal', 'voiceSummary', 'background', 'hiddenPrompt', 'proactive', 'scheduled', 'review'].map(flag => ({ data: { [flag]: true }, ending: 'turn.done' as const, end: { stopReason: 'cancelled' } })),
+    { data: { source: 'background' }, ending: 'turn.done', end: { stopReason: 'cancelled' } },
+  ];
+  for (const { data, ending, end } of cases) {
+    const thread = await newThread({ agent: 'pi' });
+    store.appendEvent(thread.id, 'cut', 'turn.started', { text: 'old request', ...data });
+    store.appendEvent(thread.id, 'cut', ending, end);
+    await post(`/api/threads/${thread.id}/turns`, { text: 'new request' });
+    await untilIdle(thread.id);
+    const start = store.listEventsOfType(thread.id, 'turn.started').at(-1)!;
+    assert.equal(start.data.interruptedFollowup, undefined, JSON.stringify({ data, end }));
+    assert.equal(String(start.data.text).includes('[Calli interrupted-turn context]'), false);
+  }
+});
+
+test('follow-up context: commands and internal current requests keep their original prompts', async () => {
+  // The latest mainline's hidden/proactive callers must not acquire an unrelated interrupted ask.
+  const cases = [
+    { text: '/fixture-command' },
+    { text: 'new request', autoContinuation: true },
+    { text: 'new request', proactive: true },
+    { text: 'new request', scheduled: true },
+    { text: 'new request', review: true },
+    { text: 'protocol request', displayText: 'channel summary' },
+  ];
+  for (const input of cases) {
+    const thread = await newThread({ agent: 'pi' });
+    store.appendEvent(thread.id, 'cut', 'turn.started', { text: 'old request' });
+    store.appendEvent(thread.id, 'cut', 'turn.done', { stopReason: 'cancelled' });
+    await manager.startTurn(thread.id, input);
+    await untilIdle(thread.id);
+    const start = store.listEventsOfType(thread.id, 'turn.started').at(-1)!;
+    assert.equal(start.data.interruptedFollowup, undefined, JSON.stringify(input));
+    assert.equal(String(start.data.text).includes('[Calli interrupted-turn context]'), false);
+    assert.equal(start.data.displayText ?? start.data.text, input.displayText ?? input.text);
+  }
+});
+
+test('follow-up context: shared prompt headers do not confuse native history matching', async () => {
+  // Native history may omit a cancelled follow-up; its common header must not match a later ask.
+  const messagesFile = join(dataDir, 'pi-followup-messages.json');
+  process.env.FAKE_PI_MESSAGES_FILE = messagesFile;
+  try {
+    const thread = await newThread({ agent: 'pi' });
+    const sessionId = 'followup-history';
+    store.updateThread(thread.id, { agentSessionId: sessionId });
+    const prefix = '[Calli interrupted-turn context]\n' + 'shared prior request '.repeat(20) + '\nCurrent user message:\n';
+    const cancelled = prefix + 'cancelled follow-up';
+    const completed = prefix + 'completed follow-up';
+    assert.equal(cancelled.slice(0, 200), completed.slice(0, 200));
+    store.appendEvent(thread.id, 'cancelled-followup', 'turn.started', { text: cancelled, displayText: 'cancelled follow-up' });
+    store.appendEvent(thread.id, 'cancelled-followup', 'turn.done', { stopReason: 'cancelled' });
+    store.appendEvent(thread.id, 'completed-followup', 'turn.started', { text: completed, displayText: 'completed follow-up' });
+    store.appendEvent(thread.id, 'completed-followup', 'turn.done', { stopReason: 'end_turn' });
+    writeFileSync(messagesFile, JSON.stringify({ [sessionId]: [
+      { role: 'user', content: completed },
+      { role: 'assistant', content: [{ type: 'text', text: 'answer' }] },
+    ] }));
+    const response = await post(`/api/threads/${thread.id}/fork`, { turnId: 'completed-followup' });
+    assert.equal(response.status, 201, await response.text());
+  } finally {
+    delete process.env.FAKE_PI_MESSAGES_FILE;
+  }
 });
 
 test('claude: work the agent starts between prompts is a turn of its own, and messages wait behind it', async () => {

@@ -230,9 +230,27 @@ function shellQuote(value: string): string {
   return /^[A-Za-z0-9_./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+const FOLLOWUP_CONTEXT_PREFIX = '[Calli interrupted-turn context]';
+const FOLLOWUP_CONTEXT_LIMIT = 12_000;
+
 /** A turn's identity for matching hub turns against the agent's history. */
 function turnKey(text: string): string {
-  return text.trim().slice(0, 200);
+  const key = text.trim();
+  // Follow-ups share a long context header; the complete prompt distinguishes their requests.
+  return key.startsWith(FOLLOWUP_CONTEXT_PREFIX) ? key : key.slice(0, 200);
+}
+
+function interruptedFollowupPrompt(previous: string, current: string): string {
+  return [
+    FOLLOWUP_CONTEXT_PREFIX,
+    'The previous user request below was interrupted before completion. The current message may be a short follow-up to that request. Use the interrupted request as context when interpreting the current message. If the current message is unrelated, answer the current message.',
+    '',
+    'Interrupted user request:',
+    previous,
+    '',
+    'Current user message:',
+    current,
+  ].join('\n');
 }
 
 /**
@@ -1894,6 +1912,31 @@ export class ThreadManager {
     return compactDeltas(coalesceToolEvents(this.store.iterateEvents(threadId, afterSeq)));
   }
 
+  /** Recovers only user request text from the latest interrupted turn, never tool output. */
+  private interruptedFollowupContext(threadId: string): string | null {
+    const last = this.store.listTurns(threadId).at(-1);
+    if (!last) return null;
+    const events = this.store.listTurnEvents(threadId, last.turnId);
+    const start = events.find(e => e.type === 'turn.started');
+    const end = [...events].reverse().find(e => e.type === 'turn.done' || e.type === 'turn.error');
+    if (!start || !end) return null;
+    const cancelled = end.type === 'turn.done' && end.data.stopReason === 'cancelled';
+    const interrupted = end.type === 'turn.error' && end.data.code === 'interrupted';
+    if (!cancelled && !interrupted) return null;
+    if (start.data.handover || start.data.coordination || start.data.control || start.data.imported
+      || start.data.fromTerminal || start.data.source === 'background' || start.data.background
+      || start.data.hiddenPrompt || start.data.proactive || start.data.voiceSummary
+      || start.data.scheduled || start.data.review) return null;
+    const text = typeof start.data.followupContextText === 'string'
+      ? start.data.followupContextText
+      : typeof start.data.displayText === 'string'
+        ? start.data.displayText
+        : typeof start.data.text === 'string'
+          ? start.data.text
+          : '';
+    return text.trim().slice(-FOLLOWUP_CONTEXT_LIMIT) || null;
+  }
+
   /** How far back, in stored events, one page of history reaches before stopping at a turn's start. */
   private static readonly PAGE_BUDGET = 2_000;
 
@@ -2429,6 +2472,9 @@ export class ThreadManager {
     rawText = this.coordination?.mentionText(threadId, originalText, mentions) ?? originalText;
     // Slash commands have their own argument grammar; hidden instructions become unwanted arguments.
     const slashCommand = /^\/\S+/.test(rawText);
+    // Internal callers may attach protocol context. Only the person's words (or a channel
+    // summary) belong in the conversation, its queue, and later replay/continuation views.
+    const displayText = delivery?.displayText ?? input.displayText ?? rawText.split('\n\n[指定协作对象]')[0];
     // A collaboration member spoken to by the person directly answers the person, not the lead.
     const fromUser = Boolean(input.fromUser && !delivery && this.coordination?.isMember(threadId));
     // A resent prompt (a retry, a handover) carries its blocks already: they are not attached twice.
@@ -2436,13 +2482,24 @@ export class ThreadManager {
     const coordinated = slashCommand ? rawText : rawText ? (this.coordination?.instructions(input.handoverFrom ?? threadId, rawText, fromUser, gate) ?? rawText) : '';
     // A background question goes as asked: no hints, tools or progress request around it.
     const bare = this.backgroundThreads.has(threadId);
+    const interruptedContext = !bare && !slashCommand && Boolean(rawText) && !input.voiceSummary && !input.handover
+      && !input.autoContinuation && !input.scheduled && !input.review && !input.proactive && !delivery
+      && input.displayText === undefined
+      ? this.interruptedFollowupContext(threadId)
+      : null;
     const discoverable = slashCommand || !rawText || bare ? coordinated : this.personal.instructions(threadId, this.borrowing?.instructions(threadId, coordinated, gate) ?? coordinated, gate);
     // With the board's consent, the agent is asked to say where the work stands; read back at the end.
     // Writing mode's way of working for its stage; an edit the person made is mentioned once.
     const writing = !slashCommand && rawText ? thread.writing : null;
     const written = writing ? writingInstructions(discoverable, writing) : discoverable;
+    const followupContextText = interruptedContext
+      ? [interruptedContext, displayText].filter(Boolean).join('\n\n').slice(-FOLLOWUP_CONTEXT_LIMIT)
+      : null;
+    // If the prior user request was cancelled before the native agent kept it, a short follow-up
+    // like "what is it for?" still needs that interrupted request to interpret the ask.
+    const contextual = interruptedContext ? interruptedFollowupPrompt(interruptedContext, written) : written;
     const askProgress = !bare && !slashCommand && Boolean(rawText) && this.progressWanted();
-    const text = askProgress ? progressInstructions(written, gate) : written;
+    const text = askProgress ? progressInstructions(contextual, gate) : contextual;
 
     if (rawImages.length > 0) {
       const adapter = this.adapters.get(thread.agent);
@@ -2456,9 +2513,6 @@ export class ThreadManager {
     }
     const { stored, images } = this.attachments.save(threadId, rawImages);
     const promptText = text + this.attachments.videoNote(threadId, storedVideos);
-    // Internal callers may attach protocol context. Only the person's words (or a channel
-    // summary) belong in the conversation, its queue, and later replay/continuation views.
-    const displayText = delivery?.displayText ?? input.displayText ?? rawText.split('\n\n[指定协作对象]')[0];
 
     const turnId = delivery?.turnId ?? reservedTurnId ?? randomUUID();
     if (askProgress) this.reportTurns.add(turnId);
@@ -2491,6 +2545,12 @@ export class ThreadManager {
           ...(delivery ? { coordination: delivery.source } : {}),
           ...(fromUser ? { fromUser: true } : {}),
           ...(promptText !== displayText ? { displayText } : {}),
+          ...(interruptedContext ? {
+            // The delivered prompt includes the previous interrupted request.
+            interruptedFollowup: true,
+            // Bounded user request text reused if this follow-up is interrupted too.
+            followupContextText,
+          } : {}),
           ...(stored.length ? { images: stored } : {}),
           ...(storedVideos.length ? { videos: storedVideos } : {}),
           ...(typeof input.handover === 'string' && input.handover ? { handover: input.handover, handoverLabel: this.adapters.get(input.handover)?.label ?? input.handover } : {}),

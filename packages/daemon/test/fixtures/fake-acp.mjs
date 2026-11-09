@@ -346,7 +346,9 @@ rl.on('line', (line) => {
     case 'session/prompt': {
       recordSession(dsh ? 'dsh' : traex ? 'traex' : 'claude', msg.params.sessionId);
       const blocks = msg.params.prompt;
-      const text = blocks.filter((p) => p.type === 'text').map((p) => p.text).join('');
+      let text = blocks.filter((p) => p.type === 'text').map((p) => p.text).join('');
+      // Fixture commands belong to the current ask, not the interrupted request in its envelope.
+      if (text.includes('[Calli interrupted-turn context]\n')) text = text.split('\nCurrent user message:\n').at(-1);
       const lifecycle = text.match(/approval lifecycle (after-cancel|error|end|exit)/)?.[1];
       if (lifecycle) {
         if (lifecycle === 'after-cancel') {
