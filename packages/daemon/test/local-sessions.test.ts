@@ -18,7 +18,8 @@ let workdir: string;
 let outside: string;
 let adapters: Map<string, AgentAdapter>;
 let sessionsFile: string;
-let imported: Set<string>;
+let imported: Map<string, string>;
+let instances: Array<{ id: string; hidden: boolean; store: string }>;
 let scanner: LocalSessions;
 
 before(() => {
@@ -29,11 +30,13 @@ before(() => {
   process.env.FAKE_ACP_SESSIONS_FILE = sessionsFile;
   adapters = new Map<string, AgentAdapter>();
   adapters.set('claude', new ClaudeAcpAdapter([process.execPath, join(here, 'fixtures', 'fake-acp.mjs')]));
-  imported = new Set<string>();
+  imported = new Map<string, string>();
+  instances = [{ id: 'claude', hidden: false, store: 'claude:' }];
   scanner = new LocalSessions({
     adapters,
     workdirs: () => [workdir],
-    imported: (agent, sessionId) => imported.has(`${agent}:${sessionId}`),
+    importedSessions: () => imported,
+    instances: () => instances,
   });
 });
 
@@ -46,7 +49,7 @@ after(() => {
 /** The fake agent's session list: two in the workdir, one outside it, one in a removed directory. */
 function givenSessions(): void {
   mkdirSync(join(workdir, 'app'), { recursive: true });
-  imported.clear();
+  imported = new Map<string, string>();
   writeFileSync(sessionsFile, JSON.stringify([
     { sessionId: 's-old', cwd: workdir, title: 'Older work', updatedAt: '2026-03-01T10:00:00.000Z' },
     { sessionId: 's-new', cwd: join(workdir, 'app'), title: 'Newer work', updatedAt: '2026-03-02T10:00:00.000Z' },
@@ -84,10 +87,92 @@ test('pages continue at the cursor, and one timestamp shared by two rows splits 
 test('a session that becomes a thread leaves the list without waiting for the next scan', async () => {
   givenSessions();
   await scanner.scan();
-  imported.add('claude:s-new');
+  imported.set('s-new', 'claude');
   const page = scanner.page(100, null);
   assert.equal(page.sessions.some((s) => s.sessionId === 's-new'), false);
   assert.equal(page.sessions.some((s) => s.sessionId === 's-old'), true);
+});
+
+test('hidden instances are skipped, and one session store is asked once', async () => {
+  givenSessions();
+  const asked: string[] = [];
+  const stub = (id: string): unknown => ({
+    capabilities: { history: true },
+    listSessions: async () => {
+      asked.push(id);
+      return [
+        { id: `${id}-1`, cwd: workdir, title: `Work of ${id}`, updatedAt: '2026-03-05T10:00:00.000Z' },
+      ];
+    },
+  });
+  const stores = new LocalSessions({
+    adapters: new Map<string, AgentAdapter>([
+      ['claude', stub('claude') as AgentAdapter],
+      ['claude-2', stub('claude-2') as AgentAdapter],
+      ['pi', stub('pi') as AgentAdapter],
+    ]),
+    workdirs: () => [workdir],
+    importedSessions: () => new Map<string, string>(),
+    // claude and claude-2 share the default store; claude-3 has an account env but is hidden.
+    instances: () => [
+      { id: 'claude', hidden: false, store: 'claude:' },
+      { id: 'claude-2', hidden: false, store: 'claude:' },
+      { id: 'claude-3', hidden: true, store: 'claude:other' },
+      { id: 'pi', hidden: false, store: 'pi' },
+    ],
+  });
+  await stores.scan();
+  // One ask per store, from its first instance; the hidden instance is nobody's representative.
+  assert.deepEqual(asked.sort(), ['claude', 'pi']);
+  const page = stores.page(100, null);
+  assert.deepEqual(page.sessions.map((s) => s.agent).sort(), ['claude', 'pi']);
+  assert.equal(page.sessions.some((s) => s.agent === 'claude-2'), false);
+});
+
+test('a hub that does not scan this machine runs nothing and lists nothing', async () => {
+  givenSessions();
+  const off = new LocalSessions({
+    adapters: new Map<string, AgentAdapter>([['claude', {
+      capabilities: { history: true },
+      listSessions: () => Promise.reject(new Error('must not be asked')),
+    } as unknown as AgentAdapter]]),
+    workdirs: () => [workdir],
+    importedSessions: () => new Map<string, string>(),
+    instances: () => [{ id: 'claude', hidden: false, store: 'claude:' }],
+  }, { enabled: false });
+  off.start();
+  off.ensureFresh();
+  await off.scan();
+  assert.deepEqual(off.page(100, null), { sessions: [], nextCursor: null, scannedAt: null });
+});
+
+test('a request rescans only when the list has gone stale', async () => {
+  givenSessions();
+  let clock = Date.parse('2026-03-02T12:00:00.000Z');
+  let calls = 0;
+  const settle = () => new Promise((r) => setTimeout(r, 30));
+  const counting = new LocalSessions({
+    adapters: new Map<string, AgentAdapter>([['claude', {
+      capabilities: { history: true },
+      listSessions: async () => {
+        calls += 1;
+        return (adapters.get('claude')!.listSessions!());
+      },
+    } as unknown as AgentAdapter]]),
+    workdirs: () => [workdir],
+    importedSessions: () => new Map<string, string>(),
+    instances: () => [{ id: 'claude', hidden: false, store: 'claude:' }],
+    now: () => clock,
+  });
+  await counting.scan();
+  assert.equal(calls, 1);
+  counting.ensureFresh(); // the list is fresh: nothing starts
+  await settle();
+  assert.equal(calls, 1);
+  clock += 6 * 60_000;
+  counting.ensureFresh(); // stale now: one scan, shared by any request that follows
+  await counting.scan();
+  assert.equal(calls, 2);
 });
 
 test('a failing agent keeps its last list; the rest of the scan is unaffected', async () => {

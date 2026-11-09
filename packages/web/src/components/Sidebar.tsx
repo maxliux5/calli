@@ -366,6 +366,9 @@ export function Sidebar({
             ) : agents !== null ? (
               <span className="agent-tag">{session.agent}</span>
             ) : null}
+            {/* The one quiet mark that this is a conversation on disk, not a thread yet; the row's
+                tooltip says it in words. */}
+            <i className="external-dot" aria-hidden="true" />
           </span>
         </button>
       </div>

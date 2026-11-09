@@ -285,6 +285,13 @@ export class AgentRegistry {
     return [...this.instances.values()];
   }
 
+  /** Whether this hub owns its agent list as a file. False for an inline `CALLI_AGENTS_JSON`
+   *  list — a test or script machine, whose list (and machine) must not be scanned as the
+   *  person's own. */
+  get ownsFile(): boolean {
+    return this.file !== null;
+  }
+
   get(id: string): AgentInstance {
     const instance = this.instances.get(id);
     if (!instance) throw new HttpError(404, `unknown agent: ${id}`);
@@ -649,10 +656,11 @@ export class AgentRegistry {
   }
 
   /** Runs {@link autoJoin} now and then on a timer; `dispose` stops it. `CALLI_AUTO_JOIN=off`
-   *  turns the joining off for anyone who wants a list that only changes by hand. */
+   *  turns the joining off for anyone who wants a list that only changes by hand;
+   *  `CALLI_LOCAL_SCAN=off` is the wider switch that also stops the machine's other scanners. */
   startAutoJoin(everyMs = 10 * 60_000, env: NodeJS.ProcessEnv = process.env): void {
     // A registry without a file joins nothing (see autoJoin), so no timer is started either.
-    if (env.CALLI_AUTO_JOIN === 'off' || !this.file) return;
+    if (env.CALLI_AUTO_JOIN === 'off' || env.CALLI_LOCAL_SCAN === 'off' || !this.file) return;
     const run = () => void this.autoJoin().catch((error) =>
       console.warn(`warning: agent auto-join failed: ${error instanceof Error ? error.message : error}`));
     run();

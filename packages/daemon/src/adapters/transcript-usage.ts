@@ -1,4 +1,5 @@
 import { readdirSync, statSync } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { configDirectory } from './session-location.js';
@@ -149,18 +150,23 @@ export function codexHomes(instanceEnvs: Array<Record<string, string>>): string[
 
 /** Claude transcripts that changed since the cutoff: every config directory's projects tree,
  *  subagent sessions included. A munged directory holds the main `<sessionId>.jsonl` files and,
- *  one level deeper, `<sessionId>/subagents/*.jsonl`; both are counted under their session. */
-export function claudeTranscriptFiles(configDirs: string[], cutoffMs: number): string[] {
+ *  one level deeper, `<sessionId>/subagents/*.jsonl`; both are counted under their session.
+ *
+ *  The walk is async and yields between directories: a machine with hundreds of transcripts must
+ *  not hold the hub's event loop over them. */
+export async function claudeTranscriptFiles(configDirs: string[], cutoffMs: number): Promise<string[]> {
   const out: string[] = [];
-  const readJsonl = (dir: string, name: string): void => {
+  const readJsonl = async (dir: string, name: string): Promise<void> => {
     const path = join(dir, name);
-    if (fresh(path, cutoffMs)) out.push(path);
+    try {
+      if ((await stat(path)).mtimeMs >= cutoffMs) out.push(path);
+    } catch { /* gone between listing and stat */ }
   };
   for (const dir of configDirs) {
     const projects = join(dir, 'projects');
-    let munged: Array<{ name: string; isDirectory: () => boolean }>;
+    let munged;
     try {
-      munged = readdirSync(projects, { withFileTypes: true });
+      munged = await readdir(projects, { withFileTypes: true });
     } catch {
       continue; // not installed, or no conversations yet
     }
@@ -169,24 +175,24 @@ export function claudeTranscriptFiles(configDirs: string[], cutoffMs: number): s
       const cwdDir = join(projects, folder.name);
       let entries;
       try {
-        entries = readdirSync(cwdDir, { withFileTypes: true });
+        entries = await readdir(cwdDir, { withFileTypes: true });
       } catch {
         continue;
       }
       for (const entry of entries) {
         if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-          readJsonl(cwdDir, entry.name);
+          await readJsonl(cwdDir, entry.name);
         } else if (entry.isDirectory()) {
           // Subagent transcripts of the session this directory is named for.
           const subagents = join(cwdDir, entry.name, 'subagents');
           let subs;
           try {
-            subs = readdirSync(subagents, { withFileTypes: true });
+            subs = await readdir(subagents, { withFileTypes: true });
           } catch {
             continue;
           }
           for (const sub of subs) {
-            if (sub.isFile() && sub.name.endsWith('.jsonl')) readJsonl(subagents, sub.name);
+            if (sub.isFile() && sub.name.endsWith('.jsonl')) await readJsonl(subagents, sub.name);
           }
         }
       }
@@ -195,22 +201,25 @@ export function claudeTranscriptFiles(configDirs: string[], cutoffMs: number): s
   return out;
 }
 
-/** Codex rollouts that changed since the cutoff, from `sessions/YYYY/MM/DD/` and `archived_sessions/`. */
-export function codexTranscriptFiles(homes: string[], cutoffMs: number): string[] {
+/** Codex rollouts that changed since the cutoff, from `sessions/YYYY/MM/DD/` and
+ *  `archived_sessions/`; async like the Claude walk above. */
+export async function codexTranscriptFiles(homes: string[], cutoffMs: number): Promise<string[]> {
   const out: string[] = [];
   for (const home of homes) {
     const sessions = join(home, 'sessions');
     try {
-      for (const year of readdirSync(sessions, { withFileTypes: true })) {
+      for (const year of await readdir(sessions, { withFileTypes: true })) {
         if (!year.isDirectory() || !/^\d{4}$/.test(year.name)) continue;
-        for (const month of readdirSync(join(sessions, year.name), { withFileTypes: true })) {
+        for (const month of await readdir(join(sessions, year.name), { withFileTypes: true })) {
           if (!month.isDirectory() || !/^\d{2}$/.test(month.name)) continue;
-          for (const day of readdirSync(join(sessions, year.name, month.name), { withFileTypes: true })) {
+          for (const day of await readdir(join(sessions, year.name, month.name), { withFileTypes: true })) {
             if (!day.isDirectory() || !/^\d{2}$/.test(day.name)) continue;
-            for (const file of readdirSync(join(sessions, year.name, month.name, day.name), { withFileTypes: true })) {
+            for (const file of await readdir(join(sessions, year.name, month.name, day.name), { withFileTypes: true })) {
               if (file.isFile() && file.name.startsWith('rollout-') && file.name.endsWith('.jsonl')) {
                 const path = join(sessions, year.name, month.name, day.name, file.name);
-                if (fresh(path, cutoffMs)) out.push(path);
+                try {
+                  if ((await stat(path)).mtimeMs >= cutoffMs) out.push(path);
+                } catch { /* gone between listing and stat */ }
               }
             }
           }
@@ -221,10 +230,12 @@ export function codexTranscriptFiles(homes: string[], cutoffMs: number): string[
     }
     const archived = join(home, 'archived_sessions');
     try {
-      for (const file of readdirSync(archived, { withFileTypes: true })) {
+      for (const file of await readdir(archived, { withFileTypes: true })) {
         if (file.isFile() && file.name.startsWith('rollout-') && file.name.endsWith('.jsonl')) {
           const path = join(archived, file.name);
-          if (fresh(path, cutoffMs)) out.push(path);
+          try {
+            if ((await stat(path)).mtimeMs >= cutoffMs) out.push(path);
+          } catch { /* gone between listing and stat */ }
         }
       }
     } catch { /* none */ }
@@ -245,12 +256,5 @@ export function transcriptSession(path: string): string {
   return name;
 }
 
-function fresh(path: string, cutoffMs: number): boolean {
-  try {
-    return statSync(path).mtimeMs >= cutoffMs;
-  } catch {
-    return false;
-  }
-}
 
 export const transcriptHome = () => process.env.HOME ?? homedir();

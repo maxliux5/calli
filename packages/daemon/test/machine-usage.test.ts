@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
@@ -256,3 +256,22 @@ function stubManager(): any {
     allowedWorkdirs: [],
   };
 }
+
+test('a big transcript is read in bounded rounds: 4 MiB per file per scan, the rest follows', async () => {
+  const m = makeMeter();
+  try {
+    // Small reply lines past two rounds' cap: the first scan stops at the cap, the second finishes.
+    const count = 40_000;
+    const lines: unknown[] = Array.from({ length: count }, (_, i) =>
+      claudeReply(`msg_bulk_${i}`, '2026-11-09T10:00:00Z', { input_tokens: 1, output_tokens: 1 }));
+    const path = claudeTranscript(m.home, '11111111-1111-1111-1111-111111111111', lines);
+    assert.ok(statSync(path).size > 4_194_304, 'the fixture must be bigger than one 4 MiB round');
+    await m.meter.scan();
+    const first = m.meter.report(1, undefined, undefined);
+    assert.ok(first.total.replies > 0 && first.total.replies < count, `the first round is bounded (got ${first.total.replies})`);
+    await m.meter.scan();
+    const second = m.meter.report(1, undefined, undefined);
+    assert.equal(second.total.replies, count);
+    assert.equal(second.total.input, count);
+  } finally { m.done(); }
+});

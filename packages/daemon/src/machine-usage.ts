@@ -1,5 +1,4 @@
-import { FileHandle, open } from 'node:fs/promises';
-import { closeSync, openSync, readSync, statSync } from 'node:fs';
+import { FileHandle, open, stat } from 'node:fs/promises';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   claudeConfigDirs, claudeTranscriptFiles, codexHomes, codexTranscriptFiles,
@@ -24,8 +23,9 @@ import { HttpError } from './errors.js';
 
 /** Persona's window: the newest hour twice over, so every "today" fits. */
 const WINDOW_MS = 26 * 60 * 60 * 1000;
-/** Per file and scan; a backlog continues on the next scan. */
-const MAX_READ = 64 << 20;
+/** Per file and scan — the observability polls' own cap; a backlog continues on the next scan,
+ *  and every read is async, so the hub's event loop is never held over a transcript. */
+const MAX_FILE_ROUND = 4 << 20;
 /** Longer lines (pictures) are skipped: usage lines are small. */
 const MAX_LINE = 16 << 20;
 /** Files at most this big are read whole on first sight; bigger ones start at the window. */
@@ -137,10 +137,10 @@ export class MachineUsageMeter {
 
     const { claudeDirs, codexHomes } = this.deps.sources();
     this.owners = this.deps.launchers();
-    for (const path of claudeTranscriptFiles(claudeDirs, cutoff)) await this.scanClaude(path, cutoff);
-    for (const path of codexTranscriptFiles(codexHomes, cutoff)) await this.scanCodex(path, cutoff);
+    for (const path of await claudeTranscriptFiles(claudeDirs, cutoff)) await this.scanClaude(path, cutoff);
+    for (const path of await codexTranscriptFiles(codexHomes, cutoff)) await this.scanCodex(path, cutoff);
 
-    this.prune(cutoff);
+    await this.prune(cutoff);
     this.persist();
     this.downsample(now);
   }
@@ -194,7 +194,7 @@ export class MachineUsageMeter {
   }
 
   private async scanClaude(path: string, cutoff: number): Promise<void> {
-    const state = this.fileState(path, cutoff);
+    const state = await this.fileState(path, cutoff);
     await readLines(path, state, (line) => {
       const usage = parseClaudeUsageLine(line);
       if (!usage) return;
@@ -208,7 +208,7 @@ export class MachineUsageMeter {
   }
 
   private async scanCodex(path: string, cutoff: number): Promise<void> {
-    const state = this.fileState(path, cutoff);
+    const state = await this.fileState(path, cutoff);
     await readLines(path, state, (line) => {
       const model = parseCodexModel(line);
       if (model) { state.model = model; return; }
@@ -224,14 +224,14 @@ export class MachineUsageMeter {
   }
 
   /** Fresh state for a first-seen file, starting a big one where the window begins. */
-  private fileState(path: string, cutoff: number): FileState {
+  private async fileState(path: string, cutoff: number): Promise<FileState> {
     let state = this.files.get(path);
-    const size = sizeOf(path);
+    const size = await sizeOf(path);
     if (state && size < state.offset) state = undefined; // rewritten: read it again
     if (!state) {
       state = {
         session: transcriptSession(path),
-        offset: size > SMALL_FILE ? startOffset(path, size, cutoff) : 0,
+        offset: size > SMALL_FILE ? await startOffset(path, size, cutoff) : 0,
         lastId: '',
         model: '',
         lastTotal: 0,
@@ -268,13 +268,18 @@ export class MachineUsageMeter {
     }
   }
 
-  private prune(cutoff: number): void {
+  private async prune(cutoff: number): Promise<void> {
     const minute = Math.floor(cutoff / 60_000) * 60;
     for (const [id, { key }] of this.buckets) if (key.minute < minute) this.buckets.delete(id);
     for (const [reply, at] of this.counted) if (at < minute) this.counted.delete(reply);
     for (const [path] of this.files) {
-      const stat = statSync(path, { throwIfNoEntry: false });
-      if (!stat || stat.mtimeMs < cutoff) this.files.delete(path);
+      let alive = true;
+      try {
+        alive = (await stat(path)).mtimeMs >= cutoff;
+      } catch {
+        alive = false;
+      }
+      if (!alive) this.files.delete(path);
     }
   }
 
@@ -359,9 +364,9 @@ function tokensOf(usage: UsageBucket): number {
  * MAX_LINE are skipped: usage lines are small, and a picture line would be megabytes.
  */
 async function readLines(path: string, state: FileState, onLine: (line: string) => void): Promise<void> {
-  const size = sizeOf(path);
+  const size = await sizeOf(path);
   if (size <= state.offset) return;
-  const end = Math.min(size, state.offset + MAX_READ);
+  const end = Math.min(size, state.offset + MAX_FILE_ROUND);
   let handle: FileHandle;
   try {
     handle = await open(path, 'r');
@@ -419,21 +424,21 @@ async function readLines(path: string, state: FileState, onLine: (line: string) 
 
 /** Where in a big file the window starts: lines are written in time order, so step back from the
  *  end (doubling) until a line is older than the cutoff. */
-function startOffset(path: string, size: number, cutoff: number): number {
+async function startOffset(path: string, size: number, cutoff: number): Promise<number> {
   try {
     const buffer = Buffer.alloc(256 << 10);
     for (let step = SMALL_FILE; ; step *= 2) {
       const pos = size - step;
       if (pos <= 0) return 0;
-      const fd = openSync(path, 'r');
+      const handle = await open(path, 'r');
       try {
-        const bytesRead = readSync(fd, buffer, 0, buffer.length, pos);
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, pos);
         const nl = buffer.subarray(0, bytesRead).indexOf('\n');
         if (nl < 0) continue; // inside a long line: step further back
         const at = firstTimestamp(buffer.subarray(nl + 1, bytesRead).toString('utf8'));
         if (at !== null && at < cutoff) return pos + nl + 1;
       } finally {
-        closeSync(fd);
+        await handle.close();
       }
     }
   } catch {
@@ -451,9 +456,9 @@ function firstTimestamp(text: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function sizeOf(path: string): number {
+async function sizeOf(path: string): Promise<number> {
   try {
-    return statSync(path).size;
+    return (await stat(path)).size;
   } catch {
     return 0;
   }

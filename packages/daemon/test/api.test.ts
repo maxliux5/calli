@@ -1101,7 +1101,8 @@ test('local sessions: listed as external rows, and an import turns one into a no
   const scanner = new LocalSessions({
     adapters,
     workdirs: () => [workdir],
-    imported: (agent, sessionId) => !!store.findThreadByAgentSession(agent, sessionId),
+    importedSessions: () => store.agentSessionOwners(),
+    instances: () => [{ id: 'claude', hidden: false, store: 'claude:' }],
   });
   await scanner.scan();
   const srv = createHttpServer({ manager, token: TOKEN, webDir: null, version: 'test', localSessions: scanner });
