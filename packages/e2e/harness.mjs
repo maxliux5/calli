@@ -111,6 +111,9 @@ export async function startDaemon(env = {}, opts = {}) {
     HOME: homeDir,
     // The fake agents are shims in binDir, so that directory leads the PATH.
     PATH: `${binDir}:${process.env.PATH ?? ''}`,
+    // A test hub's agents are the fakes it was given; the machine's real CLIs and accounts
+    // must not auto-join it, however the fakes were configured (inline or agents.json).
+    CALLI_AUTO_JOIN: 'off',
     CALLI_TOKEN: TOKEN,
     CALLI_HOST: '127.0.0.1',
     CALLI_PORT: String(port),

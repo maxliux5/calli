@@ -219,7 +219,8 @@ export class AgentRegistry {
 
   constructor(
     instances: AgentInstance[],
-    /** Where `agents.json` lives, or null for a read-only registry (tests). */
+    /** Where `agents.json` lives, or null for a list the hub does not own (an inline
+     *  `CALLI_AGENTS_JSON` hub, or a read-only registry in tests). */
     file: string | null,
     /** The built-in commands, kept as a fallback after the instance that supplied one is removed. */
     builtIn: AgentInstance[] = [],
@@ -256,7 +257,9 @@ export class AgentRegistry {
     }
   }
 
-  /** Builds a registry from the environment: `agents.json` in the data dir, or the defaults. */
+  /** Builds a registry from the environment: `CALLI_AGENTS_JSON` inline, `agents.json` in the
+   *  data dir, or the defaults. An inline list is read-only, and {@link autoJoin} leaves it
+   *  alone: it names a test or script machine, not the person's hub. */
   static fromEnv(opts: {
     dataDir: string;
     env: NodeJS.ProcessEnv;
@@ -611,8 +614,13 @@ export class AgentRegistry {
    * Adds what discovery finds on this machine, as the page's one-click entries do: another copy of
    * a known CLI on PATH, and a signed-in account no instance links yet. What the person removed
    * stays out for good. A failing or odd-looking find is skipped, never fatal to the rest.
+   *
+   * A registry the hub does not own — an inline `CALLI_AGENTS_JSON` list, or a read-only test
+   * registry — joins nothing: a test or script machine must not pick up this machine's real CLIs
+   * and accounts. The page's own 「发现/添加」 entries keep working on it all the same.
    */
   async autoJoin(): Promise<AgentInstance[]> {
+    if (!this.file) return [];
     const added: AgentInstance[] = [];
     for (const found of await this.discover()) {
       if (this.removed.paths.includes(realPathOf(found.command))) continue;
@@ -640,8 +648,11 @@ export class AgentRegistry {
     return added;
   }
 
-  /** Runs {@link autoJoin} now and then on a timer; `dispose` stops it. */
-  startAutoJoin(everyMs = 10 * 60_000): void {
+  /** Runs {@link autoJoin} now and then on a timer; `dispose` stops it. `CALLI_AUTO_JOIN=off`
+   *  turns the joining off for anyone who wants a list that only changes by hand. */
+  startAutoJoin(everyMs = 10 * 60_000, env: NodeJS.ProcessEnv = process.env): void {
+    // A registry without a file joins nothing (see autoJoin), so no timer is started either.
+    if (env.CALLI_AUTO_JOIN === 'off' || !this.file) return;
     const run = () => void this.autoJoin().catch((error) =>
       console.warn(`warning: agent auto-join failed: ${error instanceof Error ? error.message : error}`));
     run();
@@ -649,16 +660,23 @@ export class AgentRegistry {
     this.autoJoinTimer.unref?.();
   }
 
-  /** Records what a removed instance was: every executable it ran and every env entry it set. */
+  /** Records what a removed instance was, so a later discovery scan does not bring it straight
+   *  back. An instance that runs an account is remembered by its env alone: its executable is the
+   *  adapter's own, shared with every other instance of it, and blacklisting that path would keep
+   *  plain CLI copies of the same binary out for good. A plain CLI copy is remembered by its
+   *  executable's real path. */
   private rememberRemoved(instance: AgentInstance): void {
-    const dirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
-    const command = instance.command ?? this.defaultCommands.get(instance.adapter) ?? [];
-    for (const [i, token] of command.entries()) {
-      if (i > 0 && !token.includes('/') && !token.includes('\\')) continue;
-      const path = resolveCommandPath(token, dirs);
-      if (!path) continue;
-      const real = realPathOf(path);
-      if (!this.removed.paths.includes(real)) this.removed.paths.push(real);
+    const runsAccount = Object.keys(instance.env ?? {}).length > 0 || instance.account != null;
+    if (!runsAccount) {
+      const dirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
+      const command = instance.command ?? this.defaultCommands.get(instance.adapter) ?? [];
+      for (const [i, token] of command.entries()) {
+        if (i > 0 && !token.includes('/') && !token.includes('\\')) continue;
+        const path = resolveCommandPath(token, dirs);
+        if (!path) continue;
+        const real = realPathOf(path);
+        if (!this.removed.paths.includes(real)) this.removed.paths.push(real);
+      }
     }
     for (const [key, value] of Object.entries(instance.env ?? {})) {
       const entry = `${key}=${value}`;

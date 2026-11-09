@@ -56,8 +56,10 @@ async function main(): Promise<void> {
   });
   const adapters = registry.adapters;
   // Copies of known CLIs and signed-in accounts found on this machine join the list on their own
-  // (every 10 minutes); what the person removed stays out. The page's 「发现/添加」 entries keep
-  // working alongside. dispose(), called on shutdown, stops the timer.
+  // (every 10 minutes); what the person removed stays out. An inline CALLI_AGENTS_JSON hub (tests,
+  // scripts) owns its list outright and joins nothing, and CALLI_AUTO_JOIN=off turns it off for
+  // anyone. The page's 「发现/添加」 entries keep working alongside. dispose(), called on shutdown,
+  // stops the timer.
   registry.startAutoJoin();
 
   // Model lists take a few seconds to probe, so start now instead of on the first page load.
