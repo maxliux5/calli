@@ -10131,6 +10131,29 @@ div.file-card:hover { background: var(--surface); }
 }
 .project-browser-row:hover .project-browser-enter, .project-browser-enter:focus-visible { opacity: 1; }
 .project-browser-enter:hover { background: var(--surface); color: var(--text); }
+/* The tree: a folder's triangle (or a gap where a leaf has none), then its name, then a check
+   when it is the chosen one. Indentation comes from the row's own padding, one step per level. */
+.dir-tree-row { display: flex; align-items: center; gap: 2px; min-height: 32px; border-radius: 6px; }
+.dir-tree-row .project-browser-folder { padding-right: 4px; }
+.dir-tree-caret {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.dir-tree-caret:hover { background: var(--hover); color: var(--text); }
+.dir-tree-caret svg { transition: transform 0.13s ease; }
+.dir-tree-caret.open svg { transform: rotate(90deg); }
+.dir-tree-gap { flex: none; width: 26px; }
+.dir-tree-check { flex: none; display: inline-flex; padding-right: 8px; color: var(--accent); }
+.dir-tree-note { margin: 2px 2px 6px; }
 .project-browser-folder.up { color: var(--muted); }
 .project-browser-tw { display: inline-flex; width: 15px; flex: none; }
 .project-browser-up { font-family: var(--mono); font-size: 12.5px; width: 20px; text-align: center; flex: none; }

@@ -18,6 +18,7 @@ before(async () => {
   added = join(remoteHome, '手动添加的项目');
   mkdirSync(added);
   remote = await startDaemon({ HOME: remoteHome, CALLI_SOCKET: join(remoteHome, '.local/state/calli/daemon.sock') });
+  mkdirSync(join(remote.workdir, '子目录'));
   const machines = join(root, 'machines.json');
   writeFileSync(machines, JSON.stringify({ devbox: { home: remoteHome } }));
   hub = await startDaemon({ CALLI_SSH_BIN: 'fake-ssh', FAKE_SSH_HOSTS: machines });
@@ -99,15 +100,12 @@ for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark'])
       let dialog = await openPicker(page, row);
       assert.ok(await dialog.locator('.project-browser-machine', { hasText: '开发机' }).count(), 'the picker names the machine');
       await shot(page, `rootsview-${tag}`);
-      // The roots view is not a dead start: a chevron steps into a root, and from there the picker
-      // browses that machine freely. (Up appears only within the machine's home and its roots —
-      // this fixture's workdir sits in /tmp, so the up button shows one level deeper, in home.)
-      const rootName = await dialog.locator('.project-browser-folder').first().evaluate((el) => el.querySelector('span')?.textContent ?? '');
-      await dialog.getByRole('button', { name: `进入 ${rootName}`, exact: true }).click();
-      await dialog.getByText('这里没有可浏览的子目录').waitFor();
+      // The tree opens with the first root's children already in place: no separate "enter" step.
+      await dialog.locator('.project-browser-folder', { hasText: '子目录' }).waitFor();
+      // A typed address opens that folder in the tree; the home folder itself is not a project.
       await gotoPath(dialog, '~');
-      await dialog.getByRole('button', { name: '进入 手动添加的项目', exact: true }).click();
-      await dialog.getByRole('button', { name: '上一级', exact: true }).waitFor();
+      await dialog.getByRole('button', { name: '添加并使用', exact: true }).waitFor();
+      assert.ok(await dialog.getByRole('button', { name: '添加并使用', exact: true }).isDisabled());
       await dialog.getByRole('button', { name: '可用目录', exact: true }).click();
       await dialog.getByText('已添加的项目位置').waitFor();
 
