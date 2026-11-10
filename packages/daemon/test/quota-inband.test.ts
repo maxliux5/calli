@@ -75,3 +75,30 @@ test('the hub reads plan usage the thread itself reported, with no probe', async
     assert.deepEqual((await manager.agentQuota('cc')).windows, quota?.windows, 'the dashboard serves the same paired in-band reading');
   } finally { await manager.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a reported reading is pushed to pages once, and a refresh right after it does not probe', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'calli-quota-push-'));
+  const store = new Store(dir);
+  const adapter = new ClaudeAcpAdapter(fixture('acp'));
+  let probes = 0;
+  adapter.fetchQuota = async () => { probes++; return { windows: [{ label: '5H', usedPercent: 10 }], plan: { id: 'max', label: 'Max' }, checkedAt: new Date().toISOString() }; };
+  const adapters = new Map([['cc', adapter] as const]);
+  const manager = new ThreadManager(store, adapters as any, new Workdirs([dir], join(dir, 'dirs.json'), join(dir, 'scratch')), new AttachmentStore(dir), () => [{ id: 'cc', adapter: 'claude' }]);
+  const pushed: PlanQuota[] = [];
+  const off = manager.subscribe(ev => { if (ev.type === 'quota.updated' && ev.data.agent === 'cc') pushed.push(ev.data.quota as PlanQuota); });
+  try {
+    // A probe first: its plan is kept when the agent later reports only its windows.
+    await manager.agentQuota('cc', true);
+    assert.equal(probes, 1);
+    const thread = await manager.createThread({ agent: 'cc', cwd: dir });
+    await manager.startTurn(thread.id, { text: 'rate-limit-tell' });
+    await wait(() => manager.threadView(thread.id).status !== 'running');
+    assert.deepEqual(pushed.map(q => q.windows.find(w => w.label === '5H')?.usedPercent), [10, 90], 'the probe and the report, each pushed once');
+    assert.equal(pushed[1].plan?.label, 'Max');
+    // The refresh button: the reading the agent just gave stands, no probe is spawned.
+    const refreshed = await manager.agentQuota('cc', true);
+    assert.equal(probes, 1);
+    assert.equal(refreshed.windows.find(w => w.label === '5H')?.usedPercent, 90);
+    assert.equal(pushed.length, 2, 'an unchanged reading is not pushed again');
+  } finally { off(); await manager.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

@@ -1838,6 +1838,12 @@ export class Api {
       ? cachedQuota(this.url(`/api/agents/${encodeURIComponent(agent)}/quota`)) : null);
   }
 
+  /** A reading the hub pushed on its stream: kept as if it had just been asked for. */
+  rememberAgentQuota(agent: string, quota: PlanQuota): void {
+    this.quotas.set(agent, quota);
+    if (loadToken() === this.token) rememberQuota(this.url(`/api/agents/${encodeURIComponent(agent)}/quota`), quota);
+  }
+
   agentQuota(agent: string, refresh = false): Promise<PlanQuota> {
     const pending = this.quotaRequests.get(agent);
     if (pending) return pending;

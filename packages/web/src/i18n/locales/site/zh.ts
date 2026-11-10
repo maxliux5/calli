@@ -138,7 +138,7 @@ export const zh = {
   copied: "已复制",
   copyFailed: "请选中命令复制",
   openLocal: "在这台主机的浏览器打开",
-  connect: "点击「连接 hub」，粘贴 npm run setup 输出的访问 token。",
+  connect: "点击「连接 hub」，粘贴安装结束时打印的访问 token。",
   remote: "手机或另一台电脑使用主机的可达地址，配置网络后连接。",
   remoteDocs: "远程访问说明",
   footer: "简单管理 agent，一起扩展可能。",

@@ -15,12 +15,7 @@ import { zh as copy } from '../../web/src/i18n/locales/site/zh';
 import { PLUGINS } from './plugins';
 
 const REPOSITORY = 'https://github.com/maxliux5/calli';
-const INSTALL = `git clone https://github.com/maxliux5/calli.git
-cd calli
-npm install
-npm run setup
-npm run build
-CALLI_ENV_FILE=../../.env npm start -w @calli/daemon`;
+const INSTALL = 'curl -fsSL https://raw.githubusercontent.com/maxliux5/calli/main/install.sh | bash';
 const agents = [
   { name: 'TRAE CLI', icon: TRAE_ICON }, { name: 'zcode', icon: ZCODE_ICON },
   { name: 'Codex', icon: CODEX_ICON }, { name: 'Claude Code', icon: CLAUDE_ICON },
