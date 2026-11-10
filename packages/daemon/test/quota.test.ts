@@ -116,6 +116,12 @@ test('answers are shared for a minute, so the probe runs once', async () => {
   assert.ok(runs.length <= 2, `probe ran ${runs.length} times`);
 });
 
+test('the probe asks claude not to save a session for it', () => {
+  const runs = readFileSync(usageLog, 'utf8').trim().split('\n').filter(Boolean);
+  assert.ok(runs.length > 0);
+  for (const run of runs) assert.match(run, / -p \/usage --no-session-persistence$/);
+});
+
 test('?refresh=1 skips the minute cache: the probe runs again right away', async () => {
   const runsBefore = readFileSync(usageLog, 'utf8').trim().split('\n').filter(Boolean).length;
   const first = (await (await fetch(`${base}/api/agents/claude/quota`, { headers: auth })).json()) as { checkedAt: string };

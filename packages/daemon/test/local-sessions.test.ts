@@ -56,6 +56,7 @@ function givenSessions(): void {
     { sessionId: 's-tied', cwd: workdir, title: 'Same second, other agent file order', updatedAt: '2026-03-02T10:00:00.000Z' },
     { sessionId: 's-out', cwd: outside, title: 'Elsewhere', updatedAt: '2026-03-03T10:00:00.000Z' },
     { sessionId: 's-gone', cwd: join(workdir, 'deleted'), title: 'Directory removed', updatedAt: '2026-03-04T10:00:00.000Z' },
+    { sessionId: 's-usage', cwd: workdir, title: '/usage', updatedAt: '2026-03-05T10:00:00.000Z' },
     { sessionId: 's-nodate', cwd: workdir, title: 'No date', updatedAt: null },
   ]));
 }
@@ -68,6 +69,8 @@ test('the scan lists this machine\'s sessions: newest first, only in existing al
   assert.deepEqual(page.sessions.map((s) => s.sessionId), ['s-tied', 's-new', 's-old', 's-nodate']);
   assert.equal(page.nextCursor, null);
   assert.ok(page.scannedAt);
+  // The quota probe's leftover `/usage` sessions are not offered as conversations.
+  assert.ok(!page.sessions.some((s) => s.sessionId === 's-usage'));
   // Every row names its agent instance, so importing knows where to ask.
   assert.ok(page.sessions.every((s) => s.agent === 'claude'));
 });

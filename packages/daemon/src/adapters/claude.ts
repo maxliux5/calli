@@ -398,12 +398,15 @@ export class ClaudeAcpAdapter extends AcpAdapter {
     if (!removeJsonMcpServer(this.mcpJsonPath(), name)) throw new Error(`claude 没有名为 ${name} 的 MCP 服务`);
   }
 
-  /** One `claude -p "/usage"` run. A local command, so no session is written and no turn spent. */
+  /**
+   * One `claude -p "/usage"` run. A local command that spends no turn, but Claude Code 2.x still
+   * writes a one-line session for it (one per refresh, per account), so persistence is switched off.
+   */
   async fetchQuota(): Promise<PlanQuota> {
     const configDir = configDirectory(this.env, 'CLAUDE_CONFIG_DIR', ['.claude'], process.cwd());
     const planning = claudePlan(configDir, this.env);
     const stdout = await new Promise<string>((resolve, reject) => {
-      execFile(claudeCli(), ['-p', '/usage'], { timeout: 30_000, maxBuffer: 1024 * 1024, env: { ...process.env, ...this.env } }, (err, out) => {
+      execFile(claudeCli(), ['-p', '/usage', '--no-session-persistence'], { timeout: 30_000, maxBuffer: 1024 * 1024, env: { ...process.env, ...this.env } }, (err, out) => {
         if (!err) return resolve(out);
         const reason = String(err.message).split('\n').pop() ?? '';
         reject(new Error(`claude /usage failed: ${reason.slice(0, 200)}`));

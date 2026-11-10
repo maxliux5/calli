@@ -35,6 +35,14 @@ export interface LocalSessionsDeps {
   now?: () => number;
 }
 
+/**
+ * Claude Code leaves a one-line session behind for every `claude -p /usage` the hub runs to read
+ * plan quota (until the probe asked it not to). Nobody wants to continue one, so they are not listed.
+ */
+export function isProbeSession(title: string): boolean {
+  return title.trim() === '/usage';
+}
+
 /** A request kicks a scan when the last one is older than this. Asking an agent costs a process,
  *  so a page that stays open rescans every few minutes, not every poll. */
 const FRESH_MS = 5 * 60_000;
@@ -122,7 +130,7 @@ export class LocalSessions {
         try {
           sessions = [];
           for (const s of await list()) {
-            if (await ok(s.cwd)) sessions.push({ agent: id, sessionId: s.id, cwd: s.cwd, title: s.title, updatedAt: s.updatedAt });
+            if (!isProbeSession(s.title) && (await ok(s.cwd))) sessions.push({ agent: id, sessionId: s.id, cwd: s.cwd, title: s.title, updatedAt: s.updatedAt });
           }
           sessions.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
           sessions.length = Math.min(sessions.length, MAX_PER_AGENT);
