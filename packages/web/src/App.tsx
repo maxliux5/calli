@@ -65,7 +65,7 @@ import { OnboardingDialog } from './components/OnboardingDialog';
 import { ObservabilityPage } from './components/ObservabilityPage';
 import { MachineUsagePage } from './components/MachineUsagePage';
 import { QuotaBoard } from './components/QuotaBoard';
-import { QuotaNavigation } from './quota-reading';
+import { QuotaNavigation, quotaPushed } from './quota-reading';
 import { noteSource, SelectionMenu } from './components/SelectionMenu';
 import { AgentPanel } from './components/AgentPanel';
 import { memberProgress, ThreadOverview, type OverviewSection } from './components/ThreadOverview';
@@ -78,7 +78,7 @@ import { SideChat } from './components/SideChat';
 import { McpPage } from './components/McpPage';
 import { TeamsPage } from './components/TeamsPage';
 import { teamRecipient } from './teams';
-import type { PetStatus, TeamSummary } from './api';
+import type { PetStatus, PlanQuota, TeamSummary } from './api';
 import { ExploreDialog } from './components/ExploreDialog';
 import { needsExplore, exploreSummary } from './personal-explore';
 import { Pet, PetBustImage, PetPortrait, usePetBust } from './components/Pet';
@@ -1556,7 +1556,10 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
             '/api/stream',
             (ev) => {
               if (ev.type === 'extensions.changed') void reloadExtensions();
-              else if (ev.type === 'agent.modelsChanged') {
+              else if (ev.type === 'quota.updated') {
+                const { agent, quota } = ev.data as { agent: string; quota: PlanQuota };
+                quotaPushed(api, agent, quota);
+              } else if (ev.type === 'agent.modelsChanged') {
                 const { agent, models } = ev.data as { agent: string; models: ModelOption[] };
                 modelVersions.current[agent] = (modelVersions.current[agent] ?? 0) + 1;
                 setModelsByAgent(previous => ({ ...previous, [agent]: models }));
