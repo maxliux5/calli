@@ -3,6 +3,7 @@ import { copyText } from '../clipboard';
 import { useIsTouch } from '../hooks';
 import { IconArrowUp, IconCopy, IconQuote, IconSideChat } from './icons';
 import { t } from '../i18n';
+import type { NoteSource } from '../timeline';
 
 interface Props {
   /**
@@ -44,6 +45,23 @@ function picked(el: Element | null): { file?: string; body: boolean } {
     file: el?.closest('[data-note-file]')?.getAttribute('data-note-file') || undefined,
     body: !!el?.closest('[data-writing-body]'),
   };
+}
+
+/**
+ * The conversation and turn a passage was picked out of, when that conversation is not the one the
+ * note goes to: an earlier one of a handover chain. Answers carry no turn of their own, so the turn
+ * is that of the last message above the passage.
+ */
+export function noteSource(range: Range | null, receiver: string | null | undefined): NoteSource | undefined {
+  const start = range?.startContainer;
+  const el = start instanceof Element ? start : start?.parentElement;
+  const segment = el?.closest<HTMLElement>('[data-history-thread]');
+  const threadId = segment?.dataset.historyThread;
+  if (!range || !segment || !threadId || threadId === receiver) return undefined;
+  const above = [...segment.querySelectorAll<HTMLElement>('[data-turn]')]
+    .filter(node => node.contains(range.startContainer) || Boolean(node.compareDocumentPosition(range.startContainer) & Node.DOCUMENT_POSITION_FOLLOWING));
+  const turnId = above.at(-1)?.dataset.turn;
+  return turnId ? { threadId, turnId } : undefined;
 }
 
 /** How far a press may move and still count as a tap rather than a drag. */

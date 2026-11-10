@@ -1,11 +1,12 @@
 import type { AgentMention } from './api';
+import type { Note } from './timeline';
 
 /** Unsent words in a thread's box, kept on this device so a reload does not lose them. */
 export interface StoredDraft {
   mentions?: AgentMention[];
   text: string;
   /** Passages noted for this message, in order: they are numbered when sent. */
-  notes: Array<{ quote: string; comment: string }>;
+  notes: Note[];
   /** When it was last typed in, so the oldest go first once there are too many. */
   at: number;
   /**
@@ -37,8 +38,12 @@ type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
 function readNotes(value: { notes?: unknown; quote?: unknown }): StoredDraft['notes'] {
   if (Array.isArray(value.notes)) {
     return value.notes
-      .filter((n): n is { quote: string; comment?: unknown } => !!n && typeof n.quote === 'string')
-      .map((n) => ({ quote: n.quote, comment: typeof n.comment === 'string' ? n.comment : '' }));
+      .filter((n): n is { quote: string; comment?: unknown; file?: unknown; source?: { threadId?: unknown; turnId?: unknown } } => !!n && typeof n.quote === 'string')
+      .map((n) => ({
+        quote: n.quote, comment: typeof n.comment === 'string' ? n.comment : '',
+        ...(typeof n.file === 'string' && n.file ? { file: n.file } : {}),
+        ...(typeof n.source?.threadId === 'string' && typeof n.source.turnId === 'string' ? { source: { threadId: n.source.threadId, turnId: n.source.turnId } } : {}),
+      }));
   }
   // Drafts saved before notes held a single quote.
   return typeof value.quote === 'string' ? [{ quote: value.quote, comment: '' }] : [];
@@ -68,7 +73,7 @@ export function writeDraft(storage: Storage, key: string, draft: { text: string;
     all[key] = {
       text: draft.text,
       ...(draft.mentions?.length ? { mentions: draft.mentions } : {}),
-      notes: draft.notes.map(({ quote, comment }) => ({ quote, comment })),
+      notes: draft.notes.map(({ quote, comment, file, source }) => ({ quote, comment, ...(file ? { file } : {}), ...(source ? { source } : {}) })),
       at: now,
       ...(draft.sending !== undefined ? { sending: draft.sending } : {}),
     };

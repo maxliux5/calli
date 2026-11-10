@@ -66,7 +66,7 @@ import { ObservabilityPage } from './components/ObservabilityPage';
 import { MachineUsagePage } from './components/MachineUsagePage';
 import { QuotaBoard } from './components/QuotaBoard';
 import { QuotaNavigation } from './quota-reading';
-import { SelectionMenu } from './components/SelectionMenu';
+import { noteSource, SelectionMenu } from './components/SelectionMenu';
 import { AgentPanel } from './components/AgentPanel';
 import { memberProgress, ThreadOverview, type OverviewSection } from './components/ThreadOverview';
 import { prepareOverview } from './overview-reading';
@@ -3792,7 +3792,9 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
         onNote={(quote, comment, range, file) => {
           const id = `note-${Date.now()}`;
           if (range) noteRanges.current.set(id, range);
-          setNoteSignal({ draftKey: composerDraftKey, note: { id, quote, comment, nonce: Date.now(), ...(file ? { file } : {}) } });
+          // Messages go to the chain's latest conversation; a passage from another one says where it is.
+          const source = noteSource(range, viewingEarlier ? latestSegment?.id : selectedId);
+          setNoteSignal({ draftKey: composerDraftKey, note: { id, quote, comment, nonce: Date.now(), ...(file ? { file } : {}), ...(source ? { source } : {}) } });
           if (file) setFilesNotePulse((v) => v + 1);
         }}
         onSideAsk={(text, threadId) => {
