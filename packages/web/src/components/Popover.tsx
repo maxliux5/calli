@@ -1,5 +1,7 @@
 import { createPortal } from 'react-dom';
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type CSSProperties, type RefObject } from 'react';
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type CSSProperties, type RefObject } from 'react';
+
+const ParentPanels = createContext<string[]>([]);
 
 interface Props {
   /** Accessible name of the panel. */
@@ -63,6 +65,7 @@ export function Popover({
   };
   useEffect(() => () => { request.current++; }, []);
   const panelId = useId();
+  const parentPanels = useContext(ParentPanels);
   const rootRef = useRef<HTMLDivElement>(null);
   const wasOpen = useRef(false);
 
@@ -129,6 +132,8 @@ export function Popover({
     if (!open && !preparing) return;
     // composedPath is captured at dispatch, so it still works if the clicked node is removed by the handler.
     const onDown = (e: MouseEvent | TouchEvent) => {
+      // Portaled child menus are still inside their owning menus.
+      if (e.composedPath().some(node => node instanceof HTMLElement && node.dataset.popoverParents?.split(' ').includes(panelId))) return;
       const at = anchorRef?.current ?? rootRef.current;
       if (anchorRef && at && e.composedPath().includes(at)) { close(); return; }
       if (at && !e.composedPath().includes(at) && (!panelRef.current || !e.composedPath().includes(panelRef.current))) close();
@@ -152,8 +157,8 @@ export function Popover({
     };
   }, [open, preparing, anchorRef]);
   const panel = <>
-    <div id={panelId} ref={panelRef} style={position} className={`pop-panel anchored-pop align-${align} placement-${placement}${panelClassName ? ` ${panelClassName}` : ''}`} role="menu" aria-label={label}>
-      {open && children(close)}
+    <div id={panelId} ref={panelRef} data-popover-parents={parentPanels.join(' ')} style={position} className={`pop-panel anchored-pop align-${align} placement-${placement}${panelClassName ? ` ${panelClassName}` : ''}`} role="menu" aria-label={label}>
+      <ParentPanels.Provider value={[...parentPanels, panelId]}>{open && children(close)}</ParentPanels.Provider>
     </div>
   </>;
 

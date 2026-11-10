@@ -445,7 +445,7 @@ function fitDraftModelPreference(value: DraftModelPreference, models: ModelOptio
 
 /** The model and thinking effort for one instance's members: a quiet mark until something is chosen. */
 function MemberModel({ agent, models, value, permission, onNeed, onChange, onPermission }: {
-  agent: AgentInfo; models: ModelOption[]; value: MemberDefault; onNeed: (agent: string) => void; onChange: (value: MemberDefault) => void;
+  agent: AgentInfo; models: ModelOption[]; value: MemberDefault; onNeed: (agent: string, refresh?: boolean) => void; onChange: (value: MemberDefault) => void;
   /** The level in force, and how to change it; left out where the agent has no levels. */
   permission?: string; onPermission?: (mode: string) => void;
 }) {
@@ -460,6 +460,7 @@ function MemberModel({ agent, models, value, permission, onNeed, onChange, onPer
       model={value.model}
       efforts={efforts}
       effort={value.effort}
+      onOpen={() => onNeed(agent.id, true)}
       // An effort the newly picked model does not take goes back to the default with it.
       onModel={(model) => onChange({ ...value, model, effort: value.effort && effortsForModel(models, model, efforts).includes(value.effort) ? value.effort : null })}
       onEffort={(effort) => onChange({ ...value, effort })}
@@ -1846,13 +1847,13 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
 
   // Models of an agent other than the thread's own, for choosing what its members start with.
   const modelsAsked = useRef(new Set<string>());
-  const needModels = (agent: string) => {
-    if (!api || modelsByAgent[agent] || modelsAsked.current.has(agent)) return;
+  const needModels = (agent: string, refresh = false) => {
+    if (!api || modelsAsked.current.has(agent) || (!refresh && modelsByAgent[agent])) return;
     modelsAsked.current.add(agent);
     const version = modelVersions.current[agent] ?? 0;
-    api.models(agent).then((list) => {
+    api.models(agent, refresh).then((list) => {
       if ((modelVersions.current[agent] ?? 0) === version) setModelsByAgent(prev => ({ ...prev, [agent]: list }));
-    }).catch(() => { modelsAsked.current.delete(agent); });
+    }).catch(error => { if (refresh) handleError(error); }).finally(() => { modelsAsked.current.delete(agent); });
   };
 
   // Models for that agent, loaded once per agent.
