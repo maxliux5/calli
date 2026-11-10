@@ -297,6 +297,11 @@ export function useThreadActions(deps: Deps) {
     ] },
     // A phone reaches the trace from the overview instead, so the bar keeps no button of its own.
     ...(onOpenTrace ? [{ id: 'trace', label: t('trace.openTrace'), icon: IconTrace, onSelect: onOpenTrace }] : []),
+    'separator',
+    thread.archivedAt
+      ? { id: 'restore', label: t('archive.restore'), icon: IconArchive, onSelect: () => run('restore', thread) }
+      : { id: 'archive', label: t('actions.archive'), icon: IconArchive, onSelect: () => run('archive', thread) },
+    { id: 'delete', label: t('archive.delete'), icon: IconTrash, danger: true, onSelect: () => run('delete', thread) },
   ];
 
   const sectionItems = (section: Section): MenuEntry[] => [

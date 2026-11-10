@@ -10039,6 +10039,9 @@ div.file-card:hover { background: var(--surface); }
 .overview-foot { display: flex; align-items: center; gap: 6px; margin-top: 3px; padding: 6px 7px 0; color: var(--faint); font-size: 11px; }
 .overview-group + .overview-foot { border-top: 1px solid var(--border); }
 .overview-readings { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* The readings open the trace; they read as text and only say so when touched. */
+.overview-readings-link { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 2px; margin: -1px -2px; border: 0; border-radius: var(--radius-sm); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.overview-readings-link:hover { background: var(--hover); color: var(--text); }
 .overview-trace { flex: none; display: inline-flex; align-items: center; gap: 1px; margin-left: auto; padding: 2px 3px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
 .overview-trace:hover { background: var(--hover); color: var(--text); }
 /* One file's whole history, turned by turn: the path and its numbers stay on top while the diff
@@ -14023,7 +14026,7 @@ body:has(.settings-page, .action-sheet) .pet { display: none; }
 .overview-panel .overview-plan .plan-entry { height: 30px; }
 .overview-foot { flex: none; height: 46px; box-sizing: border-box; margin-top: 3px; padding: 4px 7px 0; border-top: 1px solid var(--border); }
 .overview-readings { display: flex; flex-direction: column; line-height: 15px; }
-.overview-readings > span { height: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overview-readings > span, .overview-readings > .overview-readings-link { height: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .overview-status.failed { color: var(--warn); }
 .overview-refresh { flex: none; width: 30px; height: 30px; color: var(--muted); }
 /* A full list is a page in the main column; the conversation stays mounted underneath it. */
