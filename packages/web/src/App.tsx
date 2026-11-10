@@ -94,9 +94,11 @@ import { VoiceOrb, VoiceControls } from './components/VoiceOrb';
 import { useVoiceSession } from './voice-session';
 import type { ExtensionNavEntry } from './components/Sidebar';
 import type { ExtensionState } from '@calli/extension-api';
-import type { ConnectionState } from '@calli/extension-api/web';
+import type { ConnectionState, MachineState } from '@calli/extension-api/web';
+import { ThreadPeek } from './components/ThreadPeek';
+import { RemoteThreadMenu } from './extensions/RemoteThreadMenu';
 import { ExtensionView } from './extensions/ExtensionView';
-import { threadSummaries } from './extensions/project';
+import { machineSummaries, threadMachine, parseThreadLink } from './extensions/project';
 import { createThreadFeed } from './extensions/thread-feed';
 import { cachedAgentMarks, cachedThreads, rememberAgentMarks, rememberThreads } from './thread-cache';
 import { cachedAgents, cachedDraft, cachedModels, cachedPet, rememberAgents, rememberDraft, rememberModels, rememberPetBust, rememberPetStatus } from './host-cache';
@@ -492,7 +494,7 @@ interface AppProps {
 }
 
 /** What is open when the app starts over on another machine: the phone's thread list, the machines panel, or a thread of that machine. */
-export type AppStart = 'list' | 'machines' | { thread: string };
+export type AppStart = 'list' | 'machines' | { thread: string } | { draft: { project?: string } };
 
 export function App(props: AppProps) { return <PageNavigation><Hub {...props} /></PageNavigation>; }
 
@@ -536,7 +538,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const [scratchAvailable, setScratchAvailable] = useState(false);
   // A new thread in no project: the hub gives it a scratch folder. What this machine was last left
   // in opens there again, rather than snapping to its first choice.
-  const [draftScratch, setDraftScratch] = useState(() => keepThreads && cachedDraft(hostId)?.scratch === true);
+  const [draftScratch, setDraftScratch] = useState(() => !(typeof start === 'object' && 'draft' in start && start.draft.project) && keepThreads && cachedDraft(hostId)?.scratch === true);
   const [projectDialog, setProjectDialog] = useState<'new' | 'roots' | null>(null);
   const applyWorkdirs = useCallback((c: WorkdirsConfig) => {
     setWorkdirs(c.workdirs);
@@ -576,7 +578,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const appBack = useRef<() => boolean>(() => false);
   const appHref = useRef(window.location.pathname + window.location.search + window.location.hash);
   useAppHistory(appBack, appHref);
-  const [view, setView] = useState<MainView>(() => start === 'machines' ? 'settings' : viewForHash(window.location.hash, Boolean(token)) ?? 'thread');
+  const [view, setView] = useState<MainView>(() => start === 'machines' ? 'settings' : (typeof start === 'object' ? 'thread' : viewForHash(window.location.hash, Boolean(token)) ?? 'thread'));
   /** The address of the extension view asked for. Which view that is waits for the list of extensions. */
   const [extTarget, setExtTarget] = useState<string | null>(() => (viewForHash(window.location.hash, Boolean(token)) === 'ext' ? window.location.hash : null));
   /** The extension catalog and what is installed on the machine on screen; null until read. */
@@ -755,7 +757,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   // Explicit navigation wins even when the startup preference or thread list arrives late.
   const startupPending = useRef(!demo && !showcase && start === undefined && !window.location.hash);
   const [startupSettings, setStartupSettings] = useState<GeneralSettings | null>(null);
-  const [selectedId, setSelectedIdState] = useState<string | null>(typeof start === 'object' ? start.thread : showcase?.initialThreadId ?? null);
+  const [selectedId, setSelectedIdState] = useState<string | null>(typeof start === 'object' && 'thread' in start ? start.thread : showcase?.initialThreadId ?? null);
   const setSelectedId = useCallback((id: string | null) => {
     startupPending.current = false;
     setSelectedIdState(id);
@@ -786,7 +788,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   // until the machine's own answer says otherwise.
   const keptDraft = keepThreads ? cachedDraft(hostId) : null;
   const [draftAgent, setDraftAgent] = useState(() => keptDraft?.agent ?? '');
-  const [draftCwd, setDraftCwd] = useState(() => keptDraft?.cwd ?? '');
+  const [draftCwd, setDraftCwd] = useState(() => typeof start === 'object' && 'draft' in start ? start.draft.project ?? keptDraft?.cwd ?? '' : keptDraft?.cwd ?? '');
   // A new thread may start in a git worktree of its directory; offered only when the directory is in a repository.
   const [draftWorktree, setDraftWorktree] = useState(false);
   const [worktreeOffer, setWorktreeOffer] = useState<{ cwd: string; branch: string | null; changes: number } | null>(null);
@@ -1185,9 +1187,16 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   // What an extension view is handed: the summaries of the threads the page holds, and how fresh they are.
   const connectionShown: ConnectionState = api.demo || (host && !hostUp) ? 'offline' : connection;
   const workSources = useWorkSources(api, extensions, Boolean(selectedId) || onExt, onExt ? extOpen?.extensionId : undefined, selectedId ?? undefined);
+  const machineSources = useMemo<HostSource[]>(() => [{
+    hostId, label: host?.label ?? t('hosts.local'), threads, agents: sidebarAgents,
+    state: connectionShown === 'offline' ? 'offline' : connectionShown === 'live' ? 'live' : threadsKnown ? 'cached' : 'loading',
+    at: observedAt ?? (keepThreads ? cachedThreads(hostId)?.at ?? null : null),
+  }, ...(merging ? elsewhere : [])], [hostId, host?.label, threads, sidebarAgents, connectionShown, threadsKnown, observedAt, keepThreads, merging, elsewhere]);
   const extInputs = useMemo(
-    () => (onExt ? { workSources, threads: threadSummaries(threads, selectedId), connection: connectionShown, observedAt: api.demo ? null : observedAt, agents, extension: extensions?.find(e => e.manifest.id === extOpen?.extensionId) ?? null } : null),
-    [workSources, onExt, threads, selectedId, connectionShown, observedAt, agents, api.demo, extensions, extOpen?.extensionId],
+    () => (onExt ? { workSources, threads: machineSummaries(machineSources, selectedId, merging),
+      machines: machineSources.map((source): MachineState => ({ id: source.hostId, label: source.label, state: source.state, observedAt: source.at })),
+      connection: connectionShown, observedAt: api.demo ? null : observedAt, agents, extension: extensions?.find(e => e.manifest.id === extOpen?.extensionId) ?? null } : null),
+    [workSources, onExt, machineSources, merging, selectedId, connectionShown, observedAt, agents, api.demo, extensions, extOpen?.extensionId],
   );
 
   // An extension view that is not there (never installed, removed, switched off, or an address
@@ -2023,9 +2032,11 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   };
 
   const autotitleExt = extensions?.find((e) => e.manifest.id === 'autotitle');
+  const boardExt = extensions?.find((e) => e.manifest.id === 'board');
   const threadActions = useThreadActions({
     api,
     autotitle: Boolean(autotitleExt?.source === 'builtin' && autotitleExt.installed && autotitleExt.enabled),
+    board: Boolean(boardExt?.source === 'builtin' && boardExt.installed && boardExt.enabled),
     agents,
     sections,
     todos,
@@ -2254,14 +2265,33 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     return false;
   };
 
-  // Marked from an extension view: the stream brings the change back to the list.
-  const setThreadDone = async (id: string, done: boolean) => {
-    try {
-      await api.updateThread(id, { done });
-    } catch (e) {
-      handleError(e);
-      throw e;
-    }
+  const [peek, setPeek] = useState<{ machine: string | null; api: Api; thread: Thread; returnFocus: HTMLElement | null } | null>(null);
+  useEffect(() => { if (!onExt) setPeek(null); }, [onExt]);
+  const [remoteMenu, setRemoteMenu] = useState<{ machine: string | null; api: Api; thread: Thread; x: number; y: number } | null>(null);
+  const openMachineMenu = (id: string, at: { x: number; y: number }) => {
+    const machine = threadMachine(machineSources, id);
+    const thread = machineSources.flatMap(source => source.threads).find(thread => thread.id === id)!;
+    if (machine === hostId) threadActions.openThreadMenu(thread, at.x, at.y);
+    else setRemoteMenu({ machine, api: new Api(token, '', machine), thread, ...at });
+  };
+  const threadApi = (id: string) => {
+    const machine = threadMachine(machineSources, id);
+    return machine === hostId ? api : new Api(token, '', machine);
+  };
+  const updateMachineThread = (machine: string | null, updated: Thread) => {
+    const apply = (list: Thread[]) => updated.archivedAt ? list.filter(t => t.id !== updated.id)
+      : list.some(t => t.id === updated.id) ? list.map(t => t.id === updated.id ? updated : t) : [updated, ...list];
+    if (machine === hostId) setThreads(apply);
+    else setElsewhere(sources => sources.map(source => source.hostId === machine ? { ...source, threads: apply(source.threads) } : source));
+  };
+  const patchBoardThread = async (id: string, patch: { done?: boolean; stage?: 'backlog' | 'doing' | 'blocked' | 'review' }) => {
+    const machine = threadMachine(machineSources, id);
+    updateMachineThread(machine, await threadApi(id).updateThread(id, patch));
+  };
+  const openBoardThread = (id: string) => {
+    const machine = threadMachine(machineSources, id);
+    if (machine === hostId) pick(id);
+    else onHost?.(machine, { thread: id });
   };
 
   // The plan page takes the place of a thread, so no thread is open while it is.
@@ -2411,11 +2441,19 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
 
   useEffect(() => {
     if (!threadLink || !token) return;
-    if (hostId) { onHost?.(null); return; }
+    const link = parseThreadLink(threadLink);
+    if (!link) { setThreadLink(null); return; }
+    if (link.machine !== null) {
+      if (!hostsLoaded) return;
+      if (!hosts.some(host => host.id === link.machine)) {
+        setThreadLink(null); setError(t('app.machineNotFound'));
+        window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+        return;
+      }
+    }
+    if (hostId !== link.machine) { onHost?.(link.machine); return; }
     let active = true;
-    let id: string;
-    try { id = decodeURIComponent(threadLink.slice('#/thread/'.length)); }
-    catch { id = ''; }
+    const { id } = link;
     void api.thread(id).then(async thread => {
       if (!active) return;
       if (thread.archivedAt) {
@@ -2432,7 +2470,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       }
     });
     return () => { active = false; };
-  }, [api, token, hostId, threadLink]);
+  }, [api, token, hostId, threadLink, hostsLoaded, hosts]);
 
   // A session that is already a thread may have been archived since; opening it brings it back.
   const openImported = async (threadId: string) => {
@@ -3030,7 +3068,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           moreExternal={externalCursor !== null}
           onLoadMoreExternal={loadMoreExternal}
           onHide={compact ? undefined : toggleSidebar}
-          onThreadMenu={threadActions.openThreadMenu}
+          onThreadMenu={(thread, x, y) => openMachineMenu(thread.id, { x, y })}
           onSectionMenu={threadActions.openSectionMenu}
           onNewSection={threadActions.newSection}
           onOpenTodos={showcase ? undefined : openTodos}
@@ -3230,12 +3268,36 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           </div>
         ) : onExt ? (
           // An extension's view, behind a boundary of its own. Until the list is read, it is on its way.
-          <div key={`ext:${extOpen ? `${extOpen.extensionId}/${extOpen.view.id}` : ''}`} className="scroller">
+          <div key={`ext:${extOpen ? `${extOpen.extensionId}/${extOpen.view.id}` : ''}`} className="extension-stage"><div className="scroller">
             {extOpen && extInputs ? (
-              <ExtensionView api={api} extensionId={extOpen.extensionId} viewId={extOpen.view.id} name={extName} inputs={extInputs} onOpenThread={pick} onSetThreadDone={setThreadDone} />
+              <ExtensionView api={api} extensionId={extOpen.extensionId} viewId={extOpen.view.id} name={extName} inputs={extInputs} onOpenThread={openBoardThread}
+                onSetThreadDone={(id, done) => patchBoardThread(id, { done }).catch(error => { handleError(error); throw error; })}
+                onSetThreadStage={(id, stage) => patchBoardThread(id, { stage })}
+                navigate={{ openThread: openBoardThread, peekThread: id => {
+                  if (window.matchMedia('(max-width: 640px)').matches) { openBoardThread(id); return; }
+                  const machine = threadMachine(machineSources, id);
+                  const thread = machineSources.flatMap(source => source.threads).find(thread => thread.id === id)!;
+                  setPeek({ machine, api: threadApi(id), thread, returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null });
+                }, threadMenu: (id, at) => openMachineMenu(id, at),
+                  newThread: options => {
+                    const machine = options?.machine === undefined ? hostId : options.machine;
+                    if (machine !== hostId) onHost?.(machine, { draft: { project: options?.project } });
+                    else newThread({ cwd: options?.project });
+                  } }}
+                onAskAssistant={async text => {
+                  const assistantApi = hostId === null ? api : new Api(token);
+                  const result = await assistantApi.petSay(text);
+                  if (hostId !== null) onHost?.(null, { thread: result.threadId });
+                  else { setRouterThreadId(result.threadId); openThread(await api.thread(result.threadId)); }
+                }} onExtensionChange={changeExtension} />
             ) : (
               <div className="loading-note">{t('common.loading')}</div>
             )}
+            </div>
+            {peek && <ThreadPeek key={`${peek.machine ?? ''}:${peek.thread.id}`} api={peek.api} initial={peek.thread} returnFocus={peek.returnFocus}
+              draftKey={peek.machine ? `host:${peek.machine}:${peek.thread.id}` : peek.thread.id}
+              onClose={() => setPeek(null)} onOpen={() => openBoardThread(peek.thread.id)}
+              onChange={updated => updateMachineThread(peek.machine, updated)} />}
           </div>
         ) : onMachines ? (
           <div key="machines" className="scroller">
@@ -3718,6 +3780,11 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
         />
       )}
       {threadActions.layer}
+      {remoteMenu && <RemoteThreadMenu key={remoteMenu.machine ?? 'local'} api={remoteMenu.api} target={remoteMenu} board={Boolean(boardExt?.enabled)}
+        onChange={updated => updateMachineThread(remoteMenu.machine, updated)}
+        onOpen={thread => onHost?.(remoteMenu.machine, { thread: thread.id })}
+        onRemove={id => setElsewhere(sources => sources.map(source => source.hostId === remoteMenu.machine ? { ...source, threads: source.threads.filter(t => t.id !== id) } : source))}
+        onError={handleError} />}
       <NoteMarks marks={noteMarks} scrollerRef={scrollerRef} />
       <SelectionMenu
         onNote={(quote, comment, range, file) => {

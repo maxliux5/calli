@@ -1108,6 +1108,7 @@ export function createHttpServer(deps: HttpDeps): Server {
             sectionId: body.sectionId,
             unread: body.unread,
             done: body.done,
+            stage: body.stage,
           }),
         );
       }

@@ -85,6 +85,7 @@ function parseGrant(json: string): Permission[] {
 
 /** Every permission name in the contract. Kept in step with packages/extension-api/permissions.d.ts. */
 export const PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>([
+  'assistant.ask',
   'memory.read',
   'events.summary',
   'progress.read',
@@ -184,3 +185,10 @@ export function exactGrant(manifest: ExtensionManifest, granted: unknown): Permi
 }
 
 export * from './extension-dependencies.js';
+
+/** Only the built-in board may defer its new assistant permission until the first handoff. */
+export function activeBuiltinGrant(manifest: ExtensionManifest, granted: unknown): boolean {
+  if (exactGrant(manifest, granted)) return true;
+  return manifest.id === 'board' && manifest.permissions.includes('assistant.ask')
+    && Boolean(exactGrant({ ...manifest, permissions: manifest.permissions.filter(p => p !== 'assistant.ask') }, granted));
+}

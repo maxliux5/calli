@@ -14,7 +14,7 @@ import type { SystemPrompt, WorkMode } from './adapters/types.js';
 import { diagnosticFailure } from './adapters/diagnostics.js';
 import { turnAnswer, type CoordinationManager, type CoordinationSetup } from './coordination.js';
 import { Injections, type InjectionGate } from './injections.js';
-import { parseProgress, progressInstructions } from './progress-report.js';
+import { parseProgress, progressInstructions, PROGRESS_STAGES, type ProgressStage } from './progress-report.js';
 import { habitsPath, isEditableArticle, isWritingStage, newestArticle, noteFile, saveArticle, writingInstructions, type WritingState } from './writing.js';
 import { randomUUID } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync } from 'node:fs';
@@ -138,6 +138,8 @@ export type ThreadView = Omit<ThreadRecord, 'worktree' | 'handover' | 'writing'>
   coordination?: { retired?: boolean; rootId: string; children: number; paused: boolean; doing?: string; team?: { name: string; status: import('./teams.js').TaskStatus; role: string; error?: string } };
   /** Working in the hub's scratch area: a thread that is in no project. */
   scratch: boolean;
+  /** The project directory no longer exists, e.g. a temporary checkout removed after a run. */
+  projectGone: boolean;
   /** `of` is how the directory was spelled when the worktree was made; `ofReal` has symlinks resolved, like `cwdReal`. */
   worktree: (ThreadWorktree & { ofReal: string }) | null;
   /** Shell command that continues this conversation in a terminal. Null until the agent session exists. */
@@ -1204,10 +1206,12 @@ export class ThreadManager {
         ? `cd ${shellQuote(thread.cwd)} && ${adapter.resumeCommand(thread.agentSessionId)}`
         : null;
     let cwdReal = thread.cwd;
+    let cwdGone = false;
     try {
       cwdReal = realpathSync(thread.cwd);
     } catch {
       // The directory is gone; the stored spelling is the best there is.
+      cwdGone = true;
     }
     let waitingReason: ThreadView['waitingReason'] = this.inputs.waitingReason(thread.id);
     for (const p of this.approvals.values()) if (p.threadId === thread.id) { waitingReason = 'approval'; break; }
@@ -1227,12 +1231,15 @@ export class ThreadManager {
     // The terminal wrote to this session after the hub last did: the UI asks before sending more.
     const terminalActivity = thread.externalAt !== null && (thread.hubTurnAt === null || thread.externalAt > thread.hubTurnAt);
     let worktree: ThreadView['worktree'] = null;
+    let projectGone = cwdGone;
     if (thread.worktree) {
       let ofReal = thread.worktree.of;
+      projectGone = false;
       try {
         ofReal = realpathSync(thread.worktree.of);
       } catch {
         // As above.
+        projectGone = true;
       }
       worktree = { ...thread.worktree, ofReal };
     }
@@ -1248,7 +1255,7 @@ export class ThreadManager {
     } : null;
     const failed = thread.status === 'error' ? this.store.lastTurnFailure(thread.id) : null;
     const failure = failed ? { code: failed.code, message: failed.message.slice(0, 500), at: failed.at } : null;
-    return { ...thread, failure, writing: thread.writing ? { ...thread.writing, habits: habitsPath() } : null, handover: thread.handover ? { ...thread.handover, mode: this.store.handoverMode(thread)!, automatic: thread.handover.mode === 'continue' } : null, autoHandover: { ...this.autoHandover.view(thread.id), resume: this.quotaResume.view(thread.id) }, worktree, resumeCommand, cwdReal, waiting, waitingReason, queued, modelQueue, terminalActivity, scratch, runningSince, coordination: this.coordination?.metadata(thread.id) };
+    return { ...thread, failure, writing: thread.writing ? { ...thread.writing, habits: habitsPath() } : null, handover: thread.handover ? { ...thread.handover, mode: this.store.handoverMode(thread)!, automatic: thread.handover.mode === 'continue' } : null, autoHandover: { ...this.autoHandover.view(thread.id), resume: this.quotaResume.view(thread.id) }, worktree, resumeCommand, cwdReal, waiting, waitingReason, queued, modelQueue, terminalActivity, scratch, projectGone, runningSince, coordination: this.coordination?.metadata(thread.id) };
   }
 
   /**
@@ -1642,6 +1649,8 @@ export class ThreadManager {
       sectionId?: string | null;
       unread?: boolean;
       done?: boolean;
+      /** The person places the thread on the board; it stands until a later turn reports again. */
+      stage?: ProgressStage;
     },
   ): Promise<ThreadView> {
     const thread = this.getThread(id);
@@ -1650,6 +1659,11 @@ export class ThreadManager {
       if (typeof updates.done !== 'boolean') throw new HttpError(400, 'done must be true or false');
       // The person's word; whatever the agent said before no longer stands.
       this.store.setThreadProgress(id, { doneAt: updates.done ? (thread.doneAt ?? new Date().toISOString()) : null, report: null });
+    }
+    if (updates.stage !== undefined) {
+      if (updates.done !== undefined) throw new HttpError(400, 'set done or stage, not both');
+      if (!PROGRESS_STAGES.includes(updates.stage)) throw new HttpError(400, 'stage must be backlog, doing, blocked or review');
+      this.store.setThreadProgress(id, { doneAt: null, report: { stage: updates.stage, note: '', at: new Date().toISOString(), by: 'user' } });
     }
     if (updates.speed !== undefined) {
       patch.speed = updates.speed === null ? (thread.speed ? 'default' : null) : await this.validateSpeed(thread.agent, updates.model === undefined ? thread.model : updates.model, updates.speed);
