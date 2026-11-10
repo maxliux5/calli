@@ -128,6 +128,18 @@ try {
       console.log('detail', name);
 
       if (name === 'phone-light') {
+        // A long model name, picked: the filter row must still fit, the pick cut with an ellipsis.
+        await page.locator('.mu-toolbar .obs-select').first().click();
+        await page.waitForTimeout(300);
+        const items = await page.locator('.pop-item').allInnerTexts();
+        const long = items.filter(v => (v ?? '').length > 10).sort((a, b) => b.length - a.length)[0];
+        if (long) {
+          await page.locator('.pop-item', { hasText: long.trim().split(/\s/)[0] }).first().click();
+          await page.waitForTimeout(600);
+          await page.screenshot({ path: join(out, 'detail-picked-phone-light.png') });
+          console.log('picked shot:', long.trim());
+        }
+
         // The page's own back button returns to the list.
         await page.locator('.mu-detail-head .text-btn').click();
         await page.locator('.mu-card').first().waitFor({ timeout: 20_000 });

@@ -10491,7 +10491,7 @@ button.coord-row-name { cursor: pointer; }
 /* Today over every machine (persona's TodayTokens): a headline number with the share bar below. */
 .mu-today { display: flex; flex-direction: column; gap: 6px; padding: 18px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); margin-bottom: 16px; }
 .mu-today > span { color: var(--muted); font-size: 12px; }
-.mu-today > strong { font-size: 26px; font-weight: 550; letter-spacing: -.3px; font-variant-numeric: tabular-nums; }
+.mu-today > strong { font-size: 26px; font-weight: 550; letter-spacing: -.3px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mu-share-bar { display: flex; height: 8px; border-radius: var(--radius-pill); overflow: hidden; background: var(--hover); }
 .mu-share-bar i { background: var(--border-strong); min-width: 2px; }
 .mu-share-legend { display: flex; flex-wrap: wrap; gap: 2px 14px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -10505,11 +10505,11 @@ button.coord-row-name { cursor: pointer; }
 .mu-card:hover { background: var(--hover); }
 .mu-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .mu-card-head strong { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mu-card-head small { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+.mu-card-head small { color: var(--muted); font-size: 12px; flex-shrink: 0; white-space: nowrap; }
 .mu-card-stat { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .mu-card-today { color: var(--muted); font-size: 12px; }
 .mu-card-today strong { display: block; color: var(--text); font-size: 20px; font-weight: 550; font-variant-numeric: tabular-nums; }
-.mu-card-now { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; flex-shrink: 0; }
+.mu-card-now { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; flex-shrink: 0; white-space: nowrap; }
 .mu-card-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
 .mu-spark { width: 100%; height: 36px; color: var(--chart-total); }
 .mu-spark path { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
@@ -10521,7 +10521,7 @@ button.coord-row-name { cursor: pointer; }
 
 /* One machine's detail: one filter row, then the charts beside the share lists. */
 .mu-detail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
-.mu-detail-head h2 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.2px; }
+.mu-detail-head h2 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.2px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The back arrow rides the text's middle, not its shoulder. */
 .mu-detail-head .text-btn { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 8px; color: var(--muted); font-size: 13px; }
 /* One row however narrow: the range control and the two filters hold one line together. */
@@ -10540,11 +10540,13 @@ button.coord-row-name { cursor: pointer; }
 .mu-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 /* The chart card's own top: the four numbers as one plain row (persona), no boxes of their own. */
 .mu-figures { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px 16px; padding: 2px 2px 12px; }
-.mu-figures span { display: block; color: var(--muted); font-size: 11px; }
-.mu-figures strong { font-size: 20px; font-weight: 550; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.mu-figures span { display: block; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.mu-figures strong { font-size: 20px; font-weight: 550; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .mu-head-side { display: inline-flex; align-items: center; gap: 12px; margin-left: auto; }
+/* The peak reads as one number with its moment; it never breaks inside itself. */
+.mu-peak { white-space: nowrap; }
 .mu-mode { display: inline-flex; gap: 2px; padding: 1px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill); }
-.mu-mode button { border: 0; background: none; padding: 2px 9px; border-radius: var(--radius-pill); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
+.mu-mode button { border: 0; background: none; padding: 2px 9px; border-radius: var(--radius-pill); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .mu-mode button.selected { background: var(--active); color: var(--text); }
 .mu-shares { padding: 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .mu-shares h3 { margin: 0 0 8px; font-size: 12px; font-weight: 550; color: var(--muted); }
@@ -10552,7 +10554,7 @@ button.coord-row-name { cursor: pointer; }
 .mu-shares button:hover { background: var(--hover); }
 .mu-shares button.selected { background: var(--active); }
 .mu-share-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mu-share-numbers { display: flex; align-items: baseline; gap: 8px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.mu-share-numbers { display: flex; align-items: baseline; gap: 8px; flex-shrink: 0; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mu-share-numbers small { color: var(--muted); font-size: 11px; }
 /* The share lists while the report is on its way: rows of the same height, no text to be wrong. */
 .mu-share-skeleton { height: 34px; border-radius: var(--radius-sm); background: var(--hover); margin: 6px 0; }
@@ -10562,7 +10564,7 @@ button.coord-row-name { cursor: pointer; }
 .mu-today > strong.unknown { color: var(--faint); }
 /* The machine's own number on its row in the machines settings page: reading it is separate
    from managing the machine, so it is a button of its own that opens the machines page. */
-.host-today { flex: none; min-width: 56px; text-align: right; padding: 4px 8px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; cursor: pointer; }
+.host-today { flex: none; min-width: 56px; text-align: right; padding: 4px 8px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; cursor: pointer; }
 .host-today:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .host-today:disabled { cursor: default; }
 @media (max-width: 900px) {
@@ -10576,6 +10578,9 @@ button.coord-row-name { cursor: pointer; }
   .mu-charts .obs-chart-legend button { gap: 4px; font-size: 11px; padding: 5px 0; }
   .mu-charts .obs-chart-legend i { width: 12px; }
   .mu-charts .obs-chart-legend em { font-size: 11px; }
+  /* The chart's title row keeps one line: the mode choice and the refresh. The peak reading
+     moves aside (the crosshair reads any moment on a tap). */
+  .mu-head-side .mu-peak { display: none; }
   /* The filter row fits the screen: short labels, a closer gap, a smaller range control, the
      refresh already in the chart's header. A picked value stays visible, cut with an ellipsis. */
   .mu-toolbar { gap: 6px; }

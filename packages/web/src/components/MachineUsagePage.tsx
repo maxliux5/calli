@@ -239,7 +239,7 @@ function ThroughputChart({ report, hidden, mode, onToggleMode, onToggleKind, onR
     <header className="obs-chart-head">
       <span>{t('machine.throughput')} · {t('machine.perMinuteUnit')}{report ? ` · ${stepLabel(stepMinutes)}` : ''}</span>
       <span className="mu-head-side">
-        {totals[busy] > 0 && <span>{t('chart.peak')} <strong>{compactLabel(totals[busy])}</strong> · {dayLabel(at(report1.points[busy].t))} {clockLabel(at(report1.points[busy].t))}</span>}
+        {totals[busy] > 0 && <span className="mu-peak">{t('chart.peak')} <strong>{compactLabel(totals[busy])}</strong> · {dayLabel(at(report1.points[busy].t))} {clockLabel(at(report1.points[busy].t))}</span>}
         {/* persona keeps the by-kind/total choice here, beside the chart it changes. */}
         <span className="mu-mode" role="group" aria-label={t('machine.display')}>
           <button type="button" aria-pressed={mode === 'kinds'} className={mode === 'kinds' ? 'selected' : ''} onClick={() => onToggleMode('kinds')}>{t('machine.modeKinds')}</button>
