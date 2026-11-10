@@ -23,17 +23,17 @@ after(async () => {
   await daemon?.stop();
 });
 
-/** The invisible bottom-right pad: pull it leftwards to summon the panel. */
+/** The small handle on the right edge: pull it leftwards to summon the panel. */
 async function summon(page) {
   // Let the closing drawer finish: through its transition the main column is unpointable and
   // the fixed pad can be laid out a few pixels off before it settles.
   await page.waitForTimeout(450);
-  const box = await page.locator('.quick-switch-edge').boundingBox();
+  const box = await page.locator('.quick-switch-handle').boundingBox();
   const x = box.x + box.width / 2;
   const y = box.y + box.height / 2;
   // The closing drawer keeps the main column unpointable through its transition; wait until
   // the pad itself is the topmost element where the drag starts.
-  await page.waitForFunction(([x, y]) => document.elementFromPoint(x, y)?.closest('.quick-switch-edge') != null, [x, y]);
+  await page.waitForFunction(([x, y]) => document.elementFromPoint(x, y)?.closest('.quick-switch-handle') != null, [x, y]);
   await page.mouse.move(x, y);
   await page.mouse.down();
   await page.mouse.move(x - 46, y, { steps: 4 });
@@ -50,36 +50,41 @@ async function openSession(context) {
   return page;
 }
 
-test('the pad ignores plain taps and vertical drags; only a leftward pull summons it', async () => {
+test('the handle opens on a tap or a leftward pull, moves when dragged, and can be hidden', async () => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   try {
     const page = await context.newPage();
     await openUi(page, daemon);
     await page.locator('.menu-btn').click();
     await page.locator('.thread-row').filter({ has: page.getByText('viewport-session-3', { exact: true }) }).click();
-    const edge = page.locator('.quick-switch-edge');
-    const box = await edge.boundingBox();
-    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-    await page.waitForTimeout(250);
-    assert.equal(await page.locator('.quick-switch-panel').count(), 0, 'a plain tap must not summon the panel');
-    // A vertical drag over the pad is a scroll, not a summon.
-    await page.mouse.move(box.x + box.width / 2, box.y + 10);
+    await page.waitForTimeout(450);
+    const handle = page.locator('.quick-switch-handle');
+    const box = await handle.boundingBox();
+    assert.ok(box.width <= 30 && box.height <= 60, `the handle stays small: ${box.width}x${box.height}`);
+    // It covers only itself: just left of it, the text underneath is reachable.
+    const under = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('.quick-switch') != null, [box.x - 12, box.y + box.height / 2]);
+    assert.equal(under, false, 'beside the handle nothing of ours is in the way');
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    // A tap opens, a second tap closes.
+    await page.mouse.click(cx, cy);
+    await page.locator('.quick-switch-panel').waitFor();
+    await page.mouse.click(cx, cy);
+    await page.locator('.quick-switch-panel').waitFor({ state: 'detached' });
+    // Dragging it up moves it and does not open the panel.
+    await page.mouse.move(cx, cy);
     await page.mouse.down();
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height - 10, { steps: 4 });
+    await page.mouse.move(cx, cy - 120, { steps: 6 });
     await page.mouse.up();
     await page.waitForTimeout(250);
-    assert.equal(await page.locator('.quick-switch-panel').count(), 0, 'a vertical drag must not summon the panel');
-    // A finger resting on it, or a long press to select text, is not a summon either.
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.mouse.down();
-    await page.waitForTimeout(700);
-    await page.mouse.up();
-    await page.waitForTimeout(250);
-    assert.equal(await page.locator('.quick-switch-panel').count(), 0, 'holding still must not summon the panel');
+    assert.equal(await page.locator('.quick-switch-panel').count(), 0, 'a drag must not open the panel');
+    const moved = await handle.boundingBox();
+    assert.ok(moved.y < box.y - 80, `the handle followed the drag: ${box.y} -> ${moved.y}`);
+    assert.ok(await page.evaluate(() => Number(localStorage.getItem('calli.quickSwitch.bottom')) > 0), 'the position is remembered');
     await summon(page);
     // Short, and opened on the current session.
     const panel = await page.locator('.quick-switch-panel').boundingBox();
-    assert.ok(panel.height <= 270, `the panel stays short: ${panel.height}`);
+    assert.ok(panel.height <= 290, `the panel stays short: ${panel.height}`);
     const current = await page.locator('.quick-switch-card.current').boundingBox();
     assert.ok(current.y >= panel.y && current.y + current.height <= panel.y + panel.height, 'the current session is in view');
     // A tap outside only dismisses: the control under it is not pressed.
@@ -88,6 +93,10 @@ test('the pad ignores plain taps and vertical drags; only a leftward pull summon
     await page.locator('.quick-switch-panel').waitFor({ state: 'detached' });
     await page.waitForTimeout(250);
     assert.equal(await page.locator('[role="menu"]').count(), 0, 'the dismissing tap does not open the menu under it');
+    // Not wanted: hide it from the panel.
+    await summon(page);
+    await page.locator('.quick-switch-hide').click();
+    await page.locator('.quick-switch-handle').waitFor({ state: 'detached' });
   } finally { await context.close(); }
 });
 

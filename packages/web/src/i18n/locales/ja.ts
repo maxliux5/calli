@@ -1870,6 +1870,11 @@ export const ja: Messages = {
   'sidebar.reply': '返信：',
   'sidebar.settings': '設定',
   'quickSwitch.sessions': '最近のセッション',
+  'quickSwitch.hide': 'ハンドルを隠す',
+  'quickSwitch.handle': 'クイック切替ハンドル',
+  'quickSwitch.handleHint': 'スマホで右側に表示。ドラッグで移動できます',
+  'quickSwitch.show': '表示',
+  'quickSwitch.hidden': '非表示',
 
   // Skills
   'skills.view': '説明を見る',

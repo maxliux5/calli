@@ -1874,6 +1874,11 @@ export const en: Messages = {
   'sidebar.reply': 'Reply: ',
   'sidebar.settings': 'Settings',
   'quickSwitch.sessions': 'Recent sessions',
+  'quickSwitch.hide': 'Hide handle',
+  'quickSwitch.handle': 'Quick-switch handle',
+  'quickSwitch.handleHint': 'Shown on the right on a phone; drag it to move',
+  'quickSwitch.show': 'Show',
+  'quickSwitch.hidden': 'Hidden',
 
   // Skills
   'skills.view': 'View description',

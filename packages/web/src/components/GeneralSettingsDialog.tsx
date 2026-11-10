@@ -3,6 +3,8 @@ import type { Api, GeneralSettings } from '../api';
 import { t } from '../i18n';
 import { Popover } from './Popover';
 import { IconCheck, IconChevron } from './icons';
+import { useStoredFlag } from '../hooks';
+import { QUICK_SWITCH_HIDDEN_KEY } from '../quick-switch';
 import { SettingsSection, usePageDraft } from './PageNavigation';
 
 export function GeneralSettingsDialog({ api, onSave, onClose }: {
@@ -12,6 +14,7 @@ export function GeneralSettingsDialog({ api, onSave, onClose }: {
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [retry, setRetry] = useState(0);
+  const [handleHidden, setHandleHidden] = useStoredFlag(QUICK_SWITCH_HIDDEN_KEY);
   useEffect(() => {
     let live = true;
     setError('');
@@ -62,6 +65,19 @@ export function GeneralSettingsDialog({ api, onSave, onClose }: {
             </Popover>
           </div>
           <p className="panel-hint general-hint">{t('general.startupHint')}</p>
+          <div className="personal-setting-line general-setting-line">
+            <span>{t('quickSwitch.handle')}</span>
+            <Popover label={t('quickSwitch.handle')} triggerLabel={t('quickSwitch.handle')} placement="below" align="end"
+              triggerClassName="context-btn general-select" panelClassName="general-startup-menu"
+              trigger={<>{t(handleHidden ? 'quickSwitch.hidden' : 'quickSwitch.show')}<IconChevron size={12} open /></>}>
+              {close => [false, true].map(hide => <button key={String(hide)} type="button" className="pop-item compact"
+                role="menuitemradio" aria-checked={handleHidden === hide} onClick={() => { close(); setHandleHidden(hide); }}>
+                <span className="pop-item-label">{t(hide ? 'quickSwitch.hidden' : 'quickSwitch.show')}</span>
+                <span className="pop-item-check">{handleHidden === hide && <IconCheck size={14} />}</span>
+              </button>)}
+            </Popover>
+          </div>
+          <p className="panel-hint general-hint">{t('quickSwitch.handleHint')}</p>
           {saving && <p className="sr-only" role="status">{t('general.saving')}</p>}
         </>}
         {error && <p className="panel-error" role="alert">{error} {!value && <button className="ghost" onClick={() => setRetry(n => n + 1)}>{t('common.retry')}</button>}</p>}

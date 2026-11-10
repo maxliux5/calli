@@ -117,7 +117,8 @@ import { NoteMarks, type NoteMark } from './components/NoteMarks';
 import { ConnectDialog, DemoBar } from './components/ConnectDialog';
 import { DemoApi, DemoError } from './demo/DemoApi';
 import { type DraftModelPreference, switchDraftModelPreference } from './draft-preferences';
-import { IconCheck, IconBell, AgentMark, IconActivity, IconAgents, IconArchive, IconArrowDown, IconBack, IconClose, IconEdit, IconFolder, IconGauge, IconGlobe, IconImport, IconList, IconMenu, IconSettings, IconMore, IconOverview, IconPalette, IconPlus, IconPuzzle, IconServer, IconSidebar, IconSignIn, IconSignOut, IconSparkle, IconTerminal, IconTrace, IconLanguage, IconWaveform } from './components/icons';
+import { QUICK_SWITCH_HIDDEN_KEY, clampQuickSwitchBottom, savedQuickSwitchBottom, saveQuickSwitchBottom } from './quick-switch';
+import { IconCheck, IconBell, AgentMark, IconActivity, IconAgents, IconArchive, IconArrowLeft, IconArrowDown, IconBack, IconClose, IconEdit, IconFolder, IconGauge, IconGlobe, IconImport, IconList, IconMenu, IconSettings, IconMore, IconOverview, IconPalette, IconPlus, IconPuzzle, IconServer, IconSidebar, IconSignIn, IconSignOut, IconSparkle, IconTerminal, IconTrace, IconLanguage, IconWaveform } from './components/icons';
 import { StatReadings } from './components/SessionStats';
 import { ThreadTracePanel } from './components/TracePanel';
 import { chooseLocale, locale, LOCALES, localeChoice, t } from './i18n';
@@ -246,7 +247,6 @@ const rememberAgentChoice = (agent: string, choice: Partial<Record<'model' | 'ef
 const PLAN_SKIP_KEY = 'calli:plan-skipped';
 
 const QUICK_SWITCH_SIDE = 10;
-
 function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
   threads: Thread[];
   selectedId: string;
@@ -257,8 +257,10 @@ function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
   const items = useMemo(() => selectedIndex < 0 ? [] : threads.slice(Math.max(0, selectedIndex - QUICK_SWITCH_SIDE), Math.min(threads.length, selectedIndex + QUICK_SWITCH_SIDE + 1)), [threads, selectedIndex]);
   const root = useRef<HTMLDivElement>(null);
   const current = useRef<HTMLButtonElement | null>(null);
-  const start = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+  const start = useRef<{ pointerId: number; x: number; y: number; bottom: number; moved: boolean } | null>(null);
   const [open, setOpen] = useState(false);
+  const [hidden, setHidden] = useStoredFlag(QUICK_SWITCH_HIDDEN_KEY);
+  const [bottom, setBottom] = useState(savedQuickSwitchBottom);
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
   // The panel is short: it opens on the current session, with its neighbours above and below.
   useLayoutEffect(() => { if (open) current.current?.scrollIntoView({ block: 'center' }); }, [open]);
@@ -282,53 +284,56 @@ function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [open]);
-  if (selectedIndex < 0 || items.length <= 1) return null;
-  /** A plain tap on the strip is not ours: hand the click to whatever interactive piece sits under it. */
-  const forwardTap = (x: number, y: number) => {
-    const strip = root.current;
-    if (!strip) return;
-    strip.style.visibility = 'hidden';
-    const hit = document.elementFromPoint(x, y);
-    strip.style.visibility = '';
-    hit?.closest('button, a, input, textarea, label, [role="option"], [role="menuitem"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  };
+  if (hidden || selectedIndex < 0 || items.length <= 1) return null;
   const release = (el: HTMLElement, pointerId: number) => {
     if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
     start.current = null;
   };
   return (
     <div className="quick-switch" ref={root}>
-      {/* A narrow invisible strip near the right edge, mirroring the left edge's list gesture:
-          only a leftward pull summons the panel. Holding still does nothing, so a resting finger
-          or a long press to select text is never taken for it; a tap falls through. */}
-      <div
-        className="quick-switch-edge"
-        aria-hidden="true"
+      {/* A small visible handle near the right edge, inset from iOS's own edge gestures. Tap it or
+          pull it left to open the panel; drag it up or down to move it out of the way of text. It
+          covers only its own few pixels, so selecting text elsewhere is never intercepted. */}
+      <button
+        type="button"
+        className={`quick-switch-handle${open ? ' open' : ''}`}
+        style={{ bottom: `calc(${bottom}px + var(--safe-bottom))` }}
+        aria-label={t('quickSwitch.sessions')}
+        aria-expanded={open}
         onPointerDown={(e) => {
           if (e.pointerType === 'mouse' && e.button !== 0) return;
-          e.preventDefault();
           e.currentTarget.setPointerCapture(e.pointerId);
-          start.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+          start.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, bottom, moved: false };
         }}
         onPointerMove={(e) => {
           const from = start.current;
           if (from?.pointerId !== e.pointerId) return;
           const dx = from.x - e.clientX;
-          const dy = Math.abs(e.clientY - from.y);
-          // A vertical drag is a scroll, not a summon.
-          if (dy > 10 && dx <= 24) { release(e.currentTarget, e.pointerId); return; }
-          if (dx > 24 && dx > dy) { release(e.currentTarget, e.pointerId); setOpen(true); }
+          const dy = e.clientY - from.y;
+          if (!from.moved && dx > 24 && dx > Math.abs(dy)) { release(e.currentTarget, e.pointerId); setOpen(true); return; }
+          if (!from.moved && Math.abs(dy) > 8) from.moved = true;
+          if (from.moved) setBottom(clampQuickSwitchBottom(from.bottom - dy));
         }}
         onPointerUp={(e) => {
           const from = start.current;
           if (from?.pointerId !== e.pointerId) return;
           release(e.currentTarget, e.pointerId);
-          if (Math.abs(e.clientX - from.x) < 6 && Math.abs(e.clientY - from.y) < 6) forwardTap(e.clientX, e.clientY);
+          if (from.moved) saveQuickSwitchBottom(bottom);
+          else setOpen((was) => !was);
         }}
         onPointerCancel={(e) => {
           if (start.current?.pointerId === e.pointerId) release(e.currentTarget, e.pointerId);
         }}
-      />
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.preventDefault();
+            const next = clampQuickSwitchBottom(bottom + (e.key === 'ArrowUp' ? 24 : -24));
+            setBottom(next);
+            saveQuickSwitchBottom(next);
+          }
+        }}
+        onClick={(e) => { if (e.detail === 0) setOpen((was) => !was); }}
+      ><IconArrowLeft size={12} /></button>
       {open && (
         <div className="quick-switch-panel" role="listbox" aria-label={t('quickSwitch.sessions')}>
           {items.map((thread) => {
@@ -360,6 +365,7 @@ function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
               </button>
             );
           })}
+          <button type="button" className="quick-switch-hide" onClick={() => { setOpen(false); setHidden(true); }}>{t('quickSwitch.hide')}</button>
         </div>
       )}
     </div>

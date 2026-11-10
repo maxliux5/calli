@@ -795,24 +795,51 @@ button:disabled {
   }
 
   .quick-switch {
-    /* A narrow strip at the bottom-right, inset from the screen edge: iOS owns the outermost
-       band for its history gestures, and the strip sits clear of it. Narrow, so it covers little
-       of the text it lies over; tapping falls through. */
+    /* Holds only the panel; the handle positions itself. Nothing here takes touches. */
     position: fixed;
-    right: 16px;
-    bottom: calc(168px + var(--safe-bottom));
-    width: 32px;
-    height: 160px;
+    inset: 0;
     z-index: 62;
     pointer-events: none;
   }
 
-  .quick-switch-edge {
-    position: absolute;
-    inset: 0;
-    border-radius: 20px;
+  /* A small tab on the right edge, inset from iOS's own edge gestures. Quiet until used. */
+  .quick-switch-handle {
+    position: fixed;
+    right: 6px;
+    width: 22px;
+    height: 52px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    color: var(--muted);
+    box-shadow: var(--shadow-pop);
+    opacity: 0.7;
     pointer-events: auto;
-    touch-action: pan-y;
+    touch-action: none;
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+  }
+
+  .quick-switch-handle.open {
+    opacity: 1;
+    color: var(--text);
+  }
+
+  .quick-switch-hide {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    padding: 8px;
+    border-radius: 10px;
+    border: 0;
+    box-shadow: none;
+    background: transparent;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
   }
 
   .quick-switch-panel {
