@@ -399,7 +399,11 @@ test('running unconfigured threads queue collaboration without refreshing until 
   const h = await setup();
   try {
     await h.manager.startTurn(h.root.id, { text: 'slow' });
-    const mentions = [{ id: 'claude', label: 'Claude Code', kind: 'agent', task: '只给建议' }];
+    const mentions = [
+      { id: 'claude', label: 'Claude Code', kind: 'agent', task: '只给建议' },
+      // No task of its own: the lead assigns it, and the queue's chip should not name it.
+      { id: 'pi', label: 'pi', kind: 'agent' },
+    ];
     const earlier = await h.manager.startTurn(h.root.id, { text: 'slow earlier', queue: true });
     assert.ok('queued' in earlier);
     const response = await h.api(`/api/threads/${h.root.id}/turns`, { text: '一起分析', mentions, queue: true,
@@ -408,8 +412,7 @@ test('running unconfigured threads queue collaboration without refreshing until 
     const queued = await response.json() as { id: string };
     assert.equal(h.team.view(h.root.id), null);
     assert.equal(h.manager.threadView(h.root.id).status, 'running');
-    assert.deepEqual(h.manager.threadView(h.root.id).queued[1].targets, ['Claude Code']);
-    await h.manager.cancelTurn(h.root.id, { keepQueue: true });
+    assert.deepEqual(h.manager.threadView(h.root.id).queued[1].targets, ['Claude Code']);    await h.manager.cancelTurn(h.root.id, { keepQueue: true });
     await wait(() => h.store.listEvents(h.root.id, 0, -1).some(e => e.type === 'turn.started' && e.data.text === 'slow earlier'));
     assert.equal(h.team.view(h.root.id), null, 'an earlier queued turn must not gain collaboration');
     await h.manager.cancelTurn(h.root.id, { keepQueue: true });
