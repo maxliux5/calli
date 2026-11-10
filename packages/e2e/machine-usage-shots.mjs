@@ -1,7 +1,7 @@
-// Screenshots of the observability page's machines tab (desktop 1440 and phone 390, light and
-// dark). The meter's own tables are seeded with a day-shaped usage history — the daemon cannot
-// have one after seconds of life, and screenshots of empty charts say nothing. Run after
-// `npm run build`:
+// Screenshots of the machines list in settings and the usage detail it opens (desktop 1440 and
+// phone 390, light and dark). The meter's own tables are seeded with a day-shaped usage history —
+// the daemon cannot have one after seconds of life, and screenshots of empty charts say nothing.
+// Run after `npm run build`:
 //   node packages/e2e/machine-usage-shots.mjs [outdir]
 import { mkdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
@@ -35,6 +35,9 @@ try {
     VALUES (?, 60, ?, ?, ?, ?, ?, ?, ?)`);
   const nowSec = Math.floor(Date.now() / 1000);
   const start = Math.floor((nowSec - 26 * 3600) / 60) * 60;
+  // The number above the list reads "today since midnight": a run in the small hours after
+  // midnight belongs to it, or the line reads zero while the charts beside it carry millions.
+  const midnightToday = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
   for (let minute = start; minute < nowSec; minute += 60) {
     const date = new Date(minute * 1000);
     const hour = date.getHours();
@@ -42,7 +45,7 @@ try {
     if (hour >= 2 && hour < 5 && nowSec - minute > 6 * 3600) continue;
     up.run(Math.floor(minute / 600) * 600);
     const busy = (hour >= 9 && hour < 12) || (hour >= 14 && hour < 19);
-    const light = (hour >= 19 && hour < 23) || (hour >= 6 && hour < 9);
+    const light = (hour >= 19 && hour < 23) || (hour >= 6 && hour < 9) || (minute >= midnightToday && minute % 3 === 0);
     if (!busy && !(light && minute % 3 === 0)) continue;
     let seed = minute;
     const rand = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
@@ -66,7 +69,8 @@ try {
   const browser = await launchBrowser();
   try {
     // The first look: everything in its loading shape (the usage routes held back a moment), then
-    // the same views settled — the two must differ only in content, never in layout.
+    // the same views settled — the two must differ only in content, never in layout. The detail is
+    // its own hash, so the held-back list's disabled numbers never block the way in.
     for (const [name, viewport, scheme] of [
       ['desktop-light', { width: 1440, height: 900 }, 'light'],
       ['phone-light', { width: 390, height: 844 }, 'light'],
@@ -78,16 +82,14 @@ try {
         await route.continue().catch(() => undefined);
       });
       await openUi(page, daemon);
-      await page.goto(daemon.base + '/#/observability');
-      await page.locator('.obs-tabs button').nth(2).click();
-      await page.locator('.mu-card').first().waitFor({ timeout: 20_000 });
+      await page.goto(daemon.base + '/#/settings/machines');
+      await page.locator('.hosts-today-line').waitFor({ timeout: 20_000 });
       await page.waitForTimeout(400);
       await page.screenshot({ path: join(out, `loading-list-${name}.png`) });
       console.log('loading list', name);
 
-      await page.locator('.mu-card').first().click();
+      await page.goto(daemon.base + '/#/settings/machines/local');
       await page.locator('.mu-figures').waitFor({ timeout: 20_000 });
-      await page.locator('.obs-chart-plot').nth(1).waitFor({ timeout: 20_000 });
       await page.waitForTimeout(400);
       await page.screenshot({ path: join(out, `loading-detail-${name}.png`) });
       console.log('loading detail', name);
@@ -108,21 +110,28 @@ try {
       const page = await browser.newPage({ viewport, colorScheme: scheme });
       page.on('console', (m) => { if (m.type() === 'error') console.log('[console]', m.text().slice(0, 300)); });
       await openUi(page, daemon);
-      // The page itself sits behind its hash; the 机器 tab is the third button.
-      await page.goto(daemon.base + '/#/observability');
-      await page.locator('.obs-tabs button').nth(2).click();
-      await page.locator('.mu-card').first().waitFor({ timeout: 20_000 });
+      // The machines list in settings: today's line above, one row per machine, the number opens.
+      await page.goto(daemon.base + '/#/settings/machines');
+      await page.locator('.host-today').first().waitFor({ timeout: 20_000 });
       await page.waitForTimeout(400);
       await page.screenshot({ path: join(out, `list-${name}.png`) });
       console.log('list', name);
 
       // The detail: the figures row, the stacked chart with its offline stretch, the hit rate line.
-      await page.locator('.mu-card').first().click();
+      await page.locator('.host-today').first().click();
       await page.locator('.mu-figures').waitFor({ timeout: 20_000 });
       await page.locator('.obs-chart-plot').nth(1).waitFor({ timeout: 20_000 });
       await page.waitForTimeout(400);
       await page.screenshot({ path: join(out, `detail-${name}.png`) });
       console.log('detail', name);
+
+      // The sub-page answers its own back button with the list.
+      if (name === 'phone-light') {
+        await page.locator('.mu-detail-head .text-btn').click();
+        await page.locator('.host-today').first().waitFor({ timeout: 20_000 });
+        await page.screenshot({ path: join(out, 'detail-back-phone-light.png') });
+        console.log('back to list', name);
+      }
 
       if (name === 'desktop-light') {
         // The crosshair readout over the stacked chart, and the 合计 view of the same range.
@@ -141,23 +150,35 @@ try {
       await page.close();
     }
 
-    // The entry from 配置 → 机器: each machine's row carries today's tokens, and the number (not
-    // the row's management buttons) opens that machine's usage detail.
-    for (const [name, viewport, scheme] of [
-      ['desktop-light', { width: 1440, height: 900 }, 'light'],
-      ['phone-light', { width: 390, height: 844 }, 'light'],
-    ]) {
-      const page = await browser.newPage({ viewport, colorScheme: scheme });
+    // The browser's back button walks the app's own history (appHistory): entered the way a user
+    // enters — the sidebar's 配置, the machines row, the number — back from the detail must land
+    // on the list, not leave settings. A hash typed into the address bar sits outside that
+    // history, so this flow enters through the interface itself.
+    {
+      const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, colorScheme: 'light' });
       await openUi(page, daemon);
-      await page.goto(daemon.base + '/#/settings/machines');
+      await page.locator('button[aria-label="配置"]').click();
+      await page.locator('.settings-page').waitFor({ timeout: 10_000 });
+      await page.locator('.settings-nav-row', { hasText: '机器' }).click();
       await page.locator('.host-today').first().waitFor({ timeout: 20_000 });
-      await page.waitForTimeout(400);
-      await page.screenshot({ path: join(out, `hosts-${name}.png`) });
+      await page.waitForTimeout(800);
       await page.locator('.host-today').first().click();
       await page.locator('.mu-figures').waitFor({ timeout: 20_000 });
-      await page.waitForTimeout(400);
-      await page.screenshot({ path: join(out, `hosts-open-${name}.png`) });
-      console.log('hosts row', name);
+      await page.goBack({ waitUntil: 'commit' }).catch(() => {});
+      await page.locator('.host-today').first().waitFor({ timeout: 10_000 });
+      console.log('browser back: list restored');
+      await page.close();
+    }
+
+    // The observability page after the move: usage and diagnostics, and no machines tab.
+    {
+      const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, colorScheme: 'light' });
+      await openUi(page, daemon);
+      await page.goto(daemon.base + '/#/observability');
+      await page.locator('.obs-tabs button').first().waitFor({ timeout: 20_000 });
+      const tabs = await page.locator('.obs-tabs button').count();
+      console.log('observability tabs:', tabs);
+      await page.screenshot({ path: join(out, 'observability-desktop-light.png') });
       await page.close();
     }
     console.log(`shots in ${out}`);

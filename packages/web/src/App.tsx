@@ -938,10 +938,8 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   }, [api, demo]);
   /** The terminal a login started; null attaches to the newest live one. */
   const [terminalTarget, setTerminalTarget] = useState<string | null>(null);
-  const [observabilityTab, setObservabilityTab] = useState<'usage' | 'diagnostics' | 'machines'>('usage');
+  const [observabilityTab, setObservabilityTab] = useState<'usage' | 'diagnostics'>('usage');
   const [observabilityFocus, setObservabilityFocus] = useState<string | undefined>(undefined);
-  /** The machine whose usage detail the machines tab opens on, when it is entered from a row. */
-  const [observabilityMachine, setObservabilityMachine] = useState<string | null | undefined>(undefined);
   // Bumped on every visit so the page opens on the requested tab, even when it is already showing.
   const [observabilityKey, setObservabilityKey] = useState(0);
   /** Other agent CLIs found on this host, added from the settings menu — not the picker. */
@@ -2299,11 +2297,10 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     setDrawer(false);
   });
 
-  const openObservability = (tab: 'usage' | 'diagnostics' | 'machines', focusAgent?: string, machine?: string | null) => navigate(() => {
+  const openObservability = (tab: 'usage' | 'diagnostics', focusAgent?: string) => navigate(() => {
     setSelectedId(null);
     setObservabilityTab(tab);
     setObservabilityFocus(focusAgent);
-    setObservabilityMachine(machine);
     setObservabilityKey((n) => n + 1);
     setView('observability');
     setDrawer(false);
@@ -2858,10 +2855,11 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       ...(!demo ? [
         { id: 'agents', label: t('agents.title'), icon: IconAgents, render: () => <AgentsPage api={api} agents={agents} onAdd={() => { setOnboardStep('results'); setOnboardOpen(true); }} onReload={reloadAgents} onLogin={openAgentLogin} /> },
         { id: 'teams', label: t('teams.title'), icon: IconAgents, render: () => <TeamsPage api={api} agents={agents} onReload={reloadTeams} /> },
-        { id: 'machines', label: t('hosts.machines'), icon: IconServer, render: () => <HostsPanel api={api} token={token} hosts={hosts} onChanged={reloadHosts} onClose={closeSettings} onError={handleError} onOpenUsage={machine => openObservability('machines', undefined, machine)} /> },
         { id: 'skills', label: t('composerMenu.skills'), icon: IconSparkle, render: () => <SkillsPage api={api} token={token} hostId={hostId} hosts={hosts} agents={agents} onError={handleError} /> },
         { id: 'mcp', label: 'MCP', icon: IconGlobe, render: () => <McpPage api={api} token={token} hostId={hostId} hosts={hosts} agents={agents} onError={handleError} /> },
       ] : []),
+      // The demo's machines are made up: reading them is exactly what it is for.
+      { id: 'machines', label: t('hosts.machines'), icon: IconServer, render: () => <HostsPanel api={api} token={token} hosts={hosts} path={settingsPath} onNavigate={openSettings} onChanged={reloadHosts} onClose={closeSettings} onError={handleError} /> },
       { id: 'extensions', label: t('extensions.title'), icon: IconPuzzle, render: () => <ExtensionsPage api={api} demo={demo} extensions={extensions} threads={threads} onReload={() => void reloadExtensions()} onChange={changeExtension} onOpenView={openExtensionView} onError={handleError} /> },
     ] },
     { label: t('settings.history'), entries: [
@@ -2869,10 +2867,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       ...(importAgents.length ? [{ id: 'import', label: t('import.title'), icon: IconImport, render: () => <ImportPanel api={api} agents={importAgents} onImported={openThread} onOpen={threadId => void openImported(threadId)} onError={handleError} /> }] : []),
       ...(agents.some(a => !a.hidden && a.capabilities.quota) ? [{ id: 'quota', label: t('app.quota'), icon: IconGauge, render: () => <QuotaBoard api={api} agents={agents} current={activeAgent} account={quotaAccount(settingsPath)} onAccount={id => openSettings(`quota/${encodeURIComponent(id)}`)} /> }] : []),
       { id: 'activity', label: t('activity.title'), icon: IconActivity, render: () => <ActivityPage api={api} agents={agents} onOpenThread={pick} onError={handleError} /> },
-      ...(demo
-        // The demo has only the machines' made-up usage; that tab is what its entry opens.
-        ? [{ id: 'observability', label: t('obs.tab.machines'), icon: IconServer, render: () => <ObservabilityPage api={api} agents={agents} token={token} hosts={hosts} initial="machines" /> }]
-        : [{ id: 'observability', label: t('obs.title'), icon: IconGauge, render: () => <ObservabilityPage api={api} agents={agents} token={token} hosts={hosts} initial="usage" /> }]),
+      ...(!demo ? [{ id: 'observability', label: t('obs.title'), icon: IconGauge, render: () => <ObservabilityPage api={api} agents={agents} initial="usage" /> }] : []),
       ...enabledViews(extensions ?? []).filter(v => v.view.sidebar?.pinned === false).map(v => ({ id: `ext:${v.extensionId}/${v.view.id}`, label: v.view.title[locale()], icon: (props: { size?: number }) => <HostIcon name={v.view.icon} {...props} />, onOpen: () => openExtensionView(extensionHash(v)) })),
     ] },
     { label: t('settings.account'), entries: [demo
@@ -3215,10 +3210,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
               key={`${hostId ?? 'local'}:${observabilityKey}`}
               api={api}
               agents={agents}
-              token={token}
-              hosts={hosts}
               initial={observabilityTab}
-              initialMachine={observabilityMachine}
               focusAgent={observabilityFocus}
               onResult={(result) => { if (result.state === 'ready' || result.state === 'empty') setModelsByAgent(previous => ({ ...previous, [result.agent]: result.models })); }}
             />

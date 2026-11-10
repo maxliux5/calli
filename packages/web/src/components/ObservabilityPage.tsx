@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import type { AgentInfo, Api, HostInfo } from '../api';
+import type { AgentInfo, Api } from '../api';
 import { copyText } from '../clipboard';
 import { compactLabel, durationLabel, numberLabel, type AgentDiagnostic, type UsageReport, type UsageSample } from '../observability';
 import { Popover } from './Popover';
 import { TokenHeatmap } from './TokenHeatmap';
 import { TpmChart } from './TpmChart';
 import { UsageCost } from './UsageCost';
-import { MachineUsagePage } from './MachineUsagePage';
 import { IconCheck, IconCopy, IconRefresh, IconChevron } from './icons';
 import { formatDateTime, t } from '../i18n';
 
@@ -134,15 +133,13 @@ function DiagnosticRow({ api, agent, onResult }: { api: Api; agent: AgentInfo; o
   </article>;
 }
 
-export function ObservabilityPage({ api, agents, token = '', hosts = [], initial = 'usage', initialMachine, focusAgent, onResult }: { api: Api; agents: AgentInfo[]; token?: string; hosts?: HostInfo[]; initial?: 'usage' | 'diagnostics' | 'machines'; initialMachine?: string | null; focusAgent?: string; onResult?: (data: AgentDiagnostic) => void }) {
+export function ObservabilityPage({ api, agents, initial = 'usage', focusAgent, onResult }: { api: Api; agents: AgentInfo[]; initial?: 'usage' | 'diagnostics'; focusAgent?: string; onResult?: (data: AgentDiagnostic) => void }) {
   const [tab, setTab] = useState(initial);
   const ordered = [...agents].sort((a, b) => Number(b.id === focusAgent) - Number(a.id === focusAgent));
-  // The demo has data for the machines only; the other two tabs are the real thing's.
-  const tabs = (api.demo ? [['machines', t('obs.tab.machines')]] : [['usage', t('obs.tab.usage')], ['diagnostics', t('obs.tab.diagnostics')], ['machines', t('obs.tab.machines')]]) as Array<['usage' | 'diagnostics' | 'machines', string]>;
   return <section className="obs-page">
     <h1>{t('obs.title')}</h1>
-    <nav className="obs-tabs" aria-label={t('obs.tabs')}>{tabs.map(([id, label]) => <button key={id} className={tab === id ? 'selected' : ''} aria-pressed={tab === id} onClick={() => setTab(id)}>{label}</button>)}</nav>
-    <div className="obs-body">{tab === 'usage' ? <UsageView api={api} agents={agents} /> : tab === 'machines' ? <MachineUsagePage api={api} token={token} hosts={hosts} openMachine={initialMachine} /> : <>
+    <nav className="obs-tabs" aria-label={t('obs.tabs')}>{([['usage', t('obs.tab.usage')], ['diagnostics', t('obs.tab.diagnostics')]] as const).map(([id, label]) => <button key={id} className={tab === id ? 'selected' : ''} aria-pressed={tab === id} onClick={() => setTab(id)}>{label}</button>)}</nav>
+    <div className="obs-body">{tab === 'usage' ? <UsageView api={api} agents={agents} /> : <>
       <p className="obs-note">{t('diag.note')}</p>
       {ordered.map(agent => <DiagnosticRow key={agent.id} api={api} agent={agent} onResult={onResult} />)}
     </>}</div>
