@@ -69,7 +69,25 @@ test('the pad ignores plain taps and vertical drags; only a leftward pull summon
     await page.mouse.up();
     await page.waitForTimeout(250);
     assert.equal(await page.locator('.quick-switch-panel').count(), 0, 'a vertical drag must not summon the panel');
+    // A finger resting on it, or a long press to select text, is not a summon either.
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(700);
+    await page.mouse.up();
+    await page.waitForTimeout(250);
+    assert.equal(await page.locator('.quick-switch-panel').count(), 0, 'holding still must not summon the panel');
     await summon(page);
+    // Short, and opened on the current session.
+    const panel = await page.locator('.quick-switch-panel').boundingBox();
+    assert.ok(panel.height <= 270, `the panel stays short: ${panel.height}`);
+    const current = await page.locator('.quick-switch-card.current').boundingBox();
+    assert.ok(current.y >= panel.y && current.y + current.height <= panel.y + panel.height, 'the current session is in view');
+    // A tap outside only dismisses: the control under it is not pressed.
+    const more = await page.locator('.topbar-more').boundingBox();
+    await page.touchscreen.tap(more.x + more.width / 2, more.y + more.height / 2);
+    await page.locator('.quick-switch-panel').waitFor({ state: 'detached' });
+    await page.waitForTimeout(250);
+    assert.equal(await page.locator('[role="menu"]').count(), 0, 'the dismissing tap does not open the menu under it');
   } finally { await context.close(); }
 });
 

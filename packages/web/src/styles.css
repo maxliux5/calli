@@ -795,12 +795,13 @@ button:disabled {
   }
 
   .quick-switch {
-    /* A fixed pad at the bottom-right, inset from the screen edge: iOS owns the outermost
-       band for its history gestures, and the pad sits clear of it. Tapping falls through. */
+    /* A narrow strip at the bottom-right, inset from the screen edge: iOS owns the outermost
+       band for its history gestures, and the strip sits clear of it. Narrow, so it covers little
+       of the text it lies over; tapping falls through. */
     position: fixed;
     right: 16px;
     bottom: calc(168px + var(--safe-bottom));
-    width: 96px;
+    width: 32px;
     height: 160px;
     z-index: 62;
     pointer-events: none;
@@ -822,7 +823,8 @@ button:disabled {
     right: calc(10px + env(safe-area-inset-right));
     bottom: calc(var(--qs-anchor) + var(--safe-bottom));
     width: min(286px, calc(100vw - 54px - env(safe-area-inset-left)));
-    max-height: min(480px, max(0px, calc(
+    /* About five sessions, the current one in the middle; the rest scroll. */
+    max-height: min(264px, max(0px, calc(
       var(--vvh, 100dvh) - 72px - var(--qs-anchor) - env(safe-area-inset-top)
     )));
     padding: 7px;
@@ -867,11 +869,6 @@ button:disabled {
     background: var(--hover);
   }
 
-  .quick-switch-card.target {
-    background: var(--accent-soft);
-    color: var(--accent-fg);
-  }
-
   .quick-switch-title {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -889,10 +886,6 @@ button:disabled {
     color: var(--muted);
     font-size: 11.5px;
     line-height: 1.2;
-  }
-
-  .quick-switch-card.target .quick-switch-meta {
-    color: color-mix(in srgb, var(--accent-fg) 78%, var(--muted));
   }
 
   .quick-switch-meta span:not(.dot):not(.agent-mark) {

@@ -246,7 +246,6 @@ const rememberAgentChoice = (agent: string, choice: Partial<Record<'model' | 'ef
 const PLAN_SKIP_KEY = 'calli:plan-skipped';
 
 const QUICK_SWITCH_SIDE = 10;
-const QUICK_SWITCH_HOLD_MS = 360;
 
 function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
   threads: Thread[];
@@ -257,59 +256,24 @@ function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
   const selectedIndex = threads.findIndex((thread) => thread.id === selectedId);
   const items = useMemo(() => selectedIndex < 0 ? [] : threads.slice(Math.max(0, selectedIndex - QUICK_SWITCH_SIDE), Math.min(threads.length, selectedIndex + QUICK_SWITCH_SIDE + 1)), [threads, selectedIndex]);
   const root = useRef<HTMLDivElement>(null);
-  const rows = useRef(new Map<string, HTMLButtonElement>());
-  const panel = useRef<HTMLDivElement>(null);
-  const timer = useRef<number | null>(null);
-  const lastY = useRef(0);
-  const startX = useRef(0);
-  const startY = useRef(0);
-  const [tapOpen, setTapOpen] = useState(false);
-  const [press, setPress] = useState<{ pointerId: number; open: boolean; targetId: string } | null>(null);
+  const current = useRef<HTMLButtonElement | null>(null);
+  const start = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+  const [open, setOpen] = useState(false);
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
-  const open = tapOpen || (press?.open ?? false);
-  const clearTimer = () => {
-    if (timer.current !== null) window.clearTimeout(timer.current);
-    timer.current = null;
-  };
-  const targetAt = (y: number) => {
-    const panelRect = panel.current?.getBoundingClientRect();
-    // The floating trigger sits below the list. A hold-and-release without sliding should not
-    // jump to the nearest row above the finger.
-    if (!panelRect || y < panelRect.top || y > panelRect.bottom) return selectedId;
-    const visible = items
-      .map((thread) => ({ thread, el: rows.current.get(thread.id) }))
-      .filter((row): row is { thread: Thread; el: HTMLButtonElement } => Boolean(row.el));
-    if (!visible.length) return selectedId;
-    let best = visible[0];
-    let bestDistance = Infinity;
-    for (const row of visible) {
-      const rect = row.el.getBoundingClientRect();
-      if (y >= rect.top && y <= rect.bottom) return row.thread.id;
-      const distance = Math.abs(y - (rect.top + rect.bottom) / 2);
-      if (distance < bestDistance) {
-        best = row;
-        bestDistance = distance;
-      }
-    }
-    return best.thread.id;
-  };
-  const updateTarget = (y: number) => {
-    if (!panel.current) return;
-    setPress((current) => current && current.open ? { ...current, targetId: targetAt(y) } : current);
-  };
-  const reset = (el?: HTMLElement, pointerId?: number) => {
-    clearTimer();
-    if (el && pointerId !== undefined && el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
-    setPress(null);
-  };
-  useEffect(() => () => clearTimer(), []);
+  // The panel is short: it opens on the current session, with its neighbours above and below.
+  useLayoutEffect(() => { if (open) current.current?.scrollIntoView({ block: 'center' }); }, [open]);
   useEffect(() => {
-    if (!tapOpen) return;
+    if (!open) return;
+    // Dismissing is all a tap outside does: what lies under it is not pressed as well.
     const onPointerDown = (e: PointerEvent) => {
-      if (root.current && !root.current.contains(e.target as Node)) setTapOpen(false);
+      if (!root.current || root.current.contains(e.target as Node)) return;
+      setOpen(false);
+      const swallow = (click: MouseEvent) => { click.stopPropagation(); click.preventDefault(); };
+      document.addEventListener('click', swallow, { capture: true, once: true });
+      window.setTimeout(() => document.removeEventListener('click', swallow, { capture: true }), 500);
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setTapOpen(false);
+      if (e.key === 'Escape') setOpen(false);
     };
     document.addEventListener('pointerdown', onPointerDown, true);
     document.addEventListener('keydown', onKeyDown);
@@ -317,7 +281,7 @@ function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
       document.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [tapOpen]);
+  }, [open]);
   if (selectedIndex < 0 || items.length <= 1) return null;
   /** A plain tap on the strip is not ours: hand the click to whatever interactive piece sits under it. */
   const forwardTap = (x: number, y: number) => {
@@ -328,11 +292,15 @@ function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
     strip.style.visibility = '';
     hit?.closest('button, a, input, textarea, label, [role="option"], [role="menuitem"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
   };
+  const release = (el: HTMLElement, pointerId: number) => {
+    if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
+    start.current = null;
+  };
   return (
     <div className="quick-switch" ref={root}>
-      {/* An invisible strip along the right edge, mirroring the left edge's list gesture: swipe it
-          left to summon the panel, hold to scrub through the sessions, and a plain tap falls
-          through to the interface underneath. */}
+      {/* A narrow invisible strip near the right edge, mirroring the left edge's list gesture:
+          only a leftward pull summons the panel. Holding still does nothing, so a resting finger
+          or a long press to select text is never taken for it; a tap falls through. */}
       <div
         className="quick-switch-edge"
         aria-hidden="true"
@@ -340,71 +308,44 @@ function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
           if (e.pointerType === 'mouse' && e.button !== 0) return;
           e.preventDefault();
           e.currentTarget.setPointerCapture(e.pointerId);
-          startX.current = e.clientX;
-          startY.current = e.clientY;
-          lastY.current = e.clientY;
-          setPress({ pointerId: e.pointerId, open: false, targetId: selectedId });
-          clearTimer();
-          timer.current = window.setTimeout(() => {
-            timer.current = null;
-            setPress((current) => current?.pointerId === e.pointerId ? { ...current, open: true } : current);
-            requestAnimationFrame(() => updateTarget(lastY.current));
-          }, QUICK_SWITCH_HOLD_MS);
+          start.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
         }}
         onPointerMove={(e) => {
-          if (press?.pointerId !== e.pointerId) return;
-          lastY.current = e.clientY;
-          const dx = startX.current - e.clientX;
-          const dy = Math.abs(e.clientY - startY.current);
-          // A vertical drag is a scroll, not a summon: give up before the hold timer fires.
-          if (!press.open && !tapOpen && dy > 10 && dx <= 24) {
-            clearTimer();
-            reset(e.currentTarget, e.pointerId);
-            return;
-          }
-          // A pull past the threshold summons the panel for tapping; holding keeps its scrub.
-          if (!press.open && !tapOpen && dx > 24 && dx > dy) {
-            clearTimer();
-            reset(e.currentTarget, e.pointerId);
-            setTapOpen(true);
-            return;
-          }
-          if (press.open) { e.preventDefault(); updateTarget(e.clientY); }
+          const from = start.current;
+          if (from?.pointerId !== e.pointerId) return;
+          const dx = from.x - e.clientX;
+          const dy = Math.abs(e.clientY - from.y);
+          // A vertical drag is a scroll, not a summon.
+          if (dy > 10 && dx <= 24) { release(e.currentTarget, e.pointerId); return; }
+          if (dx > 24 && dx > dy) { release(e.currentTarget, e.pointerId); setOpen(true); }
         }}
         onPointerUp={(e) => {
-          if (press?.pointerId !== e.pointerId) return;
-          const targetId = press.open ? press.targetId : null;
-          const tap = Math.abs(e.clientX - startX.current) < 6 && Math.abs(e.clientY - startY.current) < 6;
-          reset(e.currentTarget, e.pointerId);
-          if (targetId) {
-            setTapOpen(false);
-            if (targetId !== selectedId) onSelect(targetId);
-            return;
-          }
-          if (tap) forwardTap(e.clientX, e.clientY);
+          const from = start.current;
+          if (from?.pointerId !== e.pointerId) return;
+          release(e.currentTarget, e.pointerId);
+          if (Math.abs(e.clientX - from.x) < 6 && Math.abs(e.clientY - from.y) < 6) forwardTap(e.clientX, e.clientY);
         }}
         onPointerCancel={(e) => {
-          if (press?.pointerId === e.pointerId) reset(e.currentTarget, e.pointerId);
+          if (start.current?.pointerId === e.pointerId) release(e.currentTarget, e.pointerId);
         }}
       />
       {open && (
-        <div className="quick-switch-panel" ref={panel} role="listbox" aria-label={t('quickSwitch.sessions')}>
+        <div className="quick-switch-panel" role="listbox" aria-label={t('quickSwitch.sessions')}>
           {items.map((thread) => {
             const agent = agentById.get(thread.agent);
-            const target = press?.open ? press.targetId === thread.id : thread.id === selectedId;
-            const current = thread.id === selectedId;
+            const isCurrent = thread.id === selectedId;
             const place = thread.scratch ? t('projects.none') : folderName(projectDir(thread).cwd);
             return (
               <button
                 type="button"
                 key={thread.id}
-                ref={(el) => { if (el) rows.current.set(thread.id, el); else rows.current.delete(thread.id); }}
-                className={`quick-switch-card${current ? ' current' : ''}${target ? ' target' : ''}`}
+                ref={isCurrent ? current : undefined}
+                className={`quick-switch-card${isCurrent ? ' current' : ''}`}
                 role="option"
-                aria-selected={target}
+                aria-selected={isCurrent}
                 onClick={() => {
-                  setTapOpen(false);
-                  if (thread.id !== selectedId) onSelect(thread.id);
+                  setOpen(false);
+                  if (!isCurrent) onSelect(thread.id);
                 }}
               >
                 <span className="quick-switch-title">{thread.title}</span>
@@ -414,7 +355,7 @@ function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
                   <span>{place}</span>
                   {thread.status === 'running' && <span className="dot running" aria-label={t('status.running')} />}
                   {thread.waiting && <span className="dot waiting" aria-label={t('notices.unknown.label')} />}
-                  {thread.unread && !current && <span className="dot unread" aria-label={t('sidebar.unread')} />}
+                  {thread.unread && !isCurrent && <span className="dot unread" aria-label={t('sidebar.unread')} />}
                 </span>
               </button>
             );
