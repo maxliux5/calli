@@ -11,6 +11,10 @@ import { createHttpServer, listenPrivate, socketHeld } from './http.js';
 import { HostRegistry } from './hosts.js';
 import { AgentRegistry, defaultInstances } from './agents.js';
 import { AttachmentStore } from './attachments.js';
+import { LocalSessions } from './local-sessions.js';
+import { MachineUsageMeter } from './machine-usage.js';
+import { claudeConfigDirs, codexHomes, transcriptHome } from './adapters/transcript-usage.js';
+import { sessionStoreKey } from './adapters/types.js';
 import { Scheduler } from './scheduler.js';
 import { Store } from './store.js';
 import { TerminalManager } from './terminals.js';
@@ -52,6 +56,12 @@ async function main(): Promise<void> {
     }),
   });
   const adapters = registry.adapters;
+  // Copies of known CLIs and signed-in accounts found on this machine join the list on their own
+  // (every 10 minutes); what the person removed stays out. An inline CALLI_AGENTS_JSON hub (tests,
+  // scripts) owns its list outright and joins nothing, and CALLI_AUTO_JOIN=off turns it off for
+  // anyone. The page's 「发现/添加」 entries keep working alongside. dispose(), called on shutdown,
+  // stops the timer.
+  registry.startAutoJoin();
 
   // Model lists take a few seconds to probe, so start now instead of on the first page load.
   for (const a of adapters.values()) {
@@ -70,10 +80,39 @@ async function main(): Promise<void> {
   if (await socketHeld(coordinationPath)) throw new Error('another daemon is already serving this data directory; not starting a second one');
 
   const store = new Store(config.dataDir);
+  // The two subsystems that read what the agents on this machine have been doing: the sessions
+  // they already have (listed for the thread list, imported on a click) and the tokens their
+  // transcripts gained (the machine's usage). Neither scans on a request's say-so alone, and
+  // neither runs on a hub that owns no agent file of its own (an inline CALLI_AGENTS_JSON list is
+  // a test or script machine, not the person's) or with CALLI_LOCAL_SCAN=off: the machine behind
+  // a throwaway hub is not ours to read.
+  const localScan = registry.ownsFile && process.env.CALLI_LOCAL_SCAN !== 'off';
+  const localSessions = new LocalSessions({
+    adapters,
+    workdirs: () => manager.allowedWorkdirs,
+    importedSessions: () => store.agentSessionOwners(),
+    instances: () => registry.list().map((instance) => ({ id: instance.id, hidden: !!instance.hidden, store: sessionStoreKey(instance) })),
+  }, { enabled: localScan });
+  const machineUsage = localScan ? new MachineUsageMeter({
+    db: store.db,
+    sources: () => {
+      const instances = registry.list();
+      return {
+        claudeDirs: claudeConfigDirs(transcriptHome(), instances.filter((i) => i.adapter === 'claude').map((i) => i.env ?? {})),
+        codexHomes: codexHomes(instances.filter((i) => i.adapter === 'codex' || i.adapter === 'traex').map((i) => i.env ?? {})),
+      };
+    },
+    launchers: () => store.agentSessionOwners(),
+  }) : null;
   // Directories added from the page are kept next to the hub's data; threads in no project work in
   // a scratch area there too.
   const dirs = new Workdirs(workdirs, join(config.dataDir, 'workdirs.json'), join(config.dataDir, 'scratch'));
   const manager = new ThreadManager(store, adapters, dirs, new AttachmentStore(config.dataDir), () => registry.list());
+  // The session list scans once here (it asks the manager for the allowed directories) and then
+  // only when a request finds it stale; the meter keeps its own timer, files only. Stopped in
+  // shutdown with everything else.
+  localSessions.start();
+  machineUsage?.start();
   manager.recoverInterrupted();
   manager.personal.proactive.recover();
   // Started after recovery: turns a restart cut off are not news from a Worker.
@@ -138,7 +177,7 @@ async function main(): Promise<void> {
   // Previews are served on a port of their own: the iframe needs an origin separate from the app
   // (see preview.ts). One port past the app's is the default; CALLI_PREVIEW_PORT picks another.
   const previewPort = Number(process.env.CALLI_PREVIEW_PORT) || config.port + 1;
-  const server = createHttpServer({ manager, push, registry, terminals, desktop, hosts, scheduler, extensions, voice, autotitle, token: config.token, webDir: config.webDir, version: VERSION, previewPort });
+  const server = createHttpServer({ manager, push, registry, terminals, desktop, hosts, scheduler, extensions, voice, autotitle, localSessions, machineUsage: machineUsage ?? undefined, token: config.token, webDir: config.webDir, version: VERSION, previewPort });
   // Same requests, other origin: preview frames load from here so their pages cannot reach the
   // app, while their own CSS and scripts load same-origin. Without the port, previews say so.
   const preview = createHttpServer({ manager, registry, terminals, hosts, scheduler, extensions, token: config.token, webDir: null, version: VERSION, previewPort });
@@ -147,7 +186,7 @@ async function main(): Promise<void> {
   });
   preview.listen(previewPort, config.host, () => console.log(`previews on http://${config.host}:${previewPort}`));
   // The same API on a socket only this user can open: how a hub on another machine reaches this one.
-  const local = config.socket ? createHttpServer({ manager, push, registry, terminals, desktop, scheduler, extensions, voice, autotitle, trusted: true, token: config.token, webDir: null, version: VERSION }) : null;
+  const local = config.socket ? createHttpServer({ manager, push, registry, terminals, desktop, scheduler, extensions, voice, autotitle, localSessions, machineUsage: machineUsage ?? undefined, trusted: true, token: config.token, webDir: null, version: VERSION }) : null;
   let ownsSocket = false;
   if (local && config.socket) {
     listenPrivate(local, config.socket)
@@ -201,6 +240,7 @@ async function main(): Promise<void> {
     personal.close();
     rmSync(personalPath, { force: true });
     registry.dispose();
+    machineUsage?.stop();
     workerReports.stop();
     await larkEvents.dispose();
     await manager.shutdown();

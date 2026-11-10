@@ -68,6 +68,11 @@
   --chart-2: #eb6834;
   --chart-3: #4a3aa7;
   --chart-4: #e34948;
+  /* The machine token charts' four kinds, in stacking order (validated as a set; see THIRD_PARTY_NOTICES.md). */
+  --usage-input: #2a78d6;
+  --usage-output: #eb6834;
+  --usage-cache-write: #6250d6;
+  --usage-cache-read: #1baf7a;
   --user-bg: #eceae4;
   --positive-bg: #e6f3eb;
   --lightbox: rgba(18, 17, 16, 0.9);
@@ -157,6 +162,10 @@
     --chart-2: #d95926;
     --chart-3: #9085e9;
     --chart-4: #e66767;
+    --usage-input: #3987e5;
+    --usage-output: #d95926;
+    --usage-cache-write: #9085e9;
+    --usage-cache-read: #199e70;
     --user-bg: #2f2d2a;
   --positive-bg: #1d3327;
   --lightbox: rgba(0, 0, 0, 0.92);
@@ -218,6 +227,10 @@
   --chart-2: #d95926;
   --chart-3: #9085e9;
   --chart-4: #e66767;
+  --usage-input: #3987e5;
+  --usage-output: #d95926;
+  --usage-cache-write: #9085e9;
+  --usage-cache-read: #199e70;
   --user-bg: #2f2d2a;
   --positive-bg: #1d3327;
   --lightbox: rgba(0, 0, 0, 0.92);
@@ -1271,6 +1284,41 @@ html.list-open body {
 
 .thread-note.waiting { color: var(--warn); }
 .thread-note.error { color: var(--danger); }
+.thread-note.external { color: var(--muted); }
+
+/* A conversation the agent already has, sitting among the threads until someone opens it. The
+   title reads like any thread's; what is quieted is the trim — the agent mark is faded and a
+   small dot at the row's end says it is on disk, not a thread yet. */
+.thread-row.external .thread-meta :is(.agent-mark, .agent-tag) {
+  opacity: .5;
+}
+
+.thread-row.external .external-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--faint);
+  margin-left: 6px;
+  flex: none;
+}
+
+/* Asking for the next page of the machine's sessions: where the list ended. */
+.sidebar-more-sessions {
+  display: block;
+  margin: 2px 10px 10px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.sidebar-more-sessions:hover {
+  background: var(--hover);
+  color: var(--text);
+}
 
 /* Which agent runs a thread matters less than what the thread is: the mark stays out of the way. */
 .thread-meta .agent-mark { opacity: 0.7; }
@@ -10433,6 +10481,87 @@ button.coord-row-name { cursor: pointer; }
 .obs-chart-table table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .obs-chart-table th, .obs-chart-table td { padding: 8px; text-align: right; border-bottom: 1px solid var(--border); font-weight: normal; }
 .obs-chart-table th:first-child { text-align: left; }
+
+/* ---------- The machines tab: machines' token usage ---------- */
+
+/* The legend's count, next to its kind's name. */
+.obs-chart-legend em { color: var(--muted); font-style: normal; font-variant-numeric: tabular-nums; }
+
+/* Today over every machine (persona's TodayTokens): a headline number with the share bar below. */
+.mu-today { display: flex; flex-direction: column; gap: 6px; padding: 18px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); margin-bottom: 16px; }
+.mu-today > span { color: var(--muted); font-size: 12px; }
+.mu-today > strong { font-size: 26px; font-weight: 550; letter-spacing: -.3px; font-variant-numeric: tabular-nums; }
+.mu-share-bar { display: flex; height: 8px; border-radius: var(--radius-pill); overflow: hidden; background: var(--hover); }
+.mu-share-bar i { background: var(--text); min-width: 2px; }
+.mu-share-legend { display: flex; flex-wrap: wrap; gap: 2px 14px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.mu-share-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.mu-share-legend i { width: 10px; height: 10px; border-radius: 3px; background: var(--text); flex-shrink: 0; }
+.mu-today small { color: var(--faint); font-size: 12px; }
+
+/* One machine: a card with today's tokens, the rate now, and the last hour's line. */
+.mu-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+.mu-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); text-align: left; cursor: pointer; font: inherit; color: var(--text); min-width: 0; }
+.mu-card:hover { background: var(--hover); }
+.mu-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.mu-card-head strong { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-card-head small { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+.mu-card-stat { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.mu-card-today { color: var(--muted); font-size: 12px; }
+.mu-card-today strong { display: block; color: var(--text); font-size: 20px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.mu-card-now { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; flex-shrink: 0; }
+.mu-card-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.mu-spark { width: 100%; height: 36px; color: var(--chart-total); }
+.mu-spark path { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+
+/* The stacked kinds keep a 2px surface gap between them; offline stretches read as a flat grey. */
+.mu-stack { stroke: var(--surface); stroke-width: 2; stroke-linejoin: round; }
+.mu-offline { fill: var(--border); }
+.mu-chart-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; margin: 0; color: var(--muted); font-size: 12px; pointer-events: none; }
+
+/* One machine's detail: one filter row, then the charts beside the share lists. */
+.mu-detail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.mu-detail-head h2 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.2px; }
+/* One row however narrow: the range control and the two filters scroll sideways together. */
+.mu-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
+.mu-range { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill); flex: none; }
+.mu-range button { border: 0; background: none; padding: 3px 10px; border-radius: var(--radius-pill); color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.mu-range button.selected { background: var(--active); color: var(--text); }
+.mu-detail { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
+.mu-charts { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.mu-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+/* The chart card's own top: the four numbers as one plain row (persona), no boxes of their own. */
+.mu-figures { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px 16px; padding: 2px 2px 12px; }
+.mu-figures span { display: block; color: var(--muted); font-size: 11px; }
+.mu-figures strong { font-size: 20px; font-weight: 550; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.mu-head-side { display: inline-flex; align-items: center; gap: 12px; margin-left: auto; }
+.mu-mode { display: inline-flex; gap: 2px; padding: 1px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill); }
+.mu-mode button { border: 0; background: none; padding: 2px 9px; border-radius: var(--radius-pill); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
+.mu-mode button.selected { background: var(--active); color: var(--text); }
+.mu-shares { padding: 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.mu-shares h3 { margin: 0 0 8px; font-size: 12px; font-weight: 550; color: var(--muted); }
+.mu-shares button { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 9px 10px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer; min-width: 0; }
+.mu-shares button:hover { background: var(--hover); }
+.mu-shares button.selected { background: var(--active); }
+.mu-share-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-share-numbers { display: flex; align-items: baseline; gap: 8px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.mu-share-numbers small { color: var(--muted); font-size: 11px; }
+/* The share lists while the report is on its way: rows of the same height, no text to be wrong. */
+.mu-share-skeleton { height: 34px; border-radius: var(--radius-sm); background: var(--hover); margin: 6px 0; }
+/* Both columns' first cards start flush with the grid's top edge (the chart card's own margin
+   would otherwise drop it below the share card beside it). */
+.mu-detail > * > :first-child { margin-top: 0; }
+.mu-today > strong.unknown { color: var(--faint); }
+/* The machines page's own number on a machine's row in 配置 → 机器: reading it is separate from
+   managing the machine, so it is a button of its own. */
+.host-today { flex: none; min-width: 56px; text-align: right; padding: 4px 8px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; cursor: pointer; }
+.host-today:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.host-today:disabled { cursor: default; }
+@media (max-width: 900px) {
+  .mu-detail { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 480px) {
+  .mu-figures strong { font-size: 16px; }
+}
 
 /* ---------- Plan document and the bottom sheet ---------- */
 

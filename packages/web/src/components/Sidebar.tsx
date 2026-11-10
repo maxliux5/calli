@@ -1,12 +1,12 @@
 import brandIcon from '../assets/calli.svg';
 import { Fragment, useEffect, useState, type MouseEvent, type ReactNode } from 'react';
-import type { HostInfo, SearchHit, Section, Thread } from '../api';
+import type { ExternalSession, HostInfo, SearchHit, Section, Thread } from '../api';
 import type { AgentMarkInfo } from '../thread-cache';
 import { clockLabel } from '../timeline';
 import { useInTitlebar, useLongPress, useStoredFlag, useStoredSet } from '../hooks';
 import { attentionCount, threadMark, waitingLabel, type ThreadMark } from '../notices';
 import { folderName } from '../paths';
-import { buildActivity, buildMerged, buildSidebar, handoverGroups, markTerms, navOverflow, projectDir, SEARCH_MIN, taggedAgents, type HostSource } from '../sidebar';
+import { buildActivity, buildMerged, buildSidebar, externalThreadRow, handoverGroups, markTerms, navOverflow, projectDir, SEARCH_MIN, taggedAgents, withExternalSessions, type HostSource } from '../sidebar';
 import { timeAgo } from '../sessions';
 import { deliveredPreview } from '../timeline';
 import { HostSwitcher } from './Hosts';
@@ -99,6 +99,19 @@ interface Props {
   onSearch?: (query: string) => Promise<SearchHit[]>;
   /** Opens the thread a found turn is in, at that turn. */
   onOpenHit?: (hit: SearchHit) => void;
+  /** This machine's agent sessions that are not threads yet; they mix into the list by time. */
+  external?: ExternalSession[];
+  /** `off`: this machine does not list them (an older daemon, or the demo). */
+  externalState?: 'off' | 'loading' | 'ready' | 'failed';
+  /** Opens one of them: import it and continue it as a thread. */
+  onImportExternal?: (session: ExternalSession) => void;
+  /** `agent:sessionId` of the session being imported; its row says so. */
+  importingExternal?: string | null;
+  /** Something went wrong reading the list or importing one: shown once, with a way to try again. */
+  externalError?: { message: string; retry?: () => void } | null;
+  /** More external sessions are known but not shown; the call brings the next page. */
+  moreExternal?: boolean;
+  onLoadMoreExternal?: () => void;
   /** A line over the list, such as the demo's way to connect. */
   notice?: ReactNode;
 }
@@ -167,6 +180,13 @@ export function Sidebar({
   onOpenElsewhere,
   onSearch,
   onOpenHit,
+  external = [],
+  externalState = 'off',
+  onImportExternal,
+  importingExternal = null,
+  externalError = null,
+  moreExternal = false,
+  onLoadMoreExternal,
 }: Props) {
   const [search, setSearch] = useState('');
   // What was said, looked up a moment after the typing stops. `for` is the search the hits answer.
@@ -198,9 +218,12 @@ export function Sidebar({
   const [collapsed, toggle] = useStoredSet(`${storagePrefix}.collapsed`);
   // The other way to read the list: by what is going on, not by where a thread is filed. Like Codex's activity view.
   const [byActivity, setByActivity] = useStoredFlag(`${storagePrefix}.activity`);
-  const model = buildSidebar(threads, sections, search);
+  // This machine's sessions that are not threads yet mix into the list by their time; every
+  // machine's own list (the merged view) shows threads only.
+  const withExternal = merged ? threads : withExternalSessions(threads, external);
+  const model = buildSidebar(withExternal, sections, search);
   const mergedModel = merged ? buildMerged(merged, search, new Date(), selectedId) : null;
-  const activity = byActivity && !mergedModel ? buildActivity(threads, search, new Date(), selectedId) : null;
+  const activity = byActivity && !mergedModel ? buildActivity(withExternal, search, new Date(), selectedId) : null;
   // Out of their project groups, rows say where they are and what was asked last.
   const flat = byActivity || Boolean(mergedModel);
   // The machine on screen being down hides its list, unless every machine is listed.
@@ -310,8 +333,51 @@ export function Sidebar({
     return mark ? <span className={`dot ${mark}`} role="img" aria-label={MARK_LABELS[mark]} title={MARK_LABELS[mark]} /> : null;
   };
 
+  /**
+   * A conversation an agent on this machine already has, sitting among the threads by its time.
+   * Quieter than a thread (nothing is running): reading it is free, opening it imports it, which
+   * takes a moment and can fail — both said on the row, in place.
+   */
+  const externalRow = (thread: Thread) => {
+    const session = thread.external!;
+    const key = `${session.agent}:${session.sessionId}`;
+    const busy = importingExternal === key;
+    const agent = agentById.get(session.agent);
+    return (
+      <div key={thread.id} className="thread-row external">
+        <button
+          className="thread-item"
+          disabled={importingExternal !== null}
+          onClick={() => onImportExternal?.(session)}
+          title={t('sidebar.externalHint')}
+        >
+          <span className="thread-text">
+            <span className="thread-head">
+              <span className="thread-title">{thread.title}</span>
+              {busy && <span className="thread-note external">{t('sidebar.externalImporting')}</span>}
+              {flat && <span className="thread-dir">{folderName(projectDir(thread).cwd)}</span>}
+            </span>
+          </span>
+          <span className="thread-meta">
+            {agent?.icon ? (
+              <span className="agent-mark" role="img" aria-label={agent.label} title={agent.label}>
+                <AgentMark path={agent.icon} size={compact ? 13 : 12} />
+              </span>
+            ) : agents !== null ? (
+              <span className="agent-tag">{session.agent}</span>
+            ) : null}
+            {/* The one quiet mark that this is a conversation on disk, not a thread yet; the row's
+                tooltip says it in words. */}
+            <i className="external-dot" aria-hidden="true" />
+          </span>
+        </button>
+      </div>
+    );
+  };
+
   // Like Orca's agents under a task: the lead's row, then one line per member saying what it is doing.
   const entry = (thread: Thread, on?: Elsewhere) => {
+    if (thread.external) return externalRow(thread);
     const team = members?.get(thread.id);
     if (!team?.length || on?.open) return row(thread, thread.title, thread.preview, undefined, on);
     const sorted = [...team].sort(teamOrder);
@@ -650,6 +716,27 @@ export function Sidebar({
           </div>
         )}
         {!down && groups}
+        {/* Reading the machine's sessions, or importing one, went wrong: said here, where the rows
+            are, with a way to try again. Cleared by the next attempt. */}
+        {!down && !mergedModel && externalError && (
+          <p className="group-empty external-error" role="alert">
+            {externalError.message}
+            {externalError.retry && (
+              <>
+                {' '}
+                <button type="button" className="text-btn" onClick={externalError.retry}>
+                  {t('common.retry')}
+                </button>
+              </>
+            )}
+          </p>
+        )}
+        {/* The machine may hold far more sessions than this: shown a page at a time, more on ask. */}
+        {!down && !mergedModel && moreExternal && onLoadMoreExternal && !search.trim() && (
+          <button type="button" className="sidebar-more-sessions" onClick={onLoadMoreExternal}>
+            {t('sidebar.moreExternal')}
+          </button>
+        )}
         {!down && onSearch && query.length >= SEARCH_MIN && (
           <section className="search-hits" aria-label={t('sidebar.inConversations')}>
             <div className="search-hits-head">{t('sidebar.inConversations')}</div>

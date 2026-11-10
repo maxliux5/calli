@@ -38,6 +38,18 @@ interface InstanceFile {
   agents: AgentInstance[];
 }
 
+/**
+ * What the person deleted, so a later discovery scan does not bring it straight back: the
+ * executables an instance ran (real paths, symlink aliases and all) and the env entries that
+ * picked its account. Persona hit this on Claude config directories: a deleted account came
+ * back on the next scan. Adding the same thing back by hand still works.
+ */
+interface RemovedFile {
+  paths: string[];
+  /** Canonical `KEY=value` entries, one per env variable of a removed instance. */
+  envs: string[];
+}
+
 const ADAPTER_LABELS: Record<AgentInstance['adapter'], string> = {
   claude: 'Claude Code',
   pi: 'pi',
@@ -199,12 +211,16 @@ export class AgentRegistry {
   private readonly file: string | null;
   private readonly defaultCommands = new Map<AgentInstance['adapter'], string[]>();
   private readonly logins = new Map<string, { id: string; session: LoginSession }>();
+  private readonly removedFile: string | null;
+  private removed: RemovedFile = { paths: [], envs: [] };
+  private autoJoinTimer: ReturnType<typeof setInterval> | null = null;
   private creating: Promise<unknown> = Promise.resolve();
   private writing: Promise<unknown> = Promise.resolve();
 
   constructor(
     instances: AgentInstance[],
-    /** Where `agents.json` lives, or null for a read-only registry (tests). */
+    /** Where `agents.json` lives, or null for a list the hub does not own (an inline
+     *  `CALLI_AGENTS_JSON` hub, or a read-only registry in tests). */
     file: string | null,
     /** The built-in commands, kept as a fallback after the instance that supplied one is removed. */
     builtIn: AgentInstance[] = [],
@@ -224,9 +240,26 @@ export class AgentRegistry {
     }
     for (const instance of instances) this.register(instance);
     this.file = file;
+    this.removedFile = dataDir ? join(dataDir, 'removed-agents.json') : null;
+    if (this.removedFile && existsSync(this.removedFile)) {
+      try {
+        const parsed = JSON.parse(readFileSync(this.removedFile, 'utf8')) as RemovedFile;
+        if (Array.isArray(parsed.paths) && Array.isArray(parsed.envs)) {
+          this.removed = {
+            paths: parsed.paths.filter((p): p is string => typeof p === 'string'),
+            envs: parsed.envs.filter((e): e is string => typeof e === 'string'),
+          };
+        }
+      } catch {
+        // A broken file is reported, not fatal: auto-join simply forgets what was removed.
+        console.warn('warning: removed-agents.json is not valid JSON; ignoring it');
+      }
+    }
   }
 
-  /** Builds a registry from the environment: `agents.json` in the data dir, or the defaults. */
+  /** Builds a registry from the environment: `CALLI_AGENTS_JSON` inline, `agents.json` in the
+   *  data dir, or the defaults. An inline list is read-only, and {@link autoJoin} leaves it
+   *  alone: it names a test or script machine, not the person's hub. */
   static fromEnv(opts: {
     dataDir: string;
     env: NodeJS.ProcessEnv;
@@ -250,6 +283,13 @@ export class AgentRegistry {
 
   list(): AgentInstance[] {
     return [...this.instances.values()];
+  }
+
+  /** Whether this hub owns its agent list as a file. False for an inline `CALLI_AGENTS_JSON`
+   *  list — a test or script machine, whose list (and machine) must not be scanned as the
+   *  person's own. */
+  get ownsFile(): boolean {
+    return this.file !== null;
   }
 
   get(id: string): AgentInstance {
@@ -283,10 +323,13 @@ export class AgentRegistry {
     });
   }
 
-  /** Removes only the hub's registration; the agent's own files and login are left alone. */
+  /** Removes only the hub's registration; the agent's own files and login are left alone. The
+   *  instance's identity is remembered, so a later auto-join does not add it straight back. */
   async remove(id: string): Promise<AgentInstance> {
     return this.mutate(async () => {
       const instance = this.get(id);
+      this.rememberRemoved(instance);
+      await this.persistRemoved();
       await this.persist(this.list().filter((i) => i.id !== id));
       this.logins.get(id)?.session.cancel();
       this.logins.delete(id);
@@ -367,6 +410,8 @@ export class AgentRegistry {
   }
 
   dispose(): void {
+    if (this.autoJoinTimer) clearInterval(this.autoJoinTimer);
+    this.autoJoinTimer = null;
     for (const login of this.logins.values()) login.session.cancel();
     this.logins.clear();
   }
@@ -570,6 +615,104 @@ export class AgentRegistry {
       }
     }
     return [...found.values()].sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  /**
+   * Adds what discovery finds on this machine, as the page's one-click entries do: another copy of
+   * a known CLI on PATH, and a signed-in account no instance links yet. What the person removed
+   * stays out for good. A failing or odd-looking find is skipped, never fatal to the rest.
+   *
+   * A registry the hub does not own — an inline `CALLI_AGENTS_JSON` list, or a read-only test
+   * registry — joins nothing: a test or script machine must not pick up this machine's real CLIs
+   * and accounts. The page's own 「发现/添加」 entries keep working on it all the same.
+   */
+  async autoJoin(): Promise<AgentInstance[]> {
+    if (!this.file) return [];
+    const added: AgentInstance[] = [];
+    for (const found of await this.discover()) {
+      if (this.removed.paths.includes(realPathOf(found.command))) continue;
+      try {
+        added.push(await this.add({ id: this.freeId(found.id), adapter: found.adapter, command: [found.command] }));
+      } catch (error) {
+        console.warn(`warning: could not auto-join ${found.id}: ${error instanceof Error ? error.message : error}`);
+      }
+    }
+    for (const account of await this.discoverAccounts()) {
+      // Any env entry matching a removed one names the same account the person put away.
+      if (Object.entries(account.env).some(([k, v]) => this.removed.envs.includes(`${k}=${v}`))) continue;
+      try {
+        added.push(await this.add({
+          id: this.freeId(account.id),
+          adapter: account.adapter,
+          label: account.label,
+          env: account.env,
+          account: account.email,
+        }));
+      } catch (error) {
+        console.warn(`warning: could not auto-join ${account.email}: ${error instanceof Error ? error.message : error}`);
+      }
+    }
+    return added;
+  }
+
+  /** Runs {@link autoJoin} now and then on a timer; `dispose` stops it. `CALLI_AUTO_JOIN=off`
+   *  turns the joining off for anyone who wants a list that only changes by hand;
+   *  `CALLI_LOCAL_SCAN=off` is the wider switch that also stops the machine's other scanners. */
+  startAutoJoin(everyMs = 10 * 60_000, env: NodeJS.ProcessEnv = process.env): void {
+    // A registry without a file joins nothing (see autoJoin), so no timer is started either.
+    if (env.CALLI_AUTO_JOIN === 'off' || env.CALLI_LOCAL_SCAN === 'off' || !this.file) return;
+    const run = () => void this.autoJoin().catch((error) =>
+      console.warn(`warning: agent auto-join failed: ${error instanceof Error ? error.message : error}`));
+    run();
+    this.autoJoinTimer = setInterval(run, everyMs);
+    this.autoJoinTimer.unref?.();
+  }
+
+  /** Records what a removed instance was, so a later discovery scan does not bring it straight
+   *  back. An instance that runs an account is remembered by its env alone: its executable is the
+   *  adapter's own, shared with every other instance of it, and blacklisting that path would keep
+   *  plain CLI copies of the same binary out for good. A plain CLI copy is remembered by its
+   *  executable's real path. */
+  private rememberRemoved(instance: AgentInstance): void {
+    const runsAccount = Object.keys(instance.env ?? {}).length > 0 || instance.account != null;
+    if (!runsAccount) {
+      const dirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
+      const command = instance.command ?? this.defaultCommands.get(instance.adapter) ?? [];
+      for (const [i, token] of command.entries()) {
+        if (i > 0 && !token.includes('/') && !token.includes('\\')) continue;
+        const path = resolveCommandPath(token, dirs);
+        if (!path) continue;
+        const real = realPathOf(path);
+        if (!this.removed.paths.includes(real)) this.removed.paths.push(real);
+      }
+    }
+    for (const [key, value] of Object.entries(instance.env ?? {})) {
+      const entry = `${key}=${value}`;
+      if (!this.removed.envs.includes(entry)) this.removed.envs.push(entry);
+    }
+  }
+
+  private async persistRemoved(): Promise<void> {
+    const file = this.removedFile;
+    if (!file) return;
+    const body = JSON.stringify(this.removed, null, 2) + '\n';
+    const fs = await import('node:fs/promises');
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    try {
+      await fs.writeFile(temporary, body, { encoding: 'utf8', mode: 0o600 });
+      await fs.rename(temporary, file);
+    } finally {
+      await fs.rm(temporary, { force: true });
+    }
+  }
+
+  /** The id asked for, or the next free numbered copy of it (`agy`, `agy-2`, `agy-3`…). */
+  private freeId(want: string): string {
+    if (!this.instances.has(want)) return want;
+    const base = want.replace(/[._-]?\d+$/, '') || want;
+    let n = 2;
+    while (this.instances.has(`${base}-${n}`)) n += 1;
+    return `${base}-${n}`;
   }
 }
 

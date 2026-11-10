@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -402,4 +402,188 @@ test('AgentRegistry.fromEnv supports an explicitly empty agents array', () => {
     defaults,
   });
   assert.deepEqual(registry.list(), []);
+});
+
+/** A machine with only what the test put there: PATH holds one bin directory plus the system's
+ *  own (shell stubs need coreutils; agent CLIs live elsewhere, so discovery sees only the test's),
+ *  HOME is empty, and the claude CLI is a stub that does not exist, so accounts find nothing. */
+function isolatedMachine(): { dataDir: string; bin: string; restore: () => void } {
+  const dataDir = mkdtempSync(join(tmpdir(), 'calli-autojoin-'));
+  const home = mkdtempSync(join(tmpdir(), 'calli-autojoin-home-'));
+  const bin = join(dataDir, 'bin');
+  mkdirSync(bin);
+  const oldPath = process.env.PATH;
+  const oldHome = process.env.HOME;
+  const oldBin = process.env.CALLI_CLAUDE_BIN;
+  process.env.PATH = `${bin}:/usr/bin:/bin`;
+  process.env.HOME = home;
+  process.env.CALLI_CLAUDE_BIN = join(home, 'no-such-claude');
+  return {
+    dataDir,
+    bin,
+    restore: () => {
+      process.env.PATH = oldPath;
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      if (oldBin === undefined) delete process.env.CALLI_CLAUDE_BIN;
+      else process.env.CALLI_CLAUDE_BIN = oldBin;
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    },
+  };
+}
+
+test('auto-join adds discovered CLIs, and repeated scans add nothing new', async () => {
+  const machine = isolatedMachine();
+  try {
+    writeFileSync(join(machine.bin, 'agy2'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(machine.bin, 'ping'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const registry = AgentRegistry.fromEnv({ dataDir: machine.dataDir, env: {}, defaults });
+    const added = await registry.autoJoin();
+    // 'ping' only looks like an agent; 'agy2' joins on its own, as the page's one-click entry does.
+    assert.deepEqual(added.map((i) => i.id), ['agy2']);
+    assert.deepEqual(added[0].command, [join(machine.bin, 'agy2')]);
+    assert.equal(added[0].label, 'agy2');
+    assert.deepEqual(await registry.autoJoin(), []);
+    // A restarted daemon reads the same agents.json and still finds nothing new.
+    const reloaded = AgentRegistry.fromEnv({ dataDir: machine.dataDir, env: {}, defaults });
+    assert.deepEqual(await reloaded.autoJoin(), []);
+    assert.ok(reloaded.adapters.has('agy2'));
+  } finally {
+    machine.restore();
+  }
+});
+
+test('a removed CLI is not auto-joined back, not even after a restart', async () => {
+  const machine = isolatedMachine();
+  try {
+    writeFileSync(join(machine.bin, 'agy2'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const registry = AgentRegistry.fromEnv({ dataDir: machine.dataDir, env: {}, defaults });
+    await registry.autoJoin();
+    await registry.remove('agy2');
+    // Discovery would offer it again — no instance runs it now — but auto-join leaves it out.
+    assert.ok((await registry.discover()).some((f) => f.id === 'agy2'));
+    assert.deepEqual(await registry.autoJoin(), []);
+    // The memory is `removed-agents.json`, so a restart keeps it out too.
+    const reloaded = AgentRegistry.fromEnv({ dataDir: machine.dataDir, env: {}, defaults });
+    assert.deepEqual(await reloaded.autoJoin(), []);
+  } finally {
+    machine.restore();
+  }
+});
+
+test('auto-join links signed-in accounts, and a removed account stays out', async () => {
+  const machine = isolatedMachine();
+  const home = fakeClaudeHome();
+  const oldBin = process.env.CALLI_CLAUDE_BIN;
+  const oldHome = process.env.HOME;
+  process.env.CALLI_CLAUDE_BIN = fakeClaudeBin(home);
+  process.env.HOME = home;
+  try {
+    const registry = AgentRegistry.fromEnv({ dataDir: machine.dataDir, env: {}, defaults });
+    // The built-in claude claims the default account (~/.claude); the other two sign-ins join.
+    const added = await registry.autoJoin();
+    assert.deepEqual(added.map((i) => i.id), ['claude-2', 'claude-3']);
+    assert.equal(added[0].account, '.claude-2@claude-2');
+    assert.deepEqual(added[0].env, { CLAUDE_CONFIG_DIR: join(home, '.claude-2') });
+
+    // Removing one keeps it out: its config directory is remembered, the account stays signed in.
+    await registry.remove('claude-2');
+    assert.deepEqual(await registry.autoJoin(), []);
+    assert.equal(registry.adapters.has('claude-2'), false);
+    assert.equal(registry.adapters.has('claude-3'), true);
+    const reloaded = AgentRegistry.fromEnv({ dataDir: machine.dataDir, env: {}, defaults });
+    assert.deepEqual(await reloaded.autoJoin(), []);
+  } finally {
+    if (oldBin === undefined) delete process.env.CALLI_CLAUDE_BIN;
+    else process.env.CALLI_CLAUDE_BIN = oldBin;
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+    machine.restore();
+  }
+});
+
+test('an inline CALLI_AGENTS_JSON hub joins nothing, and CALLI_AUTO_JOIN=off turns it off too', async () => {
+  const machine = isolatedMachine();
+  // Each registry gets its own data dir: one hub's agents.json must not feed the next.
+  const dirs = [mkdtempSync(join(tmpdir(), 'calli-autojoin-')), mkdtempSync(join(tmpdir(), 'calli-autojoin-'))];
+  try {
+    writeFileSync(join(machine.bin, 'agy2'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    // The control: a hub of its own does pick the CLI up through the timer, so the waits below
+    // are long enough to have seen a joining had one started.
+    const plain = AgentRegistry.fromEnv({ dataDir: machine.dataDir, env: {}, defaults });
+    plain.startAutoJoin(60_000, {});
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(plain.list().some((i) => i.id === 'agy2'));
+    plain.dispose();
+
+    // An inline hub owns its agent list: the machine's real CLIs and accounts never join it.
+    const inline = AgentRegistry.fromEnv({
+      dataDir: dirs[0],
+      env: { CALLI_AGENTS_JSON: JSON.stringify({ agents: defaults }) },
+      defaults,
+    });
+    inline.startAutoJoin(60_000, {});
+    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual(inline.list().map((i) => i.id), defaults.map((i) => i.id));
+    assert.deepEqual(await inline.autoJoin(), []);
+    inline.dispose();
+
+    // The switch turns the joining off for a hub of its own too.
+    const off = AgentRegistry.fromEnv({ dataDir: dirs[1], env: {}, defaults });
+    off.startAutoJoin(60_000, { CALLI_AUTO_JOIN: 'off' });
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(!off.list().some((i) => i.id === 'agy2'));
+    off.dispose();
+  } finally {
+    for (const extra of dirs) rmSync(extra, { recursive: true, force: true });
+    machine.restore();
+  }
+});
+
+test('a removed account instance is remembered by its env, never by the binary its adapter runs', async () => {
+  const machine = isolatedMachine();
+  const home = fakeClaudeHome();
+  const oldBin = process.env.CALLI_CLAUDE_BIN;
+  const oldHome = process.env.HOME;
+  // One claude binary, on PATH, both probing accounts and named as the adapter's command.
+  const claudeBin = join(machine.bin, 'claude');
+  writeFileSync(claudeBin, [
+    '#!/bin/sh',
+    'name=$(basename "$CLAUDE_CONFIG_DIR")',
+    'case "$name" in',
+    "  .claude-out) echo '{\"loggedIn\":false}' ;;",
+    '  .claude-broken) echo "not json" ;;',
+    "  *) printf '{\"loggedIn\":true,\"email\":\"%s@%s\"}\\n' \"$name\" \"$(echo \"$name\" | tr -d .)\" ;;",
+    'esac',
+  ].join('\n'), { mode: 0o755 });
+  process.env.CALLI_CLAUDE_BIN = claudeBin;
+  process.env.HOME = home;
+  try {
+    // A hub whose claude is one linked account, not the default instance.
+    const localDefaults = defaults.map((d) => (d.id === 'claude' ? { ...d, command: [claudeBin] } : d));
+    writeFileSync(join(machine.dataDir, 'agents.json'), JSON.stringify({ agents: [
+      { id: 'claude-2', adapter: 'claude', env: { CLAUDE_CONFIG_DIR: join(home, '.claude-2') }, account: '.claude-2@claude-2' },
+    ] }));
+    const registry = AgentRegistry.fromEnv({ dataDir: machine.dataDir, env: {}, defaults: localDefaults });
+
+    await registry.remove('claude-2');
+    // The memory holds the account's env and nothing else: the shared binary is not blacklisted.
+    const memory = JSON.parse(readFileSync(join(machine.dataDir, 'removed-agents.json'), 'utf8'));
+    assert.deepEqual(memory, { paths: [], envs: [`CLAUDE_CONFIG_DIR=${join(home, '.claude-2')}`] });
+
+    // The proof: with no instance running it, the very same binary joins back as a plain CLI copy.
+    const added = await registry.autoJoin();
+    assert.ok(added.some((i) => i.adapter === 'claude' && i.command?.[0] === claudeBin));
+    // And the removed account itself still stays out.
+    assert.ok(!added.some((i) => i.env?.CLAUDE_CONFIG_DIR === join(home, '.claude-2')));
+  } finally {
+    if (oldBin === undefined) delete process.env.CALLI_CLAUDE_BIN;
+    else process.env.CALLI_CLAUDE_BIN = oldBin;
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+    machine.restore();
+  }
 });

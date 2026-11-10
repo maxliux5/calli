@@ -10,6 +10,8 @@ import type { ApprovalDecision } from './adapters/types.js';
 import type { AgentRegistry } from './agents.js';
 import type { StoredEvent } from './events.js';
 import type { HistoryEvent } from './history.js';
+import type { LocalSessions } from './local-sessions.js';
+import type { MachineUsageMeter } from './machine-usage.js';
 import { refuse, type Desktop } from './desktop.js';
 import { HttpError } from './errors.js';
 import type { ExtensionHost } from './extension-host.js';
@@ -43,6 +45,10 @@ export interface HttpDeps {
   extensions?: ExtensionHost;
   /** The built-in 自动取名 extension's daemon side, when it ships. */
   autotitle?: import('./autotitle.js').AutoTitle;
+  /** This machine's agent sessions that are not threads here. Optional so tests need none. */
+  localSessions?: LocalSessions;
+  /** This machine's token usage, metered off the agents' transcripts. */
+  machineUsage?: MachineUsageMeter;
   /** Host-owned native voice; absent on deployments that do not provide it. */
   voice?: VoiceService;
   /** The desk's companion and its downloaded frames. Defaults to the one under the Calli home directory. */
@@ -275,7 +281,7 @@ function serveDownload(
 }
 
 export function createHttpServer(deps: HttpDeps): Server {
-  const { manager, registry, terminals, desktop, hosts, scheduler, extensions, voice, trusted, token, webDir, version, autotitle } = deps;
+  const { manager, registry, terminals, desktop, hosts, scheduler, extensions, voice, trusted, token, webDir, version, autotitle, localSessions, machineUsage } = deps;
   const pets = deps.pets ?? new PetService();
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -800,6 +806,23 @@ export function createHttpServer(deps: HttpDeps): Server {
       const root = url.searchParams.get('root') ?? '';
       const maxDepth = Number(url.searchParams.get('maxDepth') ?? 3) || 3;
       return sendJson(res, 200, buildDirectoryTree(manager.allowedWorkdirs, root, maxDepth));
+    }
+
+    // GET /api/local-sessions?limit=&cursor=: this machine's agent conversations that are not
+    // threads here, newest first, one page at a time. A visible page keeps the background scan
+    // fresh; the rows leave the list the moment one becomes a thread (POST /api/threads/import).
+    if (method === 'GET' && path === '/api/local-sessions') {
+      if (!localSessions) throw new HttpError(404, 'this daemon does not list local sessions');
+      localSessions.ensureFresh();
+      return sendJson(res, 200, localSessions.page(url.searchParams.get('limit'), url.searchParams.get('cursor')));
+    }
+
+    // GET /api/machine-usage?hours=1|24|168&model=&launcher=: this machine's tokens by minute,
+    // model and launcher, read off the agents' own transcripts.
+    if (method === 'GET' && path === '/api/machine-usage') {
+      if (!machineUsage) throw new HttpError(404, 'this daemon does not meter machine usage');
+      const hours = Number(url.searchParams.get('hours') ?? 24);
+      return sendJson(res, 200, machineUsage.report(hours, url.searchParams.get('model'), url.searchParams.get('launcher')));
     }
 
     // POST /api/threads/import: turn an existing agent session into a thread
