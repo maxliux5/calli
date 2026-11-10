@@ -15,7 +15,7 @@ interface Props {
 /** Choosing a collaborator and configuring defaults are separate actions. */
 export function CollaborationMenu({ options, selected, icon, onSelect, settings, unavailable }: Props) {
   const [page, setPage] = useState<'choose' | 'settings'>('choose');
-  return <div className="coord-picker">
+  return <div className={`coord-picker${page === 'choose' ? ' choosing' : ''}`}>
     <div className="coord-picker-head">
       {page === 'settings' && <button type="button" className="icon-btn" aria-label={t('collab.back')} onClick={() => setPage('choose')}><IconBack size={18} /></button>}
       <strong>{page === 'settings' ? t('collab.settings') : t('collab.choose')}</strong>

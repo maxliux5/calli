@@ -10179,7 +10179,7 @@ button.coord-row-name { cursor: pointer; }
 .delivered-foot .text-btn:hover { background: none; color: var(--text); }
 /* A finger needs more line than a cursor, and expanding the row must stay a different tap from the button below. */
 @media (max-width: 640px) { .delivered-line { min-height: 44px; } .delivered-foot .text-btn { min-height: 44px; padding: 0 8px; } }
-.coord-mention-menu { position: absolute; bottom: 100%; left: 12px; width: min(340px, calc(100% - 24px)); max-height: 300px; overflow-y: auto; padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-pop); z-index: 15; }
+.coord-mention-menu { position: absolute; bottom: 100%; left: 12px; width: min(340px, calc(100% - 24px)); max-height: 300px; overflow-y: auto; padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-pop); z-index: 15; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 .coord-mention-menu .coord-caption { display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 0 4px 0 10px; }
 .coord-mention-menu .coord-caption .icon-btn { width: 28px; height: 28px; color: var(--muted); }
 .coord-mention-menu .pop-item-icon { margin-top: 0; align-self: center; }
@@ -10193,7 +10193,12 @@ button.coord-row-name { cursor: pointer; }
 .coord-picker-head strong { flex: 1; font-size: 14px; }
 .coord-picker-head .tool-btn { gap: 6px; font-size: 12px; }
 .coord-picker-hint { margin: 4px 10px 12px; color: var(--muted); font-size: 12px; line-height: 1.6; }
-.coord-picker-list { max-height: 45dvh; overflow-y: auto; overscroll-behavior: contain; }
+.coord-picker-list { max-height: 45dvh; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+/* The member list takes the height the popover measured out for it, so the panel itself never
+   scrolls: one scrollbar on one edge, not two nested ones, and on a phone the swipe scrolls the
+   list instead of being caught by the panel around it. */
+.pop-panel.coord-picker-panel .coord-picker.choosing { display: flex; flex-direction: column; max-height: calc(var(--pop-height, 520px) - 18px); }
+.coord-picker.choosing .coord-picker-list { flex: 1 1 auto; min-height: 0; max-height: none; }
 .coord-pick .pop-item-icon { align-self: center; margin-top: 0; }
 .coord-pick.chosen { background: var(--active); }
 .coord-row:focus-within { background: var(--active); box-shadow: 0 0 0 1px var(--border-strong); }
