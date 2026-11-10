@@ -149,7 +149,14 @@ export function ThreadOverview(props: OverviewProps) {
     const composer = document.querySelector('.composer-slot, .composer');
     const preferred = composer ? composer.getBoundingClientRect().top - top - 12 : hard;
     const budget = Math.min(hard, Math.max(preferred, Math.min(360, hard)));
+    // A re-fit must measure the panel's natural height: once a layout is in place the element
+    // carries that height as a fixed style, and measuring it again would only read the old pin.
+    // `layout` is applied by React from the style prop, so the temporary clearing is undone by
+    // the render that follows this effect, before paint.
+    const pinned = el.style.height;
+    if (layout) el.style.height = 'auto';
     const height = el.offsetHeight;
+    el.style.height = pinned;
     if (height + 18 > budget && limit > 0) { setLimit(limit === 3 ? 1 : 0); return; }
     if (height + 18 > hard && limit === 0) { action(() => onViewAll('all', false))(); return; }
     setLayout({ height, sections: available, counts });

@@ -266,6 +266,15 @@ test('a team that lands after the panel joins it without a reopen, and the readi
     release();
     // No reopen, no second click: the section joins the panel where it fits.
     await panel.locator('.overview-group', { hasText: '子智能体' }).waitFor({ timeout: 10_000 });
+    // The panel grew with the new group instead of keeping its old pinned height, so nothing
+    // spills over the footer: the readings line must stay below the last group's 查看全部.
+    const fit = await panel.evaluate(el => {
+      const content = el.querySelector('.overview-content').getBoundingClientRect();
+      const foot = el.querySelector('.overview-foot').getBoundingClientRect();
+      return { gap: foot.top - content.bottom, scroll: el.scrollHeight, client: el.clientHeight };
+    });
+    assert.ok(fit.gap >= -1, `content runs under the footer by ${-fit.gap}px`);
+    assert.ok(fit.scroll <= fit.client + 1, 'the panel holds all it shows without scrolling');
     // The readings line is the quiet way to the trace.
     await panel.locator('.overview-readings-link').click();
     await page.locator('.trace-side').waitFor();
