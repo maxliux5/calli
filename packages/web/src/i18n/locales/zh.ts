@@ -1302,7 +1302,6 @@ export const zh = {
   'dir.addAndUse': '添加并使用',
   'dir.use': '用这个目录',
   'dir.available': '可用目录',
-  'dir.up': '上一级',
   'dir.added': '已添加的项目位置',
   'dir.openingHome': '正在打开家目录…',
   'dir.folders': '文件夹',
@@ -1314,10 +1313,12 @@ export const zh = {
   'dir.absolutePath': '请输入以 / 或 ~ 开头的绝对路径。',
   'dir.pathLabel': '路径',
   'dir.enterPath': '输入 / 或 ~ 开头的路径前往，或输入文字筛选当前列表',
-  'dir.pickedHint': (name: string) => `已选 ${name} · 双击或箭头进入`,
+  'dir.pickedHint': (name: string) => `已选 ${name}`,
+  'dir.treeHint': '点目录名选中，点三角展开子目录',
+  'dir.expand': (name: string) => `展开 ${name}`,
+  'dir.collapse': (name: string) => `收起 ${name}`,
   'dir.go': '前往',
   'dir.selectFolder': (name: string) => `选择 ${name}`,
-  'dir.enter': (name: string) => `进入 ${name}`,
 
   // Overview page
   'activity.day': (d: Date) => `${d.getMonth() + 1} 月 ${d.getDate()} 日 · ${d.toLocaleDateString('zh-CN', { weekday: 'short' })}`,

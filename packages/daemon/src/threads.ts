@@ -1212,12 +1212,18 @@ export class ThreadManager {
     let waitingReason: ThreadView['waitingReason'] = this.inputs.waitingReason(thread.id);
     for (const p of this.approvals.values()) if (p.threadId === thread.id) { waitingReason = 'approval'; break; }
     const waiting = waitingReason !== null;
-    const queued = (this.queues.get(thread.id) ?? []).map((q) => ({ id: q.id, text: q.voiceSummary ? '[语音结束总结]' : q.displayText ?? q.text, images: q.images.length, ...this.queuedUploads(thread.id, q.videos),
-      ...(q.channel ? { channel: q.channel } : {}),
-      ...(q.mentions?.length ? { targets: q.mentions.map(m => {
-        const value = m as { label?: unknown; id?: unknown };
+    const queued = (this.queues.get(thread.id) ?? []).map((q) => {
+      // Only a mention with words of its own is named in the message the person will see; one left
+      // blank is the lead's to assign, and the queue's chip follows that message, not the request.
+      const targets = (q.mentions ?? []).flatMap((m) => {
+        const value = m as { label?: unknown; id?: unknown; task?: unknown };
+        if (typeof value.task !== 'string' || !value.task.trim()) return [];
         return typeof value.label === 'string' ? value.label : String(value.id ?? '');
-      }) } : {}), ...(q.error ? { error: q.error } : {}) }));
+      });
+      return { id: q.id, text: q.voiceSummary ? '[语音结束总结]' : q.displayText ?? q.text, images: q.images.length, ...this.queuedUploads(thread.id, q.videos),
+        ...(q.channel ? { channel: q.channel } : {}),
+        ...(targets.length ? { targets } : {}), ...(q.error ? { error: q.error } : {}) };
+    });
     // The terminal wrote to this session after the hub last did: the UI asks before sending more.
     const terminalActivity = thread.externalAt !== null && (thread.hubTurnAt === null || thread.externalAt > thread.hubTurnAt);
     let worktree: ThreadView['worktree'] = null;

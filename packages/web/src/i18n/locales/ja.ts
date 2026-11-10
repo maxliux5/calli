@@ -1300,7 +1300,6 @@ export const ja: Messages = {
   'dir.addAndUse': '追加して使う',
   'dir.use': 'このディレクトリを使う',
   'dir.available': '利用可能なディレクトリ',
-  'dir.up': '1 つ上へ',
   'dir.added': '追加済みのプロジェクトの場所',
   'dir.openingHome': 'ホームディレクトリを開いています…',
   'dir.folders': 'フォルダ',
@@ -1312,10 +1311,12 @@ export const ja: Messages = {
   'dir.absolutePath': '/ か ~ で始まる絶対パスを入力してください。',
   'dir.pathLabel': 'パス',
   'dir.enterPath': '/ か ~ 始まりのパスで移動、言葉で絞り込み',
-  'dir.pickedHint': (name: string) => `${name} を選択中 · ダブルクリックで開く`,
+  'dir.pickedHint': (name: string) => `${name} を選択中`,
+  'dir.treeHint': 'フォルダ名で選択、三角で子フォルダを展開',
+  'dir.expand': (name: string) => `${name} を展開`,
+  'dir.collapse': (name: string) => `${name} を折りたたむ`,
   'dir.go': '移動',
   'dir.selectFolder': (name: string) => `${name} を使用`,
-  'dir.enter': (name: string) => `${name} を開く`,
 
   // Overview page
   'activity.day': (d: Date) => d.toLocaleDateString('ja-JP', { month: 'long', day: 'numeric', weekday: 'short' }),
