@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -38,7 +38,7 @@ async function setup(configured = true) {
     assert.equal(response.status, 201, await response.clone().text());
     return await response.json() as { threadId:string };
   };
-  return { store, manager, adapters, cwd, request, say, router:manager.personal.router, async close() {
+  return { store, manager, adapters, cwd, base, request, say, router:manager.personal.router, async close() {
     await manager.shutdown();
     await new Promise<void>(resolve => server.close(() => resolve()));
     await new Promise<void>(resolve => socket.close(() => resolve()));
@@ -445,5 +445,21 @@ test('a replaced conversation still running is left to finish, and archived once
     await h.manager.cancelTurn(first.threadId);
     await wait(() => Boolean(h.store.getThread(first.threadId)!.archivedAt));
     await wait(() => !(h.store.hubSetting('personalRouter', {}) as { retiring?: string[] }).retiring?.length);
+  } finally { await h.close(); }
+});
+
+test('calli ask says the text to the Router and prints its reply once the turn ends', async () => {
+  const h = await setup(); try {
+    const ask = (args: string[], input: string) => new Promise<any>((done, fail) => {
+      const child = execFile(process.execPath, [resolve('bin/calli'), 'ask', ...args], { env:{ ...process.env, CALLI_URL:h.base, CALLI_TOKEN:'router-test' } },
+        (error, stdout, stderr) => error ? fail(new Error(stderr || error.message)) : done(JSON.parse(stdout)));
+      child.stdin!.end(input);
+    });
+    const first = await ask(['--text-file', '-'], '跟进一下 todo1');
+    assert.equal(first.threadId, h.router.status().threadId); assert.match(first.reply, /跟进一下 todo1/);
+    // A second question waits for its own turn rather than returning the cached previous reply.
+    const second = await ask(['--text-file', '-', '--timeout', '30'], '再看看发布');
+    assert.equal(second.threadId, first.threadId); assert.match(second.reply, /再看看发布/);
+    await assert.rejects(ask(['--timeout', '5'], ''), /--text-file/);
   } finally { await h.close(); }
 });
