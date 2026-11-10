@@ -7,9 +7,12 @@ import { browserMain, notifyMain, help as toolsHelp, toolsMain } from './calli-t
 const args = process.argv.slice(2);
 if (!args.length || (args[0] !== 'browser' && args.includes('--help'))) {
   console.log(`calli agents | status | result ID | stop NAME
-calli spawn --agent ID --name NAME [--cwd DIR] [--model ID] [--effort LEVEL] --message-file FILE --request-id KEY
-calli send NAME --message-file FILE --request-id KEY
+calli spawn --agent ID --name NAME [--cwd DIR] [--model ID] [--effort LEVEL] --message-file FILE [--handoff-file FILE] --request-id KEY
+calli send NAME --message-file FILE [--handoff-file FILE] --request-id KEY
 calli dirs MACHINE [PATH]
+calli remote ls MEMBER [PATH]
+calli remote read MEMBER PATH [--offset N] [--limit N]
+calli remote write MEMBER PATH --file FILE|- [--expect-hash HASH]
 calli handover
 calli history THREAD_ID [--before TURN_CURSOR] [--turns N]
 calli history THREAD_ID --turn TURN_ID [--offset N --snapshot SEQ]
@@ -28,6 +31,10 @@ calli team run NAME|ID [--cwd DIR] --task-file FILE|-
 Team commands use CALLI_URL (or local CALLI_PORT) and CALLI_TOKEN.
 FILE may be - for stdin. Reuse the request ID only when retrying the same request.
 Members can message existing teammates; only the lead can spawn or stop members.
+A remote member's task is also written to a handoff markdown file on its machine, and the result it
+writes there comes back as a file; --handoff-file makes a local file the body of that handoff.
+calli remote reads and writes files over ssh inside MEMBER's own folder on that machine; the lead may
+write, other members may only read. Paths outside it are refused.
 An agent ID like AGENT@MACHINE runs on another machine: --cwd is required, an absolute path there (calli dirs MACHINE [PATH] lists its folders), and that member cannot use calli; its final reply is its result.
 
 ${toolsHelp}
@@ -75,29 +82,63 @@ try {
     } else throw new Error('Use calli team ls or calli team run NAME|ID --task-file FILE.');
     process.exit(0);
   }
-  const [op, ...rest] = args;
-  const input = { op };
-  if (rest[0] && !rest[0].startsWith('--')) input.target = rest.shift();
-  const readonly = op === 'handover' || op === 'history';
-  if (op === 'dirs' && rest[0] && !rest[0].startsWith('--')) input.path = rest.shift();
-  const names = readonly ? { '--before': 'before', '--turns': 'turns', '--turn': 'turn', '--offset': 'offset', '--snapshot': 'snapshot' } : { '--agent': 'agent', '--name': 'name', '--cwd': 'cwd', '--model': 'model', '--effort': 'effort', '--request-id': 'requestId', '--message-file': 'file' };
-  while (rest.length) {
-    const flag = rest.shift(); const key = names[flag]; const value = rest.shift();
-    if (!key || value === undefined) throw new Error(`Invalid argument: ${flag}`);
-    input[key] = value;
+  const send = (input, readonly) => {
+    const socket = readonly ? process.env.CALLI_HANDOVER_SOCKET : process.env.CALLI_TEAM_SOCKET;
+    const key = readonly ? process.env.CALLI_HANDOVER_KEY : process.env.CALLI_TEAM_KEY;
+    if (!socket || !key) throw new Error(readonly ? 'Run this command in a handover recipient session.' : 'Enable collaboration in calli before running this command.');
+    const payload = JSON.stringify(input);
+    const req = request({ socketPath: socket, path: readonly ? '/handover' : '/command', method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } }, res => {
+      let text = ''; res.setEncoding('utf8'); res.on('data', chunk => { text += chunk; });
+      res.on('end', () => { console.log(text); if (res.statusCode >= 400) process.exitCode = 1; });
+    });
+    req.setTimeout(30000, () => req.destroy(new Error('Timed out; retry with the same request-id.')));
+    req.on('error', err => { console.error(err.message); process.exitCode = 1; });
+    req.end(payload);
+  };
+
+  if (args[0] === 'remote') {
+    const [, action, member, ...rest] = args;
+    if (!['ls', 'read', 'write'].includes(action) || !member) throw new Error('Use calli remote ls|read|write MEMBER [PATH] [options].');
+    const input = { op: 'remote', action, target: member };
+    if (rest[0] && !rest[0].startsWith('--')) input.path = rest.shift();
+    if (action !== 'ls' && input.path === undefined) throw new Error('Give the path of the file.');
+    while (rest.length) {
+      const flag = rest.shift(); const value = rest.shift();
+      if (value === undefined) throw new Error(`Missing value: ${flag}`);
+      if (flag === '--offset') input.offset = Number(value);
+      else if (flag === '--limit') input.limit = Number(value);
+      else if (flag === '--expect-hash') input.expectHash = value;
+      else if (flag === '--file' && action === 'write') input.file = value;
+      else throw new Error(`Invalid argument: ${flag}`);
+    }
+    if (action === 'write') {
+      if (!input.file) throw new Error('Give --file FILE or --file - for stdin.');
+      input.text = readFileSync(input.file === '-' ? 0 : input.file, 'utf8');
+      delete input.file;
+      if (Buffer.byteLength(input.text) > 1024 * 1024) throw new Error('The file is over the 1 MB limit.');
+    }
+    send(input, false);
+  } else {
+    const [op, ...rest] = args;
+    const input = { op };
+    if (rest[0] && !rest[0].startsWith('--')) input.target = rest.shift();
+    const readonly = op === 'handover' || op === 'history';
+    if (op === 'dirs' && rest[0] && !rest[0].startsWith('--')) input.path = rest.shift();
+    const names = readonly ? { '--before': 'before', '--turns': 'turns', '--turn': 'turn', '--offset': 'offset', '--snapshot': 'snapshot' } : { '--agent': 'agent', '--name': 'name', '--cwd': 'cwd', '--model': 'model', '--effort': 'effort', '--request-id': 'requestId', '--message-file': 'file', '--handoff-file': 'handoffFile' };
+    while (rest.length) {
+      const flag = rest.shift(); const key = names[flag]; const value = rest.shift();
+      if (!key || value === undefined) throw new Error(`Invalid argument: ${flag}`);
+      input[key] = value;
+    }
+    if (input.file === '-' && input.handoffFile === '-') throw new Error('Only one file can come from stdin.');
+    if (input.file) { input.text = readFileSync(input.file === '-' ? 0 : input.file, 'utf8'); delete input.file; }
+    if (input.handoffFile) {
+      input.handoff = readFileSync(input.handoffFile === '-' ? 0 : input.handoffFile, 'utf8');
+      delete input.handoffFile;
+      if (input.handoff.length > 64000) throw new Error('The handoff file is over the 64000 character limit.');
+    }
+    if (op === 'handover' && Object.keys(input).length > 1) throw new Error('Use calli handover without arguments.');
+    if (op === 'history' && !input.target) throw new Error('Give a thread ID from calli handover.');
+    send(input, readonly);
   }
-  if (input.file) { input.text = readFileSync(input.file === '-' ? 0 : input.file, 'utf8'); delete input.file; }
-  if (op === 'handover' && Object.keys(input).length > 1) throw new Error('Use calli handover without arguments.');
-  if (op === 'history' && !input.target) throw new Error('Give a thread ID from calli handover.');
-  const socket = readonly ? process.env.CALLI_HANDOVER_SOCKET : process.env.CALLI_TEAM_SOCKET;
-  const key = readonly ? process.env.CALLI_HANDOVER_KEY : process.env.CALLI_TEAM_KEY;
-  if (!socket || !key) throw new Error(readonly ? 'Run this command in a handover recipient session.' : 'Enable collaboration in calli before running this command.');
-  const payload = JSON.stringify(input);
-  const req = request({ socketPath: socket, path: readonly ? '/handover' : '/command', method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } }, res => {
-    let text = ''; res.setEncoding('utf8'); res.on('data', chunk => { text += chunk; });
-    res.on('end', () => { console.log(text); if (res.statusCode >= 400) process.exitCode = 1; });
-  });
-  req.setTimeout(30000, () => req.destroy(new Error('Timed out; retry with the same request-id.')));
-  req.on('error', err => { console.error(err.message); process.exitCode = 1; });
-  req.end(payload);
 } catch (err) { console.error(err.message); process.exitCode = 1; }

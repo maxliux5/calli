@@ -2,10 +2,10 @@
 // page says when it drops. The machines are directories and ssh is the fake one from the fixtures.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startDaemon, openUi, api, launchBrowser, closeSettings } from '../harness.mjs';
+import { startDaemon, openUi, api, launchBrowser, closeSettings, openCollaboration } from '../harness.mjs';
 
 const SOCKET_IN_HOME = '.local/state/calli/daemon.sock';
 
@@ -245,4 +245,53 @@ test('removing the machine on screen goes back to the hub, and the switcher goes
   await page.getByText('本机的线程').waitFor({ timeout: 10_000 });
   assert.equal(await page.locator('.host-switch').count(), 0);
   assert.deepEqual(await (await api(hub, '/api/hosts')).json(), []);
+});
+
+test('a remote member leaves a result file, and the page downloads it', async () => {
+  // This runs last, after the test above took the machine away; it comes back for this check.
+  const added = await api(hub, '/api/hosts', { method: 'POST', body: JSON.stringify({ target: 'devbox' }) });
+  if (!added.ok) assert.equal((await api(hub, '/api/hosts')).status, 200, await added.clone().text());
+  const root = await (await api(hub, '/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'pi', cwd: hub.workdir, title: '远程交接验收' }) })).json();
+  assert.equal((await api(hub, `/api/threads/${root.id}/coordination`, { method: 'POST', body: '{}' })).status, 200);
+  const directive = Buffer.from(JSON.stringify({
+    args: ['spawn', '--agent', 'pi@devbox', '--name', 'far', '--cwd', node.workdir, '--message-file', '-', '--request-id', 'far-file'],
+    text: 'CALLI_RESULT_FILE 请整理报告',
+  })).toString('base64');
+  assert.equal((await api(hub, `/api/threads/${root.id}/turns`, { method: 'POST', body: JSON.stringify({ text: `CALLI_COMMAND:${directive}` }) })).status, 202);
+  let view;
+  for (let n = 0; n < 400; n++) {
+    view = await (await api(hub, `/api/threads/${root.id}/coordination`)).json();
+    if (view.messages?.some(m => m.kind === 'result' && m.resultFile)) break;
+    await new Promise(r => setTimeout(r, 50));
+  }
+  const result = view.messages?.find(m => m.kind === 'result' && m.resultFile);
+  assert.ok(result, 'the result names the file the member left');
+  const exchange = `/tmp/calli-exchange/${root.id}`;
+  try {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true });
+    const page = await context.newPage();
+    try {
+      await openUi(page, hub);
+      await page.locator('.thread-row', { hasText: '远程交接验收' }).click();
+      await openCollaboration(page);
+      await page.getByRole('button', { name: '协作设置', exact: true }).click();
+      await page.getByRole('button', { name: '查看智能体', exact: true }).click();
+      const panel = page.getByRole('region', { name: '智能体面板' });
+      await panel.getByRole('tab', { name: /消息/ }).click();
+      if (!(await panel.locator('.talk-thread').count())) {
+        const replies = panel.locator('.talk-replies');
+        if (await replies.count()) await replies.first().click();
+      }
+      const file = panel.locator('.talk-file');
+      await file.waitFor({ timeout: 10_000 });
+      assert.match(await file.innerText(), /结果文件 · result\.md/);
+      const [download] = await Promise.all([page.waitForEvent('download'), file.click()]);
+      assert.equal(download.suggestedFilename(), 'result.md');
+      assert.match(readFileSync(await download.path(), 'utf8'), /from the fixture/);
+    } finally {
+      await context.close();
+    }
+  } finally {
+    rmSync(exchange, { recursive: true, force: true });
+  }
 });

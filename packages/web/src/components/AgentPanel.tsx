@@ -7,7 +7,9 @@ import { buildTimeline, clockLabel, deliveredPreview, type StoredEvent } from '.
 import { Prose, ThreadView } from './ThreadView';
 import { Composer } from './Composer';
 import { restoreVideos } from '../videos';
-import { AgentMark, IconAgents, IconChevron, IconClose, IconExternal, IconHandover } from './icons';
+import { AgentMark, IconAgents, IconChevron, IconClose, IconExternal, IconFile, IconHandover } from './icons';
+import { downloadBlob } from '../images';
+import { sizeLabel } from '../files';
 import { t } from '../i18n';
 
 /** The width the user dragged the panel to, on a wide screen. Unset, the panel keeps its own. */
@@ -28,8 +30,11 @@ export function memberStatus(m: Coordination['members'][number]): string {
 /** Who said something in the team: the name it goes by, and the agent behind it for its mark and tag. */
 interface Speaker { name: string; tag: string; icon: string | null; lead: boolean }
 
+/** A result file the member left on its machine; the hub kept a copy for the page to save. */
+interface ResultFile { name: string; size: number; truncated?: boolean; onOpen: () => void }
+
 /** One thing said, the way a chat shows it: a mark, who and when on a line, then the words. */
-function Said({ who, to, at, state, text, failed }: { who: Speaker; to?: string; at: string | null; state?: string; text: string; failed?: boolean }) {
+function Said({ who, to, at, state, text, failed, file }: { who: Speaker; to?: string; at: string | null; state?: string; text: string; failed?: boolean; file?: ResultFile }) {
   const [open, setOpen] = useState(false);
   const preview = useMemo(() => deliveredPreview(text), [text]);
   // Short words are shown as they are; only what would not fit three lines is folded.
@@ -45,8 +50,9 @@ function Said({ who, to, at, state, text, failed }: { who: Speaker; to?: string;
           {at && <time dateTime={at}>{clockLabel(at)}</time>}
         </div>
         {long && !open ? <p className="talk-preview">{preview}</p> : <Prose className="talk-text" text={text || t('team.noText')} />}
-        {(long || state || failed) && (
+        {(long || state || failed || file) && (
           <div className="talk-foot">
+            {file && <button type="button" className="text-btn talk-file" title={file.name} onClick={file.onOpen}><IconFile size={13} />{t('team.resultFile', file.name, sizeLabel(file.size))}{file.truncated ? ` · ${t('team.resultFileTruncated')}` : ''}</button>}
             {failed && <span className="talk-failed">{t('team.failed')}</span>}
             {state && <span>{state}</span>}
             {long && <button type="button" className="text-btn" aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? t('common.collapse') : t('common.expandAll')}</button>}
@@ -103,6 +109,9 @@ export function AgentPanel({ api, memberApi, team, agents, leadAgent, memberMode
     return m ? { name: m.name, tag: agent?.label ?? m.thread?.agent ?? t('team.member'), icon: agent?.icon ?? null, lead: false }
       : { name: team.team?.entry ?? t('team.lead'), tag: agent?.label ?? t('team.leadTag'), icon: agent?.icon ?? null, lead: true };
   };
+  // A result file kept by the hub is fetched with the token here, then saved by the page.
+  const resultFileOf = (deliveryId: string, file?: { name: string; size: number; truncated?: boolean }): ResultFile | undefined =>
+    file ? { ...file, onOpen: () => { void api.coordinationResult(team.rootId, deliveryId).then(blob => downloadBlob(blob, file.name)).catch(onError); } } : undefined;
   const [events, setEvents] = useState<StoredEvent[]>([]);
   /** Messages that were waiting when a member was stopped, handed back to that member's box once. */
   const [restore, setRestore] = useState<{ thread: string; text: string; nonce: number } | null>(null);
@@ -200,12 +209,12 @@ export function AgentPanel({ api, memberApi, team, agents, leadAgent, memberMode
           const open = opened[root.id] ?? i === talks.length - 1;
           const waiting = root.kind === 'message' && !talk.replies.length;
           return <section className="talk" key={root.id}>
-            <Said who={speaker(root.from)} to={speaker(root.to).name} at={root.createdAt} text={talk.text} state={waiting ? labels[root.state] ?? root.state : undefined} failed={waiting && root.state === 'failed'} />
+            <Said who={speaker(root.from)} to={speaker(root.to).name} at={root.createdAt} text={talk.text} state={waiting ? labels[root.state] ?? root.state : undefined} failed={waiting && root.state === 'failed'} file={resultFileOf(root.id, root.resultFile)} />
             {talk.replies.length > 0 && <button type="button" className="talk-replies" aria-expanded={open} onClick={() => setOpened(prev => ({ ...prev, [root.id]: !open }))}>
               <IconChevron size={13} open={open} />{t('team.replies', talk.replies.length)}{talk.replies.some(r => r.failed) ? ` · ${t('team.someFailed')}` : ''}
             </button>}
             {open && talk.replies.length > 0 && <div className="talk-thread">
-              {talk.replies.map(r => <Said key={r.id} who={speaker(r.from)} at={r.at} text={r.text} failed={r.failed} />)}
+              {talk.replies.map(r => <Said key={r.id} who={speaker(r.from)} at={r.at} text={r.text} failed={r.failed} file={resultFileOf(r.id.endsWith(':result') ? r.id.slice(0, -':result'.length) : r.id, r.resultFile)} />)}
             </div>}
           </section>;
         })}

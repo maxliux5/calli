@@ -298,6 +298,7 @@
 - [ ] **P1** 协议版本与能力协商、重命名机器、离线线程缓存
 - [x] 远端 daemon 更新脚本 `scripts/update-hosts.sh`：对 hosts.json 里的机器（或指定一台）经 SSH 快进拉取那台机器的克隆，构建新快照目录，等它所有线程空闲后把服务切到新快照，健康检查失败自动切回；连不上、克隆与远端分叉、构建失败都只报告并跳过，不强制。`--check` 只看会更新到什么。远端布局与手工部署一致：克隆在 `~/code/calli`（hosts.json 的 `repo` 可改），服务跑在 `~/.local/share/calli-<短sha>` 快照上。实测：假 ssh 验证参数传递与 tilde 展开，真 devbox 验证到 fetch（GitHub 在那台机器上不可达时按设计跳过）；完整切换路径在 devbox 合并到可拉取的代码后才能首验
 - [ ] **P2** 「全部」线程列表、跨机器未读与计划；SSH 启动远端 daemon；节点主动连出（笔记本、NAT 或无法长期免交互 SSH 的环境）
+- [x] **P1** 远程协作交接文件与 SSH 读写（见 [远程协作设计](remote-collaboration-design.md)）：远端成员每次派发前由 hub 经 SSH 在那台机器写 `handoff.md`，消息只给路径和摘要；成员把 `result.md` 写回，hub 读回存本地并在结果下显示文件按钮；`calli spawn/send --handoff-file` 可显式指定交接正文，SSH 写不了时回退内联。新增 `calli remote ls/read/write MEMBER`，按成员工作目录收口，主控可写、其他成员只读，`--expect-hash` 防止覆盖别人刚写的内容。daemon 单测覆盖交接/结果、路径越界、软链接、二进制、hash 和大小上限；E2E `hosts.spec.mjs` 用假 SSH 与两台 daemon 验证结果文件按钮和下载；真实无头 Chromium 桌面/手机 × 亮/暗看过按钮与下载内容。实体手机与真实 devbox 部署未测。
 
 ## 参考了哪些项目
 

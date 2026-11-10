@@ -1470,6 +1470,8 @@ export const en: Messages = {
   'team.newOutput': 'New output',
   'team.childGone': 'This sub-thread is no longer available',
   'team.latest': 'Show latest output',
+  'team.resultFile': (name: string, size: string) => `Result file · ${name} · ${size}`,
+  'team.resultFileTruncated': 'truncated',
   'team.directPlaceholder': (name: string) => `Message ${name}…`,
   'team.adjustViaLead': 'Ask the lead instead',
   'team.you': 'You',
