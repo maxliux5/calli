@@ -3,7 +3,7 @@
 // for the reading, and against the demo workspace for the tall panel that must not scroll.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { startDaemon, launchBrowser, openUi, api } from '../harness.mjs';
+import { startDaemon, launchBrowser, openUi, api, openCollaboration } from '../harness.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -221,6 +221,55 @@ test('below the dock width the overview is the old popover, and a phone tap outs
     await small.touchscreen.tap(2, 100);
     await small.locator('.overview-panel').waitFor({ state: 'detached' });
     await phone.close();
+  } finally {
+    await browser.close();
+    await daemon.stop();
+  }
+});
+
+test('a team that lands after the panel joins it without a reopen, and the readings open the trace', { timeout: 180000 }, async () => {
+  const daemon = await startDaemon();
+  const browser = await launchBrowser();
+  try {
+    // A real daemon, a real member thread: the team exists server-side before the page loads, so
+    // the only thing late is the coordination answer the page is still waiting on.
+    const post = async (path, body) => { const response = await api(daemon, path, { method: 'POST', body: JSON.stringify(body) }); assert.ok(response.ok, await response.clone().text()); return response.json(); };
+    const root = await post('/api/threads', { agent: 'pi', cwd: daemon.workdir, title: '晚到的团队' });
+    const setup = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const preparer = await setup.newPage();
+    await openUi(preparer, daemon);
+    await preparer.locator('.thread-row', { hasText: '晚到的团队' }).click();
+    await openCollaboration(preparer);
+    await preparer.locator('.coord-picker-head button').click();
+    await preparer.getByRole('button', { name: '启用协作', exact: true }).click();
+    await preparer.locator('.composer-add.on').waitFor();
+    const directive = Buffer.from(JSON.stringify({ args: ['spawn', '--agent', 'claude', '--name', '文档审查', '--message-file', '-', '--request-id', 'late-team'], text: '检查接口 CALLI_REPORT' })).toString('base64');
+    await post(`/api/threads/${root.id}/turns`, { text: `CALLI_COMMAND:${directive}` });
+    for (let n = 0; n < 200; n++) {
+      const team = await (await api(daemon, `/api/threads/${root.id}/coordination`)).json();
+      if (team?.members?.length) break;
+      await sleep(100);
+    }
+    await setup.close();
+
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await context.newPage();
+    let release = () => {};
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/api/threads/*/coordination*', async route => { await gate; await route.continue(); });
+    await openUi(page, daemon);
+    await page.locator('.thread-row', { hasText: '晚到的团队' }).click();
+    const panel = page.locator('.overview-panel.overview-dock');
+    await panel.waitFor();
+    await panel.locator('[data-ready=true]').waitFor();
+    assert.equal(await panel.locator('.overview-group', { hasText: '子智能体' }).count(), 0, 'the team is still on its way');
+    release();
+    // No reopen, no second click: the section joins the panel where it fits.
+    await panel.locator('.overview-group', { hasText: '子智能体' }).waitFor({ timeout: 10_000 });
+    // The readings line is the quiet way to the trace.
+    await panel.locator('.overview-readings-link').click();
+    await page.locator('.trace-side').waitFor();
+    await context.close();
   } finally {
     await browser.close();
     await daemon.stop();

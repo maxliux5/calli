@@ -84,16 +84,29 @@ test('the settings menu opens the overview, a turn shows up the day it was asked
 });
 
 test('an agent that keeps no prompt in its session file says so instead of guessing', async () => {
+  // agy advertises no system-prompt capability, so its conversation has no button to read one from.
+  const made = await (await fetch(`${daemon.base}/api/threads`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${daemon.token}` },
+    body: JSON.stringify({ agent: 'agy', cwd: daemon.workdir, title: '无提示词的会话' }),
+  })).json();
+  await fetch(`${daemon.base}/api/threads/${made.id}/turns`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${daemon.token}` },
+    body: JSON.stringify({ text: 'overview e2e: 没有系统提示词' }),
+  });
+  for (let i = 0; i < 100; i++) {
+    const t = await (await fetch(`${daemon.base}/api/threads/${made.id}`, { headers: { Authorization: `Bearer ${daemon.token}` } })).json();
+    if (t.status !== 'running') break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage();
   try {
     await openUi(page, daemon);
     await page.evaluate(() => window.location.assign('#/activity'));
     await page.locator('.activity-page').waitFor({ timeout: 10_000 });
-    // The fake pi writes no session file, so its conversation has no button to read one from.
-    const groups = await page.locator('.activity-thread').all();
-    for (const group of groups) {
-      const agent = await group.locator('.activity-thread-agent').textContent();
-      if (agent.includes('pi')) assert.equal(await group.locator('.activity-sys-btn').count(), 0, 'no button where there is nothing to read');
-    }
+    const group = page.locator('.activity-thread').filter({ hasText: '无提示词的会话' });
+    await group.waitFor({ timeout: 10_000 });
+    assert.equal(await group.locator('.activity-sys-btn').count(), 0, 'no button where there is nothing to read');
   } finally { await page.close(); }
 });
