@@ -384,6 +384,21 @@ export class CoordinationManager {
     });
   }
 
+  /**
+   * The roster is fixed when the collaboration starts, but the hub's own list is alive: an
+   * instance that joined later — a new account, another copy of a CLI — still becomes available
+   * to it, the way it would have been had the collaboration started now. A hidden instance is
+   * left out on purpose, and a defined team (团队任务) keeps exactly the members it was written with.
+   */
+  private async joinLatecomers(t: Team): Promise<void> {
+    if (t.team) return;
+    const agents = await this.manager.listAgents();
+    const fresh = agents.filter(a => a.available && a.capabilities.coordination && !a.hidden && !t.agents.includes(a.id));
+    if (!fresh.length) return;
+    t.agents.push(...fresh.map(a => a.id));
+    this.changed(t);
+  }
+
   /** Validate a future setup without refreshing the active agent process. */
   private async prepare(id: string, input: CoordinationSetup = {}): Promise<Team> {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new HttpError(400, '协作设置无效');
@@ -445,7 +460,9 @@ export class CoordinationManager {
   /** Queued mentions are checked now, but the runtime is only enabled at dispatch. */
   async previewMentions(id: string, text: string, mentions: unknown, setup?: CoordinationSetup): Promise<string> {
     if ((!Array.isArray(mentions) || !mentions.length) && setup === undefined) return text;
-    const team = this.team(id) ?? await this.prepare(id, setup);
+    const existing = this.team(id);
+    if (existing) await this.joinLatecomers(existing);
+    const team = existing ?? await this.prepare(id, setup);
     return this.mentionText(id, text, mentions, team);
   }
 
@@ -533,7 +550,10 @@ export class CoordinationManager {
       if (t.retiredMembers?.some(m => m.id === caller)) throw new HttpError(409, '成员已交接，请使用接手会话');
       const op = input.op;
       if (t.team && (op === 'spawn' || op === 'send')) throw new HttpError(409, '团队任务使用 @ 通信');
-      if (op === 'agents') return [...(await this.manager.listAgents()).filter(a => t.agents.includes(a.id)), ...(t.team ? [] : await this.remoteAgents())];
+      if (op === 'agents') {
+        await this.joinLatecomers(t);
+        return [...(await this.manager.listAgents()).filter(a => t.agents.includes(a.id)), ...(t.team ? [] : await this.remoteAgents())];
+      }
       if (op === 'status') return this.view(caller);
       if (op === 'dirs') return this.remoteDirectories(input.target, input.path);
       if (op === 'result') {
@@ -584,6 +604,7 @@ export class CoordinationManager {
           this.schedule();
           return d;
         }
+        await this.joinLatecomers(t);
         if (!t.agents.includes(agent)) throw new HttpError(403, '实例不在本次协作范围内');
         const parent = this.manager.threadView(t.rootId);
         const cwd = typeof input.cwd === 'string' ? resolve(parent.cwd, input.cwd) : parent.cwd;
