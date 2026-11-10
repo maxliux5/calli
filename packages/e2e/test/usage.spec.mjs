@@ -94,8 +94,7 @@ test('Codex shows current context on desktop and phone in both themes, including
         assert.equal(await meter.innerText(), '71%');
         assert.equal(await page.locator('.context-usage-panel.high').count(), 0);
         assert.equal(await page.locator('.model-control-panel').count(), 0, 'the ring opens only context details');
-        await panel.locator('.pop-note', { hasText: '上下文已用' }).waitFor();
-        assert.equal(await panel.locator('.pop-note', { hasText: '上下文已用' }).innerText(), '上下文已用 184k / 258k');
+        assert.equal(await panel.locator('.usage-head .usage-used').innerText(), '184K / 258K');
         // Let the phone drawer and anchored menu finish moving before inspecting their bounds.
         await page.waitForTimeout(450);
         assert.equal(modelReads, readsBefore, 'opening context details does not request the model catalog');
@@ -146,7 +145,7 @@ test('Pi clears its previous context after compaction and measures it again afte
     const meter = panel.locator('.context-percent');
     await meter.waitFor();
     assert.equal(await meter.innerText(), '1%');
-    await panel.getByRole('button', { name: '压缩 精简较早的对话，释放上下文', exact: true }).click();
+    await panel.getByRole('button', { name: '压缩', exact: true }).click();
     await panel.waitFor({ state: 'hidden' });
     assert.equal(await usage.getAttribute('aria-expanded'), 'false');
     await expectUsage(page, null);
@@ -156,7 +155,8 @@ test('Pi clears its previous context after compaction and measures it again afte
     await expectUsage(page, null);
     await usage.click();
     await panel.getByText('暂未获取上下文用量，下一次响应后更新。', { exact: true }).waitFor();
-    assert.equal(await meter.count(), 0, 'unknown context is not shown as a percentage');
+    assert.equal(await meter.innerText(), '?', 'unknown context is not shown as a percentage');
+    assert.equal(await panel.locator('.usage-head.unknown').count(), 1, 'unknown is not drawn as zero');
     // A manual compact from the hub shows as the compaction tool row, not a native event, so the
     // history line stays away here; the automatic path below covers it.
     await send(daemon, thread, 'hello again');
@@ -202,21 +202,25 @@ test('the context panel shows the request composition, session totals and the /c
         await usage.click();
         const panel = page.locator('.context-usage-panel');
         await panel.locator('.usage-bar-fill').waitFor();
-        const legend = panel.locator('.usage-legend-row');
-        await legend.nth(0).waitFor();
+        const cells = panel.locator('.usage-cell');
+        await cells.nth(0).waitFor();
         // input is normalized to include the cache, so the parts add up to the request's 170 tokens.
-        assert.deepEqual((await legend.allInnerTexts()).map((text) => text.replace(/\s+/g, '')), [
-          '缓存读取4023.5%',
-          '缓存写入105.8%',
-          '未缓存输入10058.8%',
-          '输出2011.7%含推理5',
+        assert.deepEqual((await cells.allInnerTexts()).map((text) => text.replace(/\s+/g, '')), [
+          '4023.5%缓存读取',
+          '105.8%缓存写入',
+          '10058.8%未缓存输入',
+          '2011.7%输出',
         ]);
-        assert.match(await panel.locator('.pop-sep', { hasText: '最近一次请求' }).innerText(), /最近一次请求 · fixture-model/);
-        await panel.locator('.pop-head-row', { hasText: '会话累计' }).waitFor();
-        await panel.locator('.pop-rows div', { hasText: '缓存命中' }).first().waitFor();
-        await panel.getByRole('button', { name: /压缩/ }).waitFor();
-        assert.equal(await panel.getByRole('button', { name: /\/context/ }).count(), 0, 'pi has no context command');
+        assert.match(await panel.locator('.usage-request-label').innerText(), /最近一次请求 · fixture-model/);
+        // The summary fits without scrolling; the totals and the compaction history wait behind Details.
+        assert.equal(await panel.locator('.usage-more').count(), 0, 'details stay closed until asked for');
+        assert.equal(await panel.getByText(/本会话已压缩/).count(), 0);
+        await panel.getByRole('button', { name: '明细' }).click();
+        await panel.locator('.usage-more-head', { hasText: '会话累计' }).waitFor();
+        await panel.locator('.usage-rows div', { hasText: '缓存命中' }).first().waitFor();
         await panel.getByText(/本会话已压缩 1 次 · 上次 \d{2}:\d{2}（自动）/).waitFor();
+        await panel.getByRole('button', { name: '压缩', exact: true }).waitFor();
+        assert.equal(await panel.getByRole('button', { name: /\/context/ }).count(), 0, 'pi has no context command');
         const bounds = await panel.boundingBox();
         assert.ok(bounds && bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= page.viewportSize().width + 1);
         if (process.env.CALLI_E2E_SHOTS_DIR) {
@@ -240,7 +244,7 @@ test('the context panel shows the request composition, session totals and the /c
         const usage = await expectUsage(page, 1);
         await usage.click();
         const panel = page.locator('.context-usage-panel');
-        await panel.locator('.usage-legend-row').nth(0).waitFor();
+        await panel.locator('.usage-cell').nth(0).waitFor();
         await page.waitForTimeout(450);
         const bounds = await panel.boundingBox();
         assert.ok(bounds && bounds.x >= 0 && bounds.y >= 0
@@ -263,10 +267,11 @@ test('the context panel shows the request composition, session totals and the /c
       const usage = await expectUsage(page, 26);
       await usage.click();
       const panel = page.locator('.context-usage-panel');
+      // The live session file gives request-level samples the panel composes.
+      await panel.locator('.usage-request-label', { hasText: '最近一次请求' }).waitFor();
+      await panel.getByRole('button', { name: '明细' }).click();
       const command = panel.getByRole('button', { name: /\/context/ });
       await command.waitFor();
-      // The live session file gives request-level samples the panel composes.
-      await panel.locator('.pop-sep', { hasText: '最近一次请求' }).waitFor();
       const sent = page.waitForRequest((request) => {
         if (!new URL(request.url()).pathname.endsWith(`/api/threads/${claude.id}/turns`)) return false;
         const body = JSON.parse(request.postData() ?? '{}');
