@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Api, ApiError, AuthError, type HostFailure, type HostInfo } from '../api';
 import { hostProblem, hostStatus } from '../hosts';
 import { todayTokens, totalTokens } from '../machine-usage';
@@ -13,33 +13,43 @@ import { t } from '../i18n';
 const SshSaid = ({ host }: { host: Pick<HostInfo, 'code' | 'error'> }) =>
   host.error && host.code !== 'daemon_missing' ? <code className="host-error">{host.error}</code> : null;
 
-/**
- * A machine's tokens today, as the short number on its row: reading the usage is separate from
- * managing the machine, so the number is a button of its own and never touches the row's actions.
- * Unknown (still reading, offline, or a hub too old to meter) stays a dash, never a zero.
- */
-function MachineToday({ token, host, onOpen }: { token: string; host: HostInfo | null; onOpen: () => void }) {
-  const [today, setToday] = useState<number | null>(null);
+/** Every machine's tokens today, one read for the line above the list and each row's number.
+ *  A machine that is down cannot answer; its number waits as a dash, not as a zero. */
+function useTodays(api: Api, token: string, machines: Array<{ key: string; host: HostInfo | null }>): Map<string, number | null> {
+  const [todays, setTodays] = useState<Map<string, number | null>>(new Map());
   useEffect(() => {
+    // The detail page asks for nothing; answering would only churn (an empty read still lands
+    // as a new Map, and a fresh empty machines array re-arms the effect on every render).
+    if (machines.length === 0) return;
     let alive = true;
-    // A machine that is down cannot answer; its number waits as a dash, not as a failure.
-    if (host?.status === 'offline') {
-      setToday(null);
-      return;
-    }
-    const api = new Api(token, '', host?.id ?? null);
     const read = async () => {
-      try {
-        const day = await api.machineUsage(24);
-        if (alive) setToday(totalTokens(todayTokens(day)));
-      } catch {
-        if (alive) setToday(null);
-      }
+      const next = new Map<string, number | null>();
+      await Promise.all(machines.map(async (machine) => {
+        if (machine.host?.status === 'offline') {
+          next.set(machine.key, null);
+          return;
+        }
+        try {
+          // In the demo the local machine is the demo api itself: nothing else is there to answer.
+          const machineApi = api.demo && !machine.host ? api : new Api(token, '', machine.host?.id ?? null);
+          const day = await machineApi.machineUsage(24);
+          if (alive) next.set(machine.key, totalTokens(todayTokens(day)));
+        } catch {
+          next.set(machine.key, null);
+        }
+      }));
+      if (alive) setTodays(next);
     };
     void read();
     const timer = setInterval(() => { if (!document.hidden) void read(); }, 60_000);
     return () => { alive = false; clearInterval(timer); };
-  }, [token, host?.id, host?.status]);
+  }, [api, token, machines]);
+  return todays;
+}
+
+/** A machine's tokens today as the number on its row: reading the usage is separate from managing
+ *  the machine, so the number is a button of its own and never touches the row's actions. */
+function MachineToday({ today, onOpen }: { today: number | null; onOpen: () => void }) {
   return <button type="button" className="host-today" disabled={today === null} title={t('machine.today')} aria-label={t('machine.openUsage')} onClick={onOpen}>
     {today === null ? '—' : compactLabel(today)}
   </button>;
@@ -161,19 +171,37 @@ interface PanelProps {
   /** For asking each machine its own usage: the page's token, which every proxy call reuses. */
   token: string;
   hosts: HostInfo[];
+  /** Opens the machine's usage detail on the machines page: reading it is separate from managing it. */
+  onOpenUsage: (machine: string | null) => void;
   /** Called after machines were added, removed or retried, so the rest of the page hears of it. */
   onChanged: () => Promise<void>;
   onClose: () => void;
   onError: (e: unknown) => void;
-  /** Opens the machine's usage detail: reading it is separate from managing the machine. */
-  onOpenUsage?: (machine: string | null) => void;
 }
 
 /**
  * The machines this hub shows besides its own. Adding one takes only what ssh calls it: the hub
  * signs in, finds the Calli running there, and keeps a connection to it.
  */
-export function HostsPanel({ api, token, hosts, onChanged, onClose, onError, onOpenUsage }: PanelProps) {
+export function HostsPanel({ api, token, hosts, onOpenUsage, onChanged, onError }: PanelProps) {
+  const machines = useMemo(() => [
+    { key: 'local', host: null as HostInfo | null, label: t('hosts.local') },
+    ...hosts.map((host) => ({ key: host.id, host, label: host.label || host.target })),
+  ], [hosts]);
+  const todays = useTodays(api, token, machines);
+  return <HostsList api={api} hosts={hosts} machines={machines} todays={todays} onOpenUsage={onOpenUsage} onChanged={onChanged} onError={onError} />;
+}
+
+/** The list itself: today over every machine in one line, one row per machine, and the adding. */
+function HostsList({ api, hosts, machines, todays, onOpenUsage, onChanged, onError }: {
+  api: Api;
+  hosts: HostInfo[];
+  machines: Array<{ key: string; host: HostInfo | null; label: string }>;
+  todays: Map<string, number | null>;
+  onOpenUsage: (machine: string | null) => void;
+  onChanged: () => Promise<void>;
+  onError: (e: unknown) => void;
+}) {
   const [candidates, setCandidates] = useState<string[] | null>(null);
   const [candidatesError, setCandidatesError] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -241,19 +269,17 @@ export function HostsPanel({ api, token, hosts, onChanged, onClose, onError, onO
     <SettingsSection title={t('hosts.machines')} hint={t('hosts.hint')} className="hosts-settings">
         <div className="panel-list">
           {/* The hub's own machine reads here too: its usage is one click away like the rest. */}
-          {onOpenUsage && (
-            <div className="panel-row single host-row">
-              <div className="panel-row-main">
-                <div className="panel-row-title">
-                  <StatusDot status="online" /> {t('hosts.local')}
-                </div>
-                <div className="panel-row-meta">
-                  <span>{t('hosts.localHint')}</span>
-                </div>
+          <div className="panel-row single host-row">
+            <div className="panel-row-main">
+              <div className="panel-row-title">
+                <StatusDot status="online" /> {t('hosts.local')}
               </div>
-              <MachineToday token={token} host={null} onOpen={() => onOpenUsage(null)} />
+              <div className="panel-row-meta">
+                <span>{t('hosts.localHint')}</span>
+              </div>
             </div>
-          )}
+            <MachineToday today={todays.get('local') ?? null} onOpen={() => onOpenUsage(null)} />
+          </div>
           {hosts.map((h) => (
             <div key={h.id} className="panel-row single host-row">
               <div className="panel-row-main">
@@ -272,7 +298,7 @@ export function HostsPanel({ api, token, hosts, onChanged, onClose, onError, onO
                   </p>
                 )}
               </div>
-              {onOpenUsage && <MachineToday token={token} host={h} onOpen={() => onOpenUsage(h.id)} />}
+              <MachineToday today={todays.get(h.id) ?? null} onOpen={() => onOpenUsage(h.id)} />
               {h.status !== 'online' && (
                 <button className="text-btn" disabled={busy !== null} onClick={() => void retry(h)}>
                   {t('common.retry')}

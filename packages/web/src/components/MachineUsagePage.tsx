@@ -1,7 +1,7 @@
-// The machines tab of the observability page: one card per machine with today's tokens, and a
-// detail view with the token charts (persona, web/src/views/machines/Machines.tsx and
-// UsageSection.tsx). The arithmetic lives in machine-usage.ts; this file only fetches, lays out
-// and draws.
+// The machines page (a first-class page at #/machines, persona's web/src/views/machines): one
+// card per machine with today's tokens, and a detail view with the token charts behind each card.
+// The address owns the level (#/machines is the list, #/machines/<id|local> a detail); the
+// arithmetic lives in machine-usage.ts; this file only fetches, lays out and draws.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { Api, ApiError, type AgentInfo, type HostInfo, type MachineUsageReport, type UsageTokens } from '../api';
 import { hostStatus } from '../hosts';
@@ -30,8 +30,16 @@ interface Machine {
   api: Api;
 }
 
-function Select({ label, value, options, onPick }: { label: string; value: string; options: Array<{ id: string; label: string }>; onPick: (id: string) => void }) {
-  return <Popover label={label} triggerClassName="text-btn obs-select" triggerLabel={label} trigger={<>{options.find(o => o.id === value)?.label ?? label}<IconChevron size={12} open /></>}>
+function Select({ label, short, value, options, onPick }: { label: string; short: string; value: string; options: Array<{ id: string; label: string }>; onPick: (id: string) => void }) {
+  const picked = options.find(o => o.id === value && o.id !== '')?.label;
+  // The wide screen spells the choice out ("all models"); a phone carries the short form,
+  // and a picked value wherever it lands.
+  const full = options.find(o => o.id === value)?.label ?? label;
+  return <Popover label={label} triggerClassName="text-btn obs-select" triggerLabel={full} trigger={<>
+    <span className="obs-select-text">{full}</span>
+    <span className="obs-select-brief">{picked ?? short}</span>
+    <IconChevron size={12} open />
+  </>}>
     {close => <><div className="pop-title">{label}</div>{options.map(option => <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === value} className="pop-item compact" onClick={() => { onPick(option.id); close(); }}>
       <span className="pop-item-text"><span className="pop-item-label">{option.label}</span></span>
       {option.id === value && <span className="pop-item-check"><IconCheck size={16} /></span>}
@@ -55,9 +63,14 @@ function useWidth(box: React.RefObject<HTMLDivElement | null>, dep: unknown): nu
 /** One machine's card numbers: today's tokens and the last hour's per-minute line. */
 type Summary = { day: UsageTokens | null; hour: MachineUsageReport | null; state: 'loading' | 'ok' | 'old' | 'failed' };
 
+/** The detail page's empty machine table: a stable identity, so the poll's effect rests. */
+const NO_MACHINES: Machine[] = [];
+
 function useSummaries(machines: Machine[]): Map<string, Summary> {
   const [summaries, setSummaries] = useState<Map<string, Summary>>(new Map());
   useEffect(() => {
+    // A detail page asks for nothing; an empty read still lands as a new Map, which re-arms.
+    if (machines.length === 0) return;
     let alive = true;
     const read = async () => {
       const next = new Map<string, Summary>();
@@ -103,6 +116,9 @@ function Spark({ report }: { report: MachineUsageReport | null }) {
 
 /** Today over every machine, with each machine's share as a neutral bar (persona's TodayTokens). */
 function TodayCard({ machines, summaries }: { machines: Machine[]; summaries: Map<string, Summary> }) {
+  // One machine is its own total (the card says it); a lone bar would only repeat the number
+  // as a block of ink. The card appears the moment a second machine could answer.
+  if (machines.length < 2) return null;
   const shares = machines
     .map(machine => ({ machine, day: summaries.get(machine.id ?? '')?.day }))
     .filter((s): s is { machine: Machine; day: UsageTokens } => s.day != null)
@@ -180,7 +196,7 @@ const EMPTY_REPORT: MachineUsageReport = {
 /** Tokens per minute over the range: the four numbers on top, then stacked by kind (or one total
  *  line), a crosshair readout on hover, touch and arrow keys, a clickable legend with each kind's
  *  total, and grey over the offline steps. A null report draws the same card empty. */
-function ThroughputChart({ report, hidden, mode, onToggleMode, onToggleKind }: { report: MachineUsageReport | null; hidden: ReadonlySet<UsageKind>; mode: 'kinds' | 'total'; onToggleMode: (mode: 'kinds' | 'total') => void; onToggleKind: (kind: UsageKind) => void }) {
+function ThroughputChart({ report, hidden, mode, onToggleMode, onToggleKind, onRefresh }: { report: MachineUsageReport | null; hidden: ReadonlySet<UsageKind>; mode: 'kinds' | 'total'; onToggleMode: (mode: 'kinds' | 'total') => void; onToggleKind: (kind: UsageKind) => void; onRefresh: () => void }) {
   const report1 = report ?? EMPTY_REPORT;
   const n = report1.points.length;
   const stepMinutes = report1.step / 60;
@@ -223,12 +239,13 @@ function ThroughputChart({ report, hidden, mode, onToggleMode, onToggleKind }: {
     <header className="obs-chart-head">
       <span>{t('machine.throughput')} · {t('machine.perMinuteUnit')}{report ? ` · ${stepLabel(stepMinutes)}` : ''}</span>
       <span className="mu-head-side">
-        {totals[busy] > 0 && <span>{t('chart.peak')} <strong>{compactLabel(totals[busy])}</strong> · {dayLabel(at(report1.points[busy].t))} {clockLabel(at(report1.points[busy].t))}</span>}
+        {totals[busy] > 0 && <span className="mu-peak">{t('chart.peak')} <strong>{compactLabel(totals[busy])}</strong> · {dayLabel(at(report1.points[busy].t))} {clockLabel(at(report1.points[busy].t))}</span>}
         {/* persona keeps the by-kind/total choice here, beside the chart it changes. */}
         <span className="mu-mode" role="group" aria-label={t('machine.display')}>
           <button type="button" aria-pressed={mode === 'kinds'} className={mode === 'kinds' ? 'selected' : ''} onClick={() => onToggleMode('kinds')}>{t('machine.modeKinds')}</button>
           <button type="button" aria-pressed={mode === 'total'} className={mode === 'total' ? 'selected' : ''} onClick={() => onToggleMode('total')}>{t('machine.modeTotal')}</button>
         </span>
+        <button className="icon-btn" aria-label={t('obs.refresh')} onClick={onRefresh}><IconRefresh size={16} /></button>
       </span>
     </header>
     <div ref={box} className="obs-chart-plot" style={{ height }} tabIndex={0} role="group"
@@ -237,11 +254,12 @@ function ThroughputChart({ report, hidden, mode, onToggleMode, onToggleKind }: {
       onPointerLeave={(e: PointerEvent) => { if (e.pointerType === 'mouse') setActive(null); }}
       onKeyDown={onKey} onBlur={() => setActive(null)}>
       {width > 0 && <svg width={width} height={height} aria-hidden="true">
-        {ticks.map(v => <g key={v}>
+        {/* No report, no ticks: an empty plot waits, it does not promise a zero scale. */}
+        {report && ticks.map(v => <g key={v}>
           <line className="obs-chart-grid" x1={PAD.left} x2={PAD.left + plotW} y1={y(v)} y2={y(v)} />
           <text className="obs-chart-axis" x={PAD.left - 8} y={y(v)} dy="0.32em" textAnchor="end">{compactLabel(v)}</text>
         </g>)}
-        {xLabels.map(i => <text key={i} className="obs-chart-axis" x={x(i)} y={height - 6} textAnchor="middle">
+        {report && xLabels.map(i => <text key={i} className="obs-chart-axis" x={x(i)} y={height - 6} textAnchor="middle">
           {xTicks.every < 1440 ? clockLabel(at(report1.points[i].t)) : dayLabel(at(report1.points[i].t))}
         </text>)}
         {/* Offline steps: grey over the plot, so quiet reads as quiet and gone reads as gone. */}
@@ -336,7 +354,7 @@ function HitChart({ report }: { report: MachineUsageReport | null }) {
           <line className="obs-chart-grid" x1={PAD.left} x2={PAD.left + plotW} y1={y(v)} y2={y(v)} />
           <text className="obs-chart-axis" x={PAD.left - 8} y={y(v)} dy="0.32em" textAnchor="end">{Math.round(v * 100)}%</text>
         </g>)}
-        {xLabels.map(i => <text key={i} className="obs-chart-axis" x={x(i)} y={height - 6} textAnchor="middle">
+        {report && xLabels.map(i => <text key={i} className="obs-chart-axis" x={x(i)} y={height - 6} textAnchor="middle">
           {xTicks.every < 1440 ? clockLabel(at(report1.points[i].t)) : dayLabel(at(report1.points[i].t))}
         </text>)}
         {runs.map((run, i) => <path key={i} className="obs-chart-line" style={{ stroke: 'var(--chart-total)' }}
@@ -433,14 +451,13 @@ function MachineDetail({ machine, onBack }: { machine: Machine; onBack: () => vo
         {([[1, 'machine.rangeHour'], [24, 'machine.rangeDay'], [168, 'machine.rangeWeek']] as const).map(([value, key]) =>
           <button key={value} type="button" aria-pressed={hours === value} className={hours === value ? 'selected' : ''} onClick={() => setHours(value)}>{t(key)}</button>)}
       </div>
-      <Select label={t('machine.model')} value={model ?? ''} options={[{ id: '', label: t('machine.allModels') }, ...(report?.models ?? []).map(m => ({ id: m.name, label: m.name }))]} onPick={id => setModel(id || null)} />
-      <Select label={t('machine.launcher')} value={launcher ?? ''} options={[{ id: '', label: t('machine.allLaunchers') }, ...(report?.launchers ?? []).map(l => ({ id: l.name || '-', label: launcherLabel(l.name) }))]} onPick={id => setLauncher(id === '' ? null : id === '-' ? '' : id)} />
-      <button className="icon-btn" aria-label={t('obs.refresh')} onClick={() => setRefresh(n => n + 1)}><IconRefresh size={16} /></button>
+      <Select label={t('machine.model')} short={t('machine.model')} value={model ?? ''} options={[{ id: '', label: t('machine.allModels') }, ...(report?.models ?? []).map(m => ({ id: m.name, label: m.name }))]} onPick={id => setModel(id || null)} />
+      <Select label={t('machine.launcher')} short={t('machine.launcher')} value={launcher ?? ''} options={[{ id: '', label: t('machine.allLaunchers') }, ...(report?.launchers ?? []).map(l => ({ id: l.name || '-', label: launcherLabel(l.name) }))]} onPick={id => setLauncher(id === '' ? null : id === '-' ? '' : id)} />
     </div>
     {failed && <p role="alert" className="obs-error">{old ? t('machine.oldDaemon') : t('machine.loadFailed')}</p>}
     <div className="mu-detail">
       <div className="mu-charts">
-        <ThroughputChart report={report} hidden={hidden} mode={mode} onToggleMode={next => { setMode(next); setHidden(new Set()); }} onToggleKind={toggleKind} />
+        <ThroughputChart report={report} hidden={hidden} mode={mode} onToggleMode={next => { setMode(next); setHidden(new Set()); }} onToggleKind={toggleKind} onRefresh={() => setRefresh(n => n + 1)} />
         <HitChart report={report} />
       </div>
       <div className="mu-side">
@@ -459,17 +476,19 @@ function MachineDetail({ machine, onBack }: { machine: Machine; onBack: () => vo
   </>;
 }
 
-/** The machines tab: every machine's cards, and one machine's detail behind its card. */
-export function MachineUsagePage({ api, token, hosts, openMachine }: { api: Api; token: string; hosts: HostInfo[]; openMachine?: string | null }) {
-  // undefined is the list; '' the local machine's detail; a host id a remote's.
-  const [open, setOpen] = useState<string | undefined>(openMachine === undefined ? undefined : openMachine || '');
+/** The machines page: every machine's cards, and one machine's detail behind its card. The
+ *  address names the level — '' the list, 'local' the hub's own machine, a host id a remote. */
+export function MachineUsagePage({ api, token, hosts, open, onOpen }: { api: Api; token: string; hosts: HostInfo[]; open: string; onOpen: (path: string) => void }) {
   const machines = useMemo<Machine[]>(() => [
     // In the demo the local machine is the demo api itself: nothing else is there to answer.
     { id: null, label: t('hosts.local'), host: null, api: api.demo ? api : new Api(token) },
-    ...hosts.map(host => ({ id: host.id, label: host.label || host.target, host, api: new Api(token, '', host.id) })),
+    ...hosts.map(host => ({ id: host.id, label: host.label || host.target, host, api: api.demo ? api : new Api(token, '', host.id) })),
   ], [api, token, hosts]);
-  const summaries = useSummaries(machines);
-  if (open === undefined) return <MachineList machines={machines} summaries={summaries} onOpen={id => setOpen(id ?? '')} />;
-  const machine = machines.find(m => (m.id ?? '') === open) ?? machines[0];
-  return <MachineDetail machine={machine} onBack={() => setOpen(undefined)} />;
+  const summaries = useSummaries(open ? NO_MACHINES : machines);
+  return <section className="obs-page">
+    <h1>{t('hosts.machines')}</h1>
+    {open === ''
+      ? <MachineList machines={machines} summaries={summaries} onOpen={id => onOpen(id ?? 'local')} />
+      : <MachineDetail machine={machines.find(m => (m.id ?? '') === (open === 'local' ? '' : open)) ?? machines[0]} onBack={() => onOpen('')} />}
+  </section>;
 }

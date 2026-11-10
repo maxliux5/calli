@@ -14,7 +14,7 @@ import { Menu } from './Menu';
 import { PetBustImage, type PetBust } from './Pet';
 import type { HostIconName } from '@calli/extension-api';
 import { HostIcon } from '../extensions/ui';
-import { AgentMark, IconBell, IconChevron, IconClock, IconClose, IconDesktop, IconEdit, IconFolder, IconList, IconMore, IconPin, IconPlus, IconSearch, IconSettings, IconSidebar, IconSparkle } from './icons';
+import { AgentMark, IconBell, IconChevron, IconClock, IconClose, IconDesktop, IconEdit, IconFolder, IconList, IconMore, IconPin, IconPlus, IconSearch, IconSettings, IconSidebar, IconSparkle, IconServer } from './icons';
 import { t } from '../i18n';
 
 export { folderName } from '../paths';
@@ -68,6 +68,9 @@ interface Props {
   petBust?: PetBust | null;
   /** The plan page is what the main area shows. */
   todosActive?: boolean;
+  /** Opens the machines page, a first-class page beside the plans link. */
+  onOpenMachines?: () => void;
+  machinesActive?: boolean;
   onOpenSchedules?: () => void;
   /** Opens the machine's desktop; absent when the machine shows none. */
   onOpenDesktop?: () => void;
@@ -161,6 +164,8 @@ export function Sidebar({
   deskActive = false,
   petBust,
   todosActive = false,
+  onOpenMachines,
+  machinesActive = false,
   onOpenSchedules,
   onOpenDesktop,
   desktopRunning = false,
@@ -679,6 +684,9 @@ export function Sidebar({
                 </button>,
                 onOpenTodos && <button key="todos" className={`side-link${todosActive ? ' active' : ''}`} aria-current={todosActive ? 'page' : undefined} onClick={onOpenTodos}>
                   <IconList size={compact ? 21 : 17} /> {t('todos.title')}
+                </button>,
+                onOpenMachines && <button key="machines" className={`side-link${machinesActive ? ' active' : ''}`} aria-current={machinesActive ? 'page' : undefined} onClick={onOpenMachines}>
+                  <IconServer size={compact ? 21 : 17} /> {t('hosts.machines')}
                 </button>,
                 ...pagesShown.map((page) => (
                   <button key={page.key} className={`side-link${page.active ? ' active' : ''}`} aria-current={page.active ? 'page' : undefined} title={page.live ? page.liveLabel : undefined} onClick={page.onOpen}>
