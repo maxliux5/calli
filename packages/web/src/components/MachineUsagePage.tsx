@@ -30,8 +30,16 @@ interface Machine {
   api: Api;
 }
 
-function Select({ label, value, options, onPick }: { label: string; value: string; options: Array<{ id: string; label: string }>; onPick: (id: string) => void }) {
-  return <Popover label={label} triggerClassName="text-btn obs-select" triggerLabel={label} trigger={<>{options.find(o => o.id === value)?.label ?? label}<IconChevron size={12} open /></>}>
+function Select({ label, short, value, options, onPick }: { label: string; short: string; value: string; options: Array<{ id: string; label: string }>; onPick: (id: string) => void }) {
+  const picked = options.find(o => o.id === value && o.id !== '')?.label;
+  // The wide screen spells the choice out ("all models"); a phone carries the short form,
+  // and a picked value wherever it lands.
+  const full = options.find(o => o.id === value)?.label ?? label;
+  return <Popover label={label} triggerClassName="text-btn obs-select" triggerLabel={full} trigger={<>
+    <span className="obs-select-text">{full}</span>
+    <span className="obs-select-brief">{picked ?? short}</span>
+    <IconChevron size={12} open />
+  </>}>
     {close => <><div className="pop-title">{label}</div>{options.map(option => <button key={option.id} type="button" role="menuitemradio" aria-checked={option.id === value} className="pop-item compact" onClick={() => { onPick(option.id); close(); }}>
       <span className="pop-item-text"><span className="pop-item-label">{option.label}</span></span>
       {option.id === value && <span className="pop-item-check"><IconCheck size={16} /></span>}
@@ -108,6 +116,9 @@ function Spark({ report }: { report: MachineUsageReport | null }) {
 
 /** Today over every machine, with each machine's share as a neutral bar (persona's TodayTokens). */
 function TodayCard({ machines, summaries }: { machines: Machine[]; summaries: Map<string, Summary> }) {
+  // One machine is its own total (the card says it); a lone bar would only repeat the number
+  // as a block of ink. The card appears the moment a second machine could answer.
+  if (machines.length < 2) return null;
   const shares = machines
     .map(machine => ({ machine, day: summaries.get(machine.id ?? '')?.day }))
     .filter((s): s is { machine: Machine; day: UsageTokens } => s.day != null)
@@ -185,7 +196,7 @@ const EMPTY_REPORT: MachineUsageReport = {
 /** Tokens per minute over the range: the four numbers on top, then stacked by kind (or one total
  *  line), a crosshair readout on hover, touch and arrow keys, a clickable legend with each kind's
  *  total, and grey over the offline steps. A null report draws the same card empty. */
-function ThroughputChart({ report, hidden, mode, onToggleMode, onToggleKind }: { report: MachineUsageReport | null; hidden: ReadonlySet<UsageKind>; mode: 'kinds' | 'total'; onToggleMode: (mode: 'kinds' | 'total') => void; onToggleKind: (kind: UsageKind) => void }) {
+function ThroughputChart({ report, hidden, mode, onToggleMode, onToggleKind, onRefresh }: { report: MachineUsageReport | null; hidden: ReadonlySet<UsageKind>; mode: 'kinds' | 'total'; onToggleMode: (mode: 'kinds' | 'total') => void; onToggleKind: (kind: UsageKind) => void; onRefresh: () => void }) {
   const report1 = report ?? EMPTY_REPORT;
   const n = report1.points.length;
   const stepMinutes = report1.step / 60;
@@ -234,6 +245,7 @@ function ThroughputChart({ report, hidden, mode, onToggleMode, onToggleKind }: {
           <button type="button" aria-pressed={mode === 'kinds'} className={mode === 'kinds' ? 'selected' : ''} onClick={() => onToggleMode('kinds')}>{t('machine.modeKinds')}</button>
           <button type="button" aria-pressed={mode === 'total'} className={mode === 'total' ? 'selected' : ''} onClick={() => onToggleMode('total')}>{t('machine.modeTotal')}</button>
         </span>
+        <button className="icon-btn" aria-label={t('obs.refresh')} onClick={onRefresh}><IconRefresh size={16} /></button>
       </span>
     </header>
     <div ref={box} className="obs-chart-plot" style={{ height }} tabIndex={0} role="group"
@@ -439,14 +451,13 @@ function MachineDetail({ machine, onBack }: { machine: Machine; onBack: () => vo
         {([[1, 'machine.rangeHour'], [24, 'machine.rangeDay'], [168, 'machine.rangeWeek']] as const).map(([value, key]) =>
           <button key={value} type="button" aria-pressed={hours === value} className={hours === value ? 'selected' : ''} onClick={() => setHours(value)}>{t(key)}</button>)}
       </div>
-      <Select label={t('machine.model')} value={model ?? ''} options={[{ id: '', label: t('machine.allModels') }, ...(report?.models ?? []).map(m => ({ id: m.name, label: m.name }))]} onPick={id => setModel(id || null)} />
-      <Select label={t('machine.launcher')} value={launcher ?? ''} options={[{ id: '', label: t('machine.allLaunchers') }, ...(report?.launchers ?? []).map(l => ({ id: l.name || '-', label: launcherLabel(l.name) }))]} onPick={id => setLauncher(id === '' ? null : id === '-' ? '' : id)} />
-      <button className="icon-btn" aria-label={t('obs.refresh')} onClick={() => setRefresh(n => n + 1)}><IconRefresh size={16} /></button>
+      <Select label={t('machine.model')} short={t('machine.model')} value={model ?? ''} options={[{ id: '', label: t('machine.allModels') }, ...(report?.models ?? []).map(m => ({ id: m.name, label: m.name }))]} onPick={id => setModel(id || null)} />
+      <Select label={t('machine.launcher')} short={t('machine.launcher')} value={launcher ?? ''} options={[{ id: '', label: t('machine.allLaunchers') }, ...(report?.launchers ?? []).map(l => ({ id: l.name || '-', label: launcherLabel(l.name) }))]} onPick={id => setLauncher(id === '' ? null : id === '-' ? '' : id)} />
     </div>
     {failed && <p role="alert" className="obs-error">{old ? t('machine.oldDaemon') : t('machine.loadFailed')}</p>}
     <div className="mu-detail">
       <div className="mu-charts">
-        <ThroughputChart report={report} hidden={hidden} mode={mode} onToggleMode={next => { setMode(next); setHidden(new Set()); }} onToggleKind={toggleKind} />
+        <ThroughputChart report={report} hidden={hidden} mode={mode} onToggleMode={next => { setMode(next); setHidden(new Set()); }} onToggleKind={toggleKind} onRefresh={() => setRefresh(n => n + 1)} />
         <HitChart report={report} />
       </div>
       <div className="mu-side">

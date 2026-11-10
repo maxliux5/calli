@@ -85,7 +85,8 @@ try {
       });
       await openUi(page, daemon);
       await page.goto(daemon.base + '/#/machines');
-      await page.locator('.mu-today').waitFor({ timeout: 20_000 });
+      // One machine names no total card (it would only repeat the card's own number).
+      await page.locator('.mu-cards').waitFor({ timeout: 20_000 });
       await page.waitForTimeout(400);
       await page.screenshot({ path: join(out, `loading-list-${name}.png`) });
       console.log('loading list', name);
