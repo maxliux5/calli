@@ -7,6 +7,7 @@ import { dirname, isAbsolute, join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { LEGACY_SOCKET_IN_HOME, SOCKET_IN_HOME } from './config.js';
 import { HttpError } from './errors.js';
+import type { RemoteRun } from './remote-files.js';
 
 /**
  * Another machine this hub shows. That machine runs the same daemon, with its agents, threads and
@@ -469,6 +470,61 @@ export class HostRegistry {
         upstream.destroy();
       });
       req.pipe(upstream);
+    });
+  }
+
+  /**
+   * Runs one command on a machine over ssh, without its daemon: this is how the hub reads and
+   * writes files where a member works, and how a handoff reaches it. The command string is written
+   * by this daemon; anything from a person or an agent travels on stdin. It works while the
+   * machine's daemon is down, since it asks ssh rather than the tunnel.
+   */
+  exec(id: string, command: string, opts: { input?: string; timeoutMs?: number; maxBytes?: number } = {}): Promise<RemoteRun> {
+    const entry = this.entries.get(id);
+    if (!entry) return Promise.reject(new HttpError(404, 'machine not found'));
+    const timeoutMs = opts.timeoutMs ?? 20_000;
+    const maxBytes = opts.maxBytes ?? 2 * 1024 * 1024;
+    return new Promise((resolve, reject) => {
+      const child = spawn(this.ssh[0], [...this.ssh.slice(1), ...SSH_OPTIONS, '--', entry.target, command], { stdio: ['pipe', 'pipe', 'pipe'] });
+      const out: Buffer[] = [];
+      let size = 0;
+      let stderr = '';
+      let settled = false;
+      let timer: NodeJS.Timeout;
+      const stop = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (err) reject(err);
+      };
+      timer = setTimeout(() => {
+        child.kill();
+        stop(new HttpError(504, 'the machine did not answer in time', { code: 'unreachable' }));
+      }, timeoutMs);
+      child.stdout.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > maxBytes) {
+          child.kill();
+          stop(new HttpError(413, 'the machine sent more than this operation accepts', { code: 'too_large' }));
+          return;
+        }
+        out.push(chunk);
+      });
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr = (stderr + chunk.toString('utf8')).slice(-4000);
+      });
+      child.stdin.on('error', () => undefined);
+      child.on('error', (err: NodeJS.ErrnoException) => {
+        child.kill();
+        stop(new HttpError(502, err.code === 'ENOENT' ? `${this.ssh[0]} is not installed` : err.message, { code: err.code === 'ENOENT' ? 'no_ssh' : 'ssh_failed' }));
+      });
+      child.on('exit', (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ stdout: Buffer.concat(out), stderr, code: code ?? 255 });
+      });
+      child.stdin.end(opts.input ?? '');
     });
   }
 

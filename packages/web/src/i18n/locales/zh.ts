@@ -1476,6 +1476,8 @@ export const zh = {
   'team.newOutput': '有新输出',
   'team.childGone': '该子线程已不可用',
   'team.latest': '查看最新输出',
+  'team.resultFile': (name: string, size: string) => `结果文件 · ${name} · ${size}`,
+  'team.resultFileTruncated': '已截断',
   'team.directPlaceholder': (name: string) => `发给 ${name}…`,
   'team.adjustViaLead': '让主智能体调整',
   'team.you': '你',

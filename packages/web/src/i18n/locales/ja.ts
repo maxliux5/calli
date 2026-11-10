@@ -1474,6 +1474,8 @@ export const ja: Messages = {
   'team.newOutput': '新しい出力',
   'team.childGone': 'このサブスレッドは利用できなくなりました',
   'team.latest': '最新の出力を見る',
+  'team.resultFile': (name: string, size: string) => `結果ファイル · ${name} · ${size}`,
+  'team.resultFileTruncated': '切り詰め',
   'team.directPlaceholder': (name: string) => `${name} にメッセージ…`,
   'team.adjustViaLead': 'メインに調整を依頼',
   'team.you': 'あなた',

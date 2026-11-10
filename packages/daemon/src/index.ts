@@ -128,7 +128,10 @@ async function main(): Promise<void> {
   manager.personal.syncMirror();
   // Scheduled tasks tick on their own, on the machine where their threads live.
   const scheduler = new Scheduler(store, manager, adapters, push);
-  const coordination = new CoordinationManager(store, manager, coordinationPath);
+  const coordination = new CoordinationManager(store, manager, coordinationPath, {
+    exchangeRoot: '/tmp/calli-exchange',
+    resultDir: join(config.dataDir, 'coordination', 'files'),
+  });
   const collaborationServer = coordinationServer(coordination);
   if (!await listenPrivate(collaborationServer, coordinationPath)) throw new Error('Collaboration socket is already in use');
   const toolsPath = join(config.dataDir, 'tools', 'calli.sock');
