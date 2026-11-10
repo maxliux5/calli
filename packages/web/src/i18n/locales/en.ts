@@ -1296,7 +1296,6 @@ export const en: Messages = {
   'dir.addAndUse': 'Add and use',
   'dir.use': 'Use this directory',
   'dir.available': 'Available directories',
-  'dir.up': 'Up one level',
   'dir.added': 'Project locations already added',
   'dir.openingHome': 'Opening the home directory…',
   'dir.folders': 'Folders',
@@ -1308,10 +1307,12 @@ export const en: Messages = {
   'dir.absolutePath': 'Enter an absolute path, starting with / or ~.',
   'dir.pathLabel': 'Path',
   'dir.enterPath': 'Type a path starting with / or ~ to jump, or words to filter',
-  'dir.pickedHint': (name: string) => `${name} chosen · double-click to open`,
+  'dir.pickedHint': (name: string) => `${name} chosen`,
+  'dir.treeHint': 'Tap a folder to choose it, its triangle to open it',
+  'dir.expand': (name: string) => `Open ${name}`,
+  'dir.collapse': (name: string) => `Close ${name}`,
   'dir.go': 'Go',
   'dir.selectFolder': (name: string) => `Use ${name}`,
-  'dir.enter': (name: string) => `Open ${name}`,
 
   // Overview page
   'activity.day': (d: Date) => d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),

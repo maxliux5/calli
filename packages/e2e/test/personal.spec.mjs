@@ -37,8 +37,9 @@ test('personal plans, delegation, proposals, lazy details, follow-up, wishes and
     await dialog.getByRole('button', { name: `${defaults.directoryDisplay}（默认）`, exact: true }).click();
     await page.getByRole('button', { name: '可用目录', exact: true }).click();
     assert.equal(await page.locator('.project-browser-folder', { hasText: defaults.directory }).count(), 0);
+    const firstFolder = (await page.locator('.project-browser-folder').first().innerText()).split('\n')[0];
     await page.locator('.project-browser-folder').first().click();
-    await page.getByRole('button', { name: '用这个目录', exact: true }).click();
+    await page.getByRole('button', { name: `选择 ${firstFolder}`, exact: true }).click();
     await dialog.getByRole('button', { name: '实例默认模型', exact: true }).click();
     await page.getByRole('menuitemradio', { name: 'Plain', exact: true }).click();
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
@@ -48,7 +49,7 @@ test('personal plans, delegation, proposals, lazy details, follow-up, wishes and
     await page.locator('.personal-summary').click();
     await dialog.locator('.personal-directory').click();
     await page.getByRole('button', { name: '默认目录', exact: true }).click();
-    await page.getByRole('button', { name: '用这个目录', exact: true }).click();
+    await page.getByRole('button', { name: `选择 ${defaults.directory.split('/').pop()}`, exact: true }).click();
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
     assert.equal((await json(daemon, '/api/personal/settings')).directoryIsDefault, true);
     assert.ok(!(await json(daemon, '/api/config')).workdirs.includes(defaults.directory));
