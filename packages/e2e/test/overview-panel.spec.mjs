@@ -231,8 +231,10 @@ test('a team that lands after the panel joins it without a reopen, and the readi
   const daemon = await startDaemon();
   const browser = await launchBrowser();
   try {
-    // A real daemon, a real member thread: the team exists server-side before the page loads, so
-    // the only thing late is the coordination answer the page is still waiting on.
+    // A real daemon, two real member threads: the team exists server-side before the page loads,
+    // so the only thing late is the coordination answer the page is still waiting on. Two members
+    // is the case that used to overflow: the panel fitted without the group, then the rows landed
+    // a frame later and spilled over the footer.
     const post = async (path, body) => { const response = await api(daemon, path, { method: 'POST', body: JSON.stringify(body) }); assert.ok(response.ok, await response.clone().text()); return response.json(); };
     const root = await post('/api/threads', { agent: 'pi', cwd: daemon.workdir, title: '晚到的团队' });
     const setup = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -243,12 +245,20 @@ test('a team that lands after the panel joins it without a reopen, and the readi
     await preparer.locator('.coord-picker-head button').click();
     await preparer.getByRole('button', { name: '启用协作', exact: true }).click();
     await preparer.locator('.composer-add.on').waitFor();
-    const directive = Buffer.from(JSON.stringify({ args: ['spawn', '--agent', 'claude', '--name', '文档审查', '--message-file', '-', '--request-id', 'late-team'], text: '检查接口 CALLI_REPORT' })).toString('base64');
-    await post(`/api/threads/${root.id}/turns`, { text: `CALLI_COMMAND:${directive}` });
-    for (let n = 0; n < 200; n++) {
-      const team = await (await api(daemon, `/api/threads/${root.id}/coordination`)).json();
-      if (team?.members?.length) break;
-      await sleep(100);
+    for (const [name, requestId] of [['文档审查', 'late-team-1'], ['复核', 'late-team-2']]) {
+      const directive = Buffer.from(JSON.stringify({ args: ['spawn', '--agent', 'claude', '--name', name, '--message-file', '-', '--request-id', requestId], text: '检查接口 CALLI_REPORT' })).toString('base64');
+      // One spawn turn at a time: the second directive waits for the first member to exist.
+      for (let n = 0; n < 300; n++) {
+        const team = await (await api(daemon, `/api/threads/${root.id}/coordination`)).json();
+        if (team?.members?.some(m => m.name === name) || team?.members?.length >= 2) break;
+        await sleep(100);
+      }
+      await post(`/api/threads/${root.id}/turns`, { text: `CALLI_COMMAND:${directive}` });
+      for (let n = 0; n < 300; n++) {
+        const team = await (await api(daemon, `/api/threads/${root.id}/coordination`)).json();
+        if (team?.members?.some(m => m.name === name)) break;
+        await sleep(100);
+      }
     }
     await setup.close();
 
@@ -266,15 +276,17 @@ test('a team that lands after the panel joins it without a reopen, and the readi
     release();
     // No reopen, no second click: the section joins the panel where it fits.
     await panel.locator('.overview-group', { hasText: '子智能体' }).waitFor({ timeout: 10_000 });
-    // The panel grew with the new group instead of keeping its old pinned height, so nothing
-    // spills over the footer: the readings line must stay below the last group's 查看全部.
+    await panel.locator('.overview-member').nth(1).waitFor({ timeout: 10_000 });
+    // The panel grew with the group instead of keeping its old pinned height: no group may run
+    // under the readings line, and every row must be inside the panel.
     const fit = await panel.evaluate(el => {
-      const content = el.querySelector('.overview-content').getBoundingClientRect();
       const foot = el.querySelector('.overview-foot').getBoundingClientRect();
-      return { gap: foot.top - content.bottom, scroll: el.scrollHeight, client: el.clientHeight };
+      const groups = [...el.querySelectorAll('.overview-group')];
+      const last = groups.at(-1).getBoundingClientRect();
+      return { overlap: Math.round(last.bottom - foot.top), rows: el.querySelectorAll('.overview-member').length };
     });
-    assert.ok(fit.gap >= -1, `content runs under the footer by ${-fit.gap}px`);
-    assert.ok(fit.scroll <= fit.client + 1, 'the panel holds all it shows without scrolling');
+    assert.equal(fit.rows, 2, 'both members are on screen');
+    assert.ok(fit.overlap <= 0, `the last group runs ${fit.overlap}px over the readings line`);
     // The readings line is the quiet way to the trace.
     await panel.locator('.overview-readings-link').click();
     await page.locator('.trace-side').waitFor();

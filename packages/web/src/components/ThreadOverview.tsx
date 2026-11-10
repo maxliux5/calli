@@ -133,12 +133,18 @@ export function ThreadOverview(props: OverviewProps) {
 
   useLayoutEffect(() => {
     if (detail || !ready || !root.current) return;
-    // The sections are pinned per opening so refreshes keep their slots — but a section that
-    // appears later (the team often lands after the outputs) must not stay hidden until the
-    // panel is reopened: a changed set of sections re-runs the fit.
-    const key = available.join(' ');
-    if (layout && layout.sections.join(' ') === key) return;
+    // The sections are pinned per opening so refreshes keep their slots — but the panel must
+    // still grow when what it holds grows: a section that lands late (the team usually arrives
+    // after the outputs) or a group that gains a row (the team goes from one member to two).
+    // Both show up as a different natural height. The pin from the previous fit would hide that,
+    // so it is cleared for the measurement and restored before paint.
     const el = root.current;
+    const pinned = el.style.height;
+    el.style.height = 'auto';
+    const height = el.offsetHeight;
+    el.style.height = pinned;
+    const key = available.join(' ');
+    if (layout && layout.sections.join(' ') === key && Math.abs(layout.height - height) <= 1) return;
     const panel = el.closest<HTMLElement>('.overview-panel');
     if (!panel) return;
     const viewport = window.visualViewport;
@@ -149,14 +155,6 @@ export function ThreadOverview(props: OverviewProps) {
     const composer = document.querySelector('.composer-slot, .composer');
     const preferred = composer ? composer.getBoundingClientRect().top - top - 12 : hard;
     const budget = Math.min(hard, Math.max(preferred, Math.min(360, hard)));
-    // A re-fit must measure the panel's natural height: once a layout is in place the element
-    // carries that height as a fixed style, and measuring it again would only read the old pin.
-    // `layout` is applied by React from the style prop, so the temporary clearing is undone by
-    // the render that follows this effect, before paint.
-    const pinned = el.style.height;
-    if (layout) el.style.height = 'auto';
-    const height = el.offsetHeight;
-    el.style.height = pinned;
     if (height + 18 > budget && limit > 0) { setLimit(limit === 3 ? 1 : 0); return; }
     if (height + 18 > hard && limit === 0) { action(() => onViewAll('all', false))(); return; }
     setLayout({ height, sections: available, counts });
