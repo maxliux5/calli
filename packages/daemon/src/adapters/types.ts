@@ -509,3 +509,22 @@ export function sessionEnvironment(base: Record<string, string>, context?: Recor
   if (context?.CALLI_BIN_DIR) env.PATH = `${context.CALLI_BIN_DIR}${process.platform === 'win32' ? ';' : ':'}${base.PATH ?? process.env.PATH ?? ''}`;
   return env;
 }
+
+/**
+ * Names the session store an instance's conversations live in: instances of one adapter whose
+ * store-picking env matches (or sets none) share their sessions, so the local-session scan asks
+ * one of them and a session never appears under two instances. Which env picks the store is an
+ * agent difference, so it lives here with the adapters.
+ */
+export function sessionStoreKey(instance: { adapter: string; env?: Record<string, string> }): string {
+  switch (instance.adapter) {
+    case 'claude':
+      return `claude:${instance.env?.CLAUDE_CONFIG_DIR ?? ''}`;
+    case 'codex':
+      return `codex:${instance.env?.CODEX_HOME ?? ''}`;
+    case 'traex':
+      return `traex:${instance.env?.CALLI_TRAEX_HOME ?? instance.env?.CODEX_HOME ?? ''}`;
+    default:
+      return instance.adapter;
+  }
+}

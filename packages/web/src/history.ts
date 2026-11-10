@@ -1,7 +1,7 @@
 import { Api, AuthError } from './api';
 import type { DetailRef, StoredEvent, Item } from './timeline';
 
-export interface HistoryPage { turnIds?: string[]; events: StoredEvent[]; snapshotSeq: number; nextCursor: number | null; hasOlder: boolean }
+export interface HistoryPage { turnIds?: string[]; events: StoredEvent[]; snapshotSeq: number; nextCursor: number | null; hasOlder: boolean; hasNewer?: boolean }
 export interface HistoryDetail { version: number; text?: string; input?: unknown; output?: string; content?: unknown; nextCursor: number | null; toolId?: string | null; outputTruncated?: boolean; outputOmitted?: number; fullAvailable?: boolean }
 export type WorkFiles = NonNullable<Extract<Item, { kind: 'work' }>['files']>;
 export interface HistoryWork { files?: WorkFiles; version: number; events: StoredEvent[]; nextCursor: number | null }

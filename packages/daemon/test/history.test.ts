@@ -423,3 +423,50 @@ test('handover summary turns defer prompt and answer in snapshots and live event
     assert.throws(() => f.store.history.summaryText('thread', 'ordinary'), /not found/);
   } finally { f.close(); }
 });
+
+test('a forward read pages a conversation from its beginning, eight turns at a time, without gaps', async () => {
+  const f = fixture();
+  try {
+    for (let i = 0; i < 20; i++) {
+      f.add(`t${i}`, 'turn.started', { text: `question ${i}` });
+      f.add(`t${i}`, 'message.delta', { text: `answer ${i}` });
+      f.add(`t${i}`, 'turn.done', {});
+    }
+    const turnsOf = (page: Awaited<ReturnType<typeof f.store.history.page>>) => page.events.filter(e => e.type === 'turn.started').map(e => e.turnId);
+    const first = await f.store.history.page('thread', undefined, 0, false, true);
+    assert.deepEqual(turnsOf(first), Array.from({ length: 8 }, (_, i) => `t${i}`));
+    assert.equal(first.hasNewer, true);
+    assert.equal(first.hasOlder, false);
+    const second = await f.store.history.page('thread', undefined, first.nextCursor!, false, true);
+    assert.deepEqual(turnsOf(second), Array.from({ length: 8 }, (_, i) => `t${i + 8}`));
+    assert.equal(second.hasNewer, true);
+    const last = await f.store.history.page('thread', undefined, second.nextCursor!, false, true);
+    assert.deepEqual(turnsOf(last), ['t16', 't17', 't18', 't19']);
+    assert.equal(last.hasNewer, false);
+    assert.equal(last.nextCursor, null);
+    // The way it was read before is unchanged: the newest eight, with an older cursor.
+    const newest = await f.store.history.page('thread');
+    assert.deepEqual(turnsOf(newest), Array.from({ length: 8 }, (_, i) => `t${i + 12}`));
+    assert.equal(newest.hasOlder, true);
+    assert.equal(newest.hasNewer, undefined);
+  } finally { f.close(); }
+});
+
+test('the handover of a successor says how the work was carried over, and previews it without reading all of it', () => {
+  const f = fixture();
+  try {
+    f.make('next');
+    f.store.updateThread('next', {});
+    // The link is what the hub writes when it creates the successor.
+    (f.store as any).db.prepare('UPDATE threads SET handover = ? WHERE id = ?').run(JSON.stringify({ sourceId: 'thread', title: 'thread', agent: 'pi', mode: 'continue', method: 'summary' }), 'next');
+    const brief = `# 接手\n\n你接手 pi 在 hub 线程 thread 里的任务。\n\n工作目录 /work。\n\n## 任务\n${'写文章。'.repeat(400)}`;
+    f.store.appendEvent('next', 'turn-1', 'turn.started', { text: brief, displayText: brief });
+    const folded = f.store.history.handoverInfo('next');
+    assert.equal(folded.method, 'summary');
+    assert.equal(folded.size, brief.length);
+    assert.ok(folded.preview.startsWith('写文章。写文章。'));
+    assert.ok(folded.preview.length <= 161);
+    assert.equal('text' in folded, false);
+    assert.equal(f.store.history.handoverInfo('next', true).text, brief);
+  } finally { f.close(); }
+});

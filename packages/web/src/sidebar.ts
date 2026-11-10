@@ -1,6 +1,6 @@
 /** How threads are arranged in the sidebar. Pure, so it can be tested directly. */
 import type { Attention } from '@calli/extension-api';
-import type { AgentInfo, Section, Thread } from './api';
+import type { AgentInfo, ExternalSession, Section, Thread } from './api';
 import { folderName } from './paths';
 import type { AgentMarkInfo } from './thread-cache';
 import { t } from './i18n';
@@ -84,15 +84,52 @@ export interface SidebarModel {
   count: number;
 }
 
-/**
- * A thread appears exactly once: under "pinned" if pinned, else under its section if it has one,
+/** A session that is not a thread yet, shaped as the list's rows: it mixes in by its time and
+ *  its directory, and the row it becomes carries the session for importing on click. */
+export function externalThreadRow(session: ExternalSession): Thread {
+  const at = session.updatedAt ?? '';
+  return {
+    id: `ext:${session.agent}:${session.sessionId}`,
+    agent: session.agent,
+    cwd: session.cwd,
+    cwdReal: session.cwd,
+    title: session.title || session.cwd,
+    agentSessionId: null,
+    status: 'idle',
+    pinned: false,
+    permissionMode: 'auto_edit',
+    model: null,
+    effort: null,
+    archivedAt: null,
+    sectionId: null,
+    forkedFrom: null,
+    unread: false,
+    preview: null,
+    terminalActivity: false,
+    waiting: false,
+    queued: [],
+    resumeCommand: null,
+    createdAt: at,
+    updatedAt: at,
+    external: session,
+  };
+}
+
+/** The list the sidebar shows: threads and this machine's not-yet-thread sessions, by time. The
+ *  stable sort keeps threads in the order the API gave them (already newest first). */
+export function withExternalSessions(threads: Thread[], external: ExternalSession[]): Thread[] {
+  if (!external.length) return threads;
+  return [...threads, ...external.map(externalThreadRow)]
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
+}
+
+/** A thread appears exactly once: under "pinned" if pinned, else under its section if it has one,
  * else under its project (working directory). Threads keep the order they arrive in.
  *
  * Projects are told apart by the directory with symlinks resolved: the same folder reached by two
  * spellings is one project. The group shows the spelling of its most recent thread.
  */
-export function buildSidebar(threads: Thread[], sections: Section[], search: string): SidebarModel {
-  const query = search.trim().toLowerCase();
+export function buildSidebar(threads: Thread[], sections: Section[], search: string): SidebarModel {  const query = search.trim().toLowerCase();
   const visible = matching(threads, search);
 
   const sectionIds = new Set(sections.map((s) => s.id));
@@ -172,11 +209,20 @@ function urgency(t: Thread, selectedId: string | null): number | null {
  */
 export function buildActivity(threads: Thread[], search: string, now: Date, selectedId: string | null): ActivityModel {
   const visible = matching(threads, search);
-  const newestFirst = (a: Thread, b: Thread) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0);
+  // A handover chain is one entry, kept whole: it stands under its most pressing member, and under
+  // the day any of them last moved. Split by urgency, the original and its successor would sit in
+  // different groups, far apart.
+  const chains = handoverGroups(visible).map(({ members }) => ({
+    members,
+    urgent: Math.min(...members.map((t) => urgency(t, selectedId) ?? Infinity)),
+    moved: members.reduce((time, t) => (t.updatedAt > time ? t.updatedAt : time), ''),
+  }));
+  const newestFirst = (a: { moved: string }, b: { moved: string }) => (a.moved < b.moved ? 1 : a.moved > b.moved ? -1 : 0);
 
-  const priority = visible
-    .filter((t) => urgency(t, selectedId) !== null)
-    .sort((a, b) => urgency(a, selectedId)! - urgency(b, selectedId)! || newestFirst(a, b));
+  const priority = chains
+    .filter((c) => c.urgent !== Infinity)
+    .sort((a, b) => a.urgent - b.urgent || newestFirst(a, b))
+    .flatMap((c) => c.members);
 
   const today = startOfDay(now);
   const ages: Array<{ key: string; label: string; within: number }> = [
@@ -187,11 +233,11 @@ export function buildActivity(threads: Thread[], search: string, now: Date, sele
     { key: 'older', label: t('sidebar.group.older'), within: Infinity },
   ];
   const byAge = new Map<string, Thread[]>();
-  for (const t of visible.filter((t) => urgency(t, selectedId) === null).sort(newestFirst)) {
+  for (const chain of chains.filter((c) => c.urgent === Infinity).sort(newestFirst)) {
     // Rounded: a day that a clock change made 23 or 25 hours long is still one day.
-    const days = Math.round((today - startOfDay(new Date(t.updatedAt))) / DAY_MS);
+    const days = Math.round((today - startOfDay(new Date(chain.moved))) / DAY_MS);
     const { key } = ages.find((a) => days <= a.within)!;
-    byAge.set(key, [...(byAge.get(key) ?? []), t]);
+    byAge.set(key, [...(byAge.get(key) ?? []), ...chain.members]);
   }
 
   return {
@@ -202,8 +248,11 @@ export function buildActivity(threads: Thread[], search: string, now: Date, sele
   };
 }
 
-/** Group explicit handovers only, within the caller's existing section or project. */
-export function handoverGroups(threads: Thread[]): Array<{ key: string; latest: Thread; members: Thread[] }> {
+/**
+ * Group explicit handovers only, within the caller's existing section or project. The groups are
+ * the most recently moved first, or with `keepOrder` in the order their first thread has in `threads`.
+ */
+export function handoverGroups(threads: Thread[], keepOrder = false): Array<{ key: string; latest: Thread; members: Thread[] }> {
   const byId = new Map(threads.map((t) => [t.id, t]));
   const root = (t: Thread): string => {
     const seen = new Set<string>();
@@ -225,6 +274,7 @@ export function handoverGroups(threads: Thread[]): Array<{ key: string; latest: 
     const parents = new Set(members.map((t) => t.handover?.sourceId));
     return { key, latest: members.find((t) => !parents.has(t.id)) ?? members[0], members };
   }).sort((a, b) => {
+    if (keepOrder) return Math.min(...a.members.map((t) => threads.indexOf(t))) - Math.min(...b.members.map((t) => threads.indexOf(t)));
     const newest = (members: Thread[]) => members.reduce((time, t) => t.updatedAt > time ? t.updatedAt : time, '');
     return newest(b.members).localeCompare(newest(a.members));
   });

@@ -64,24 +64,24 @@ test('three handover segments load on upward navigation, keep their action targe
         assert.equal(requests.filter(url => url.includes('/history/handover?text=1')).length, 0);
         await scrollUp();
         const cBoundary = page.locator(`[data-handover-thread="${c.id}"]`);
-        await cBoundary.getByRole('button', { name: `接手自 ${label('claude')} · 额度用完`, exact: true }).waitFor();
+        await cBoundary.getByText(`接手自 ${label('claude')} · 额度用完`, { exact: true }).waitFor();
         assert.equal(requests.filter(url => url.includes(`/threads/${b.id}/history`)).length, 0, 'own earlier page arrives before the source');
         assert.equal(await page.locator('.bubble', { hasText: 'DEFERRED_HANDOVER' }).count(), 0);
-        await cBoundary.locator('.handover-divider').click();
-        await cBoundary.locator('.handover-summary', { hasText: 'DEFERRED_HANDOVER' }).waitFor();
+        await cBoundary.locator('.handover-card-head').click();
+        await cBoundary.locator('.handover-card-body', { hasText: 'DEFERRED_HANDOVER' }).waitFor();
         assert.equal(requests.filter(url => url.includes(`/threads/${c.id}/history/handover?text=1`)).length, 1);
         await page.screenshot({ path: `${shots}/${phone ? 'phone' : 'desktop'}-${theme}-expanded.png` });
-        await cBoundary.locator('.handover-summary').evaluate(el => { el.scrollTop = 300; el.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true })); });
+        await cBoundary.locator('.handover-card-body').evaluate(el => { el.scrollTop = 300; el.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true })); });
         await page.waitForTimeout(100);
         assert.equal(requests.filter(url => url.includes(`/threads/${b.id}/history`)).length, 0, 'scrolling inside the summary does not load the source');
-        await cBoundary.locator('.handover-divider').click();
+        await cBoundary.locator('.handover-card-head').click();
         await page.waitForTimeout(100);
         assert.equal(requests.filter(url => url.includes(`/threads/${b.id}/history`)).length, 0, 'collapsing a long summary is not upward navigation');
         await scrollUp(); await page.getByText('B 问题 10', { exact: true }).waitFor();
         assert.equal(requests.filter(url => url.includes(`/threads/${a.id}/history`)).length, 0);
         await scrollUp();
         const bBoundary = page.locator(`[data-handover-thread="${b.id}"]`);
-        await bBoundary.getByRole('button', { name: `接手自 ${label('pi')}`, exact: true }).waitFor();
+        await bBoundary.getByText(`接手自 ${label('pi')}`, { exact: true }).waitFor();
         // A transient failure stays different from an empty history, and retry is explicit.
         let fail = true;
         await page.route(`**/api/threads/${a.id}/history?*`, async route => {
@@ -128,6 +128,18 @@ test('three handover segments load on upward navigation, keep their action targe
         await page.getByText('前段只读；消息发送给最新一段', { exact: true }).waitFor();
         await page.waitForTimeout(300);
         await page.screenshot({ path: `${shots}/${phone ? 'phone' : 'desktop'}-${theme}-earlier.png` });
+        // Reading on from the earlier segment needs no click: the next ones load, from their beginning, as the end comes into view.
+        // (The phone's floating assistant button can end up over the send button after this much scrolling, so only the desktop runs it.)
+        if (!phone) {
+          for (let i = 0; i < 10 && await page.getByText('C 问题 10', { exact: true }).count() === 0; i++) {
+            await page.locator('.scroller').evaluate(el => { el.scrollTop = el.scrollHeight; });
+            await page.waitForTimeout(250);
+          }
+          await page.getByText('C 问题 10', { exact: true }).waitFor();
+          assert.equal(await page.locator('.history-segment').count(), 3, 'the segments after the one on screen follow it');
+          await page.getByText('B 回答 1：已检查实现和验证范围。', { exact: true }).first().waitFor();
+          await page.screenshot({ path: `${shots}/${phone ? 'phone' : 'desktop'}-${theme}-earlier-forward.png` });
+        }
         const sendText = `从早段发送 ${phone}-${theme}`;
         const targetRequest = page.waitForRequest(req => req.method() === 'POST' && req.url().endsWith(`/threads/${c.id}/turns`));
         await page.locator('.composer textarea').fill(sendText);

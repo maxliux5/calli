@@ -16,6 +16,7 @@ import {
   AuthError,
   MAX_QUEUED,
   type AgentInfo,
+  type ExternalSession,
   type PersonalSettings,
   type GeneralSettings,
   type GoalView,
@@ -30,6 +31,7 @@ import {
 } from './api';
 import type { HubAction } from './commands';
 import { buildProjectOptions } from './projects';
+import { rootRows, withWorkdirs } from './workdirs';
 import { isBounce, useAppHistory } from './appHistory';
 import { useAppearance, useInTitlebar, useIsCompact, useListSwipe, useMinWidth, useStoredFlag } from './hooks';
 import { mergeAgentChoice, parseAgentChoices, type AgentChoices } from './agent-choice';
@@ -61,6 +63,7 @@ import { fileRef } from './files';
 import { AddAgentDialog } from './components/AddAgentDialog';
 import { OnboardingDialog } from './components/OnboardingDialog';
 import { ObservabilityPage } from './components/ObservabilityPage';
+import { MachineUsagePage } from './components/MachineUsagePage';
 import { QuotaBoard } from './components/QuotaBoard';
 import { QuotaNavigation } from './quota-reading';
 import { SelectionMenu } from './components/SelectionMenu';
@@ -105,7 +108,7 @@ import { MergedHistory } from './components/MergedHistory';
 import { currentPlan, PlanButton } from './components/PlanPanel';
 import { HandoverComposer } from './components/HandoverComposer';
 import { WritingBar } from './components/WritingBar';
-import { handoverHistoryKey, latestHandoverThread } from './handover';
+import { handoverHistoryKey, latestHandoverThread, nextSegment } from './handover';
 import { TurnRuler } from './components/TurnRuler';
 import { NewProjectDialog, ProjectPicker, RootsDialog } from './components/Projects';
 import { NoteMarks, type NoteMark } from './components/NoteMarks';
@@ -165,11 +168,12 @@ const MCP_HASH = '#/mcp';
 const SCHEDULES_HASH = '#/schedules';
 const ACTIVITY_HASH = '#/activity';
 const OBSERVABILITY_HASH = '#/observability';
+const MACHINES_HASH = '#/machines';
 const EXTENSIONS_HASH = '#/extensions';
 /** The hub's own pages. Any other `#/…` may be an extension's view; see extensions/routes.ts. */
-const CORE_ROUTES = ['#/settings', AGENTS_HASH, TEAMS_HASH, TODOS_HASH, DESK_HASH, SKILLS_HASH, MCP_HASH, SCHEDULES_HASH, ACTIVITY_HASH, OBSERVABILITY_HASH, EXTENSIONS_HASH];
+const CORE_ROUTES = ['#/settings', AGENTS_HASH, TEAMS_HASH, TODOS_HASH, DESK_HASH, SKILLS_HASH, MCP_HASH, SCHEDULES_HASH, ACTIVITY_HASH, OBSERVABILITY_HASH, MACHINES_HASH, EXTENSIONS_HASH];
 
-type MainView = 'settings' | 'agents' | 'teams' | 'thread' | 'todos' | 'desk' | 'schedules' | 'activity' | 'observability' | 'skills' | 'mcp' | 'extensions' | 'ext';
+type MainView = 'settings' | 'agents' | 'teams' | 'thread' | 'todos' | 'desk' | 'schedules' | 'activity' | 'observability' | 'machines' | 'skills' | 'mcp' | 'extensions' | 'ext';
 
 function quotaAccount(path: string): string | undefined {
   if (!path.startsWith('quota/')) return undefined;
@@ -179,6 +183,7 @@ function quotaAccount(path: string): string | undefined {
 /** The page an address opens; null for none (a thread). Skills and MCP are the hub's own machinery, which the demo has none of. */
 function viewForHash(hash: string, connected: boolean): MainView | null {
   if (hash.startsWith('#/schedules/')) return 'schedules';
+  if (hash.startsWith('#/machines/')) return 'machines';
   if (hash === '#/settings' || hash.startsWith('#/settings/')) return 'settings';
   if (hash.startsWith('#/thread/')) return null;
   switch (hash) {
@@ -192,6 +197,8 @@ function viewForHash(hash: string, connected: boolean): MainView | null {
       return 'activity';
     case OBSERVABILITY_HASH:
       return connected ? 'observability' : null;
+    case MACHINES_HASH:
+      return 'machines';
     case AGENTS_HASH:
       return connected ? 'agents' : null;
     case TEAMS_HASH:
@@ -533,7 +540,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const [projectDialog, setProjectDialog] = useState<'new' | 'roots' | null>(null);
   const applyWorkdirs = useCallback((c: WorkdirsConfig) => {
     setWorkdirs(c.workdirs);
-    setRoots(c.roots ?? c.workdirs.map((path) => ({ path, removable: false })));
+    setRoots(rootRows(c));
     setScratchAvailable(c.scratch === true);
   }, []);
   // The list last read from this machine stands in until the live one arrives: switching machines
@@ -560,6 +567,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   // Those pages have addresses of their own, so a reload or a bookmark lands back on them.
   const [threadLink, setThreadLink] = useState(() => window.location.hash.startsWith('#/thread/') ? window.location.hash : null);
   const [schedulePath, setSchedulePath] = useState(() => window.location.hash.startsWith('#/schedules/') ? window.location.hash.slice('#/schedules/'.length) : '');
+  const [machinePath, setMachinePath] = useState(() => window.location.hash.startsWith('#/machines/') ? window.location.hash.slice('#/machines/'.length) : '');
   const [settingsPath, setSettingsPath] = useState(() => start === 'machines' ? 'machines' : window.location.hash.replace(/^#\/settings\/?/, ''));
   // `list`: the phone's thread list was open, so closing settings goes back to it.
   const settingsOrigin = useRef<{ view: MainView; thread: string | null; hash: string; scroll: number; pinned: boolean; entry: string; list: boolean } | null>(null);
@@ -636,10 +644,80 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     const timer = setInterval(() => { if (!document.hidden) read(); }, 20_000);
     return () => { alive = false; clearInterval(timer); };
   }, [merging, token, hostId, hostsKey]);
+  // This machine's agent sessions that are not threads yet, mixed into the list by their time.
+  // A page at a time (a machine can hold hundreds), refreshed on the daemon's own scan cadence
+  // while someone is looking; importing one makes it the thread it opens.
+  const [externalSessions, setExternalSessions] = useState<ExternalSession[]>([]);
+  const [externalCursor, setExternalCursor] = useState<string | null>(null);
+  const [externalLoaded, setExternalLoaded] = useState(0);
+  const [externalState, setExternalState] = useState<'off' | 'loading' | 'ready' | 'failed'>('off');
+  const [externalError, setExternalError] = useState<{ message: string; retry?: () => void } | null>(null);
+  const [importingExternal, setImportingExternal] = useState<string | null>(null);
+  const externalScope = api.demo ? 'demo' : hostId ?? '';
+  useEffect(() => {
+    // The merged every-machine view lists threads only; so does a machine that cannot be asked.
+    if (api.demo || merging) { setExternalSessions([]); setExternalCursor(null); setExternalLoaded(0); setExternalState('off'); return; }
+    let alive = true;
+    const read = async () => {
+      if (document.hidden) return;
+      setExternalState((old) => (old === 'off' ? 'loading' : old));
+      try {
+        const page = await api.localSessions(null, Math.max(externalLoaded, 60));
+        if (!alive) return;
+        setExternalSessions(page.sessions);
+        setExternalCursor(page.nextCursor);
+        setExternalLoaded(page.sessions.length);
+        setExternalState('ready');
+        setExternalError(null);
+      } catch (e) {
+        if (!alive || e instanceof AuthError) return;
+        setExternalState('failed');
+      }
+    };
+    void read();
+    const timer = setInterval(read, 60_000);
+    return () => { alive = false; clearInterval(timer); };
+    // `externalLoaded` grows only through "show more", which re-reads deliberately.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, externalScope, merging]);
+  const loadMoreExternal = () => {
+    if (!externalCursor) return;
+    setExternalState('loading');
+    api.localSessions(externalCursor)
+      .then((page) => {
+        setExternalSessions((prev) => {
+          const seen = new Set(prev.map((s) => `${s.agent}:${s.sessionId}`));
+          return [...prev, ...page.sessions.filter((s) => !seen.has(`${s.agent}:${s.sessionId}`))];
+        });
+        setExternalCursor(page.nextCursor);
+        setExternalLoaded((n) => n + page.sessions.length);
+        setExternalState('ready');
+      })
+      .catch(() => setExternalState('failed'));
+  };
+  const importExternal = (session: ExternalSession) => {
+    const key = `${session.agent}:${session.sessionId}`;
+    setExternalError(null);
+    setImportingExternal(key);
+    api.importSession(session.agent, session.sessionId)
+      .then((thread) => {
+        setThreads((prev) => [thread, ...prev.filter((t) => t.id !== thread.id)]);
+        setExternalSessions((prev) => prev.filter((s) => `${s.agent}:${s.sessionId}` !== key));
+        setSelectedId(thread.id);
+        setImportingExternal(null);
+      })
+      .catch((e) => {
+        setImportingExternal(null);
+        // A bad token ends the session; anything else is said beside the rows, where the click was.
+        if (e instanceof AuthError) handleError(e);
+        else setExternalError({ message: t('sidebar.externalFailed', session.title || session.cwd), retry: () => importExternal(session) });
+      });
+  };
   // Folders last chosen for members on each machine, offered first next time.
   const recentRemoteDirs = (host: string): string[] => { try { return JSON.parse(localStorage.getItem(`calli.collab.dirs.${host}`) ?? '[]'); } catch { return []; } };
   const rememberRemoteDir = (host: string, cwd: string) => localStorage.setItem(`calli.collab.dirs.${host}`, JSON.stringify([cwd, ...recentRemoteDirs(host).filter((d) => d !== cwd)].slice(0, 5)));
-  const [remotePick, setRemotePick] = useState<{ host: string; api: Api; machine: string; roots: string[]; selected: string; choose: (cwd: string) => void } | null>(null);
+  /** While set, the roots dialog stands in for the picker: its rows, with each root's own remove flag. */
+  const [remotePick, setRemotePick] = useState<{ host: string; api: Api; machine: string; roots: string[]; selected: string; manage: Array<{ path: string; removable: boolean }> | null; choose: (cwd: string) => void } | null>(null);
   // Instances on the other machines, for a collaboration led from this hub: each with that machine's folders.
   const [remoteAgents, setRemoteAgents] = useState<Array<AgentInfo & { host: string; directories: string[] }>>([]);
   useEffect(() => {
@@ -652,6 +730,17 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     })).then((lists) => { if (alive) setRemoteAgents(lists.flat()); });
     return () => { alive = false; };
   }, [token, hostId, hostsKey, api]);
+  /** A machine's folder list changed from the page: the open picker and every cached agent of that
+      machine carry it on, so the next picker starts from the fresh list instead of a stale copy. */
+  const applyRemoteWorkdirs = useCallback((host: string, config: WorkdirsConfig) => {
+    setRemotePick((p) => (p && p.host === host ? { ...p, roots: config.workdirs } : p));
+    setRemoteAgents((list) => withWorkdirs(list, host, config));
+  }, []);
+  /** The machine's own rows for the roots dialog, which then stands in for the picker until closed. */
+  const openRemoteRoots = (host: string, config: WorkdirsConfig) => {
+    applyRemoteWorkdirs(host, config);
+    setRemotePick((p) => (p && p.host === host ? { ...p, manage: rootRows(config) } : p));
+  };
   /** Bumped by daemon broadcasts, so the open plan page reloads. */
   const [personal, setPersonal] = useState<PersonalSettings | null>(null);
   const [personalError, setPersonalError] = useState('');
@@ -859,6 +948,10 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const [observabilityFocus, setObservabilityFocus] = useState<string | undefined>(undefined);
   // Bumped on every visit so the page opens on the requested tab, even when it is already showing.
   const [observabilityKey, setObservabilityKey] = useState(0);
+  // Bumped on every visit so the page opens on its list, even when it is already showing.
+  const [machineKey, setMachineKey] = useState(0);
+  /** The thread the machines page was opened from; the browser's back returns to it. */
+  const machinesOrigin = useRef<string | null>(null);
   /** Other agent CLIs found on this host, added from the settings menu — not the picker. */
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [onboardOpen, setOnboardOpen] = useState(false);
@@ -1063,6 +1156,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const onActivity = view === 'activity' && !selectedId;
   const onAgents = view === 'agents' && !selectedId;
   const onObservability = view === 'observability' && !selectedId;
+  const onMachines = view === 'machines';
   const onTeams = view === 'teams' && !selectedId;
   const onSkills = view === 'skills' && !selectedId;
   const onMcp = view === 'mcp' && !selectedId;
@@ -1072,7 +1166,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const extOpen = onExt && extensions && extTarget ? resolveExtensionRoute(extTarget, extensions) : null;
   const extName = extOpen ? extensions?.find((e) => e.manifest.id === extOpen.extensionId)?.manifest.name[locale()] ?? extOpen.extensionId : '';
   /** The name of the page the main area shows instead of a thread, for the top bar; null on a thread. */
-  const viewTitle = onSettings ? t('sidebar.settings') : onDesk ? t('desk.title') : onObservability ? t('obs.title') : onAgents ? t('agents.title') : onTeams ? t('teams.title') : onTodos
+  const viewTitle = onSettings ? t('sidebar.settings') : onDesk ? t('desk.title') : onObservability ? t('obs.title') : onMachines ? t('hosts.machines') : onAgents ? t('agents.title') : onTeams ? t('teams.title') : onTodos
     ? t('todos.title')
     : onSchedules
       ? t('sidebar.schedules')
@@ -1135,12 +1229,12 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const extWant = onExt ? (extOpen ? extensionHash(extOpen) : extTarget ?? '') : '';
   useEffect(() => {
     if (threadLink) return;
-    const want = onSettings ? `#/settings${settingsPath ? `/${settingsPath}` : ''}` : onDesk ? DESK_HASH : onObservability ? OBSERVABILITY_HASH : onAgents ? AGENTS_HASH : onTeams ? TEAMS_HASH : onTodos ? TODOS_HASH : onSchedules ? `${SCHEDULES_HASH}${schedulePath ? `/${schedulePath}` : ''}` : onActivity ? ACTIVITY_HASH : onSkills ? SKILLS_HASH : onMcp ? MCP_HASH : onExtensions ? EXTENSIONS_HASH : extWant;
+    const want = onSettings ? `#/settings${settingsPath ? `/${settingsPath}` : ''}` : onDesk ? DESK_HASH : onObservability ? OBSERVABILITY_HASH : onMachines ? `${MACHINES_HASH}${machinePath ? `/${machinePath}` : ''}` : onAgents ? AGENTS_HASH : onTeams ? TEAMS_HASH : onTodos ? TODOS_HASH : onSchedules ? `${SCHEDULES_HASH}${schedulePath ? `/${schedulePath}` : ''}` : onActivity ? ACTIVITY_HASH : onSkills ? SKILLS_HASH : onMcp ? MCP_HASH : onExtensions ? EXTENSIONS_HASH : extWant;
     if (window.location.hash !== want) {
       window.history.replaceState(window.history.state, '', want || window.location.pathname + window.location.search);
     }
     appHref.current = window.location.pathname + window.location.search + window.location.hash;
-  }, [schedulePath, onSettings, settingsPath, onDesk, onObservability, onAgents, onTeams, onTodos, onActivity, onSkills, onSchedules, onMcp, onExtensions, extWant, threadLink]);
+  }, [schedulePath, machinePath, onSettings, settingsPath, onDesk, onObservability, onMachines, onAgents, onTeams, onTodos, onActivity, onSkills, onSchedules, onMcp, onExtensions, extWant, threadLink]);
 
   // Whether the directory a new thread would start in is a git repository. Asked once per directory picked.
   useEffect(() => {
@@ -1186,6 +1280,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
         if (next !== 'settings') setSelectedId(null);
         setView(next);
         if (next === 'schedules') setSchedulePath(hash.startsWith('#/schedules/') ? hash.slice('#/schedules/'.length) : '');
+      if (next === 'machines') setMachinePath(hash.startsWith('#/machines/') ? hash.slice('#/machines/'.length) : '');
         if (next === 'settings') setSettingsPath(hash.replace(/^#\/settings\/?/, ''));
         if (next === 'ext') setExtTarget(hash);
         setDrawer(false);
@@ -2150,6 +2245,11 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       return true;
     }
     if (onSchedules && schedulePath) { openSchedules(''); return true; }
+    if (onMachines) {
+      if (machinePath) { openMachines(''); return true; }
+      setView('thread'); setSelectedId(machinesOrigin.current);
+      return true;
+    }
     if (compact) { setDrawer(true); return true; }
     return false;
   };
@@ -2220,6 +2320,16 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     setObservabilityFocus(focusAgent);
     setObservabilityKey((n) => n + 1);
     setView('observability');
+    setDrawer(false);
+  });
+
+  const openMachines = (path = '') => navigate(() => {
+    // Where the browser's back lands when the page itself is left: the thread it was opened from.
+    if (view !== 'machines') machinesOrigin.current = selectedId;
+    setSelectedId(null);
+    setMachinePath(path);
+    setMachineKey((n) => n + 1);
+    setView('machines');
     setDrawer(false);
   });
 
@@ -2340,7 +2450,6 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
 
   const importAgents = agents.filter((a) => a.available && a.capabilities.history);
   const agentLabel = (id: string) => agents.find((a) => a.id === id)?.label ?? id;
-  const agentAdapter = (id: string) => agents.find((a) => a.id === id)?.adapter;
   const capsOf = (id: string) => agents.find((a) => a.id === id)?.capabilities;
   const activeCaps = capsOf(activeAgent);
   const models = modelsByAgent[activeAgent] ?? [];
@@ -2718,13 +2827,19 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
 
   // Older daemons advertise /compact before they expose the dedicated capability.
   const canCompact = activeCaps?.compact ?? (commandsByKey[commandsKey] ?? []).some((command) => command.name === 'compact' && command.kind !== 'skill');
+  // The agent's own context breakdown command, when its list has one (Claude Code's /context).
+  const hasContextCommand = (commandsByKey[commandsKey] ?? []).some((command) => command.name === 'context' && command.kind !== 'skill');
 
   const right = (
     <>
       {selected && (timeline.usage || canCompact) && <UsageMeter
         key={selected.id}
         usage={timeline.usage}
+        sample={timeline.lastSample}
+        api={api}
+        threadId={selected.id}
         onCompact={canCompact ? () => send('/compact', []) : undefined}
+        onContext={hasContextCommand ? () => send('/context', []) : undefined}
         running={running}
         compactQueued={selected.queued?.some((message) => message.text.trim() === '/compact')}
         compactDisabled={(selected.queued?.length ?? 0) >= MAX_QUEUED}
@@ -2772,9 +2887,9 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       ...(!demo ? [
         { id: 'agents', label: t('agents.title'), icon: IconAgents, render: () => <AgentsPage api={api} agents={agents} onAdd={() => { setOnboardStep('results'); setOnboardOpen(true); }} onReload={reloadAgents} onLogin={openAgentLogin} /> },
         { id: 'teams', label: t('teams.title'), icon: IconAgents, render: () => <TeamsPage api={api} agents={agents} onReload={reloadTeams} /> },
-        { id: 'machines', label: t('hosts.machines'), icon: IconServer, render: () => <HostsPanel api={api} hosts={hosts} onChanged={reloadHosts} onClose={closeSettings} onError={handleError} /> },
         { id: 'skills', label: t('composerMenu.skills'), icon: IconSparkle, render: () => <SkillsPage api={api} token={token} hostId={hostId} hosts={hosts} agents={agents} onError={handleError} /> },
         { id: 'mcp', label: 'MCP', icon: IconGlobe, render: () => <McpPage api={api} token={token} hostId={hostId} hosts={hosts} agents={agents} onError={handleError} /> },
+        { id: 'machines', label: t('hosts.machines'), icon: IconServer, render: () => <HostsPanel api={api} token={token} hosts={hosts} onOpenUsage={machine => openMachines(machine ?? 'local')} onChanged={reloadHosts} onClose={closeSettings} onError={handleError} /> },
       ] : []),
       { id: 'extensions', label: t('extensions.title'), icon: IconPuzzle, render: () => <ExtensionsPage api={api} demo={demo} extensions={extensions} threads={threads} onReload={() => void reloadExtensions()} onChange={changeExtension} onOpenView={openExtensionView} onError={handleError} /> },
     ] },
@@ -2819,29 +2934,40 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       onPointerDownCapture={() => { startupPending.current = false; }}
       onKeyDownCapture={() => { startupPending.current = false; }}
     >
-      {remotePick && (
+      {remotePick && (remotePick.manage ? (
+        <RootsDialog
+          api={remotePick.api}
+          roots={remotePick.manage}
+          machine={remotePick.machine}
+          onChange={(config) => openRemoteRoots(remotePick.host, config)}
+          onCancel={() => setRemotePick((p) => (p ? { ...p, manage: null } : p))}
+        />
+      ) : (
         <DirectoryPicker
           api={remotePick.api}
           roots={remotePick.roots}
           selected={remotePick.selected}
           machine={remotePick.machine}
-          onRootsChange={(config) => setRemotePick((p) => (p ? { ...p, roots: config.workdirs } : p))}
-          onManageRoots={() => setRemotePick(null)}
+          onRootsChange={(config) => applyRemoteWorkdirs(remotePick.host, config)}
+          onManageRoots={() => {
+            // The dialog needs each root's own remove flag, so the machine is asked before it opens;
+            // a machine that cannot answer leaves the picker standing with the error said.
+            void remotePick.api.workdirs().then((config) => openRemoteRoots(remotePick.host, config)).catch(handleError);
+          }}
           onSelect={(cwd) => { rememberRemoteDir(remotePick.host, cwd); remotePick.choose(cwd); }}
           onClose={() => setRemotePick(null)}
         />
-      )}
-      {showDirPicker && (
+      ))}
+      {/* The roots dialog stands in for the picker it was opened from, the way it does remotely;
+          from the project menu it still stands alone, with no picker behind it. */}
+      {showDirPicker && projectDialog !== 'roots' && (
         <DirectoryPicker
           api={api}
           roots={workdirs}
           selected={draftCwd}
           machine={host?.label ?? (hostId ? t('app.remoteMachine') : t('hosts.local'))}
           onRootsChange={applyWorkdirs}
-          onManageRoots={() => {
-            setShowDirPicker(false);
-            setProjectDialog('roots');
-          }}
+          onManageRoots={() => setProjectDialog('roots')}
           onSelect={(cwd) => {
             setDraftCwd(cwd);
             setDraftScratch(false);
@@ -2896,12 +3022,21 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           ].sort((a, b) => (a.hostId === null ? -1 : b.hostId === null ? 1 : hosts.findIndex((h) => h.id === a.hostId) - hosts.findIndex((h) => h.id === b.hostId))) : null}
           onAll={keepThreads && hosts.length > 0 ? () => setAllHosts(true) : undefined}
           onOpenElsewhere={onHost && ((id, thread) => onHost(id, { thread }))}
+          external={externalSessions}
+          externalState={externalState}
+          onImportExternal={importExternal}
+          importingExternal={importingExternal}
+          externalError={externalError}
+          moreExternal={externalCursor !== null}
+          onLoadMoreExternal={loadMoreExternal}
           onHide={compact ? undefined : toggleSidebar}
           onThreadMenu={threadActions.openThreadMenu}
           onSectionMenu={threadActions.openSectionMenu}
           onNewSection={threadActions.newSection}
           onOpenTodos={showcase ? undefined : openTodos}
           todosActive={onTodos}
+          onOpenMachines={showcase ? undefined : () => openMachines()}
+          machinesActive={onMachines}
           onOpenDesk={showcase ? undefined : () => openDesk()}
           deskActive={onDesk || onRouterThread}
           petBust={petBust}
@@ -3102,6 +3237,17 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
               <div className="loading-note">{t('common.loading')}</div>
             )}
           </div>
+        ) : onMachines ? (
+          <div key="machines" className="scroller">
+            <MachineUsagePage
+              key={`${hostId ?? 'local'}:${machineKey}`}
+              api={api}
+              token={token}
+              hosts={hosts}
+              open={machinePath}
+              onOpen={openMachines}
+            />
+          </div>
         ) : onObservability ? (
           <div key="observability" className="scroller">
             <ObservabilityPage
@@ -3193,7 +3339,8 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           {selected ? (
             <MergedHistory
               key={`${handoverHistoryKey(selected, threads)}:${mergedHandover}`}
-              api={api} thread={selected} merged={mergedHandover} ready={historyReady} agentLabel={agentLabel} agentAdapter={agentAdapter}
+              api={api} thread={selected} merged={mergedHandover} ready={historyReady} agentLabel={agentLabel}
+              laterOf={viewingEarlier && latestSegment ? thread => nextSegment(thread, latestSegment, threads) : undefined}
               onOpenFinds={onRouterThread ? () => openDesk(true) : undefined}
               onBrowseOlder={() => { stickToBottom.current = false; setAtBottom(false); }}
               canFork={thread => ({ enabled: Boolean(thread.agentSessionId && capsOf(thread.agent)?.fork), any: Boolean(capsOf(thread.agent)?.forkAt) })}
@@ -3231,6 +3378,8 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
               // body's footer can offer to go there — the person's own navigation, nothing sideways.
               memberThreadId={coordination ? (name) => coordination.members.find(m => m.name === name)?.id ?? null : undefined}
               onOpenMemberThread={(id) => {
+                // A member on another machine has its thread there; the member panel reads it from that machine.
+                if (coordination?.members.find(m => m.id === id)?.host) { setAgentsStart(id); setAgentsOpen(true); setFiles(null); return; }
                 const known = threads.find(t => t.id === id);
                 if (known) { openThread(known); return; }
                 if (api) void api.thread(id).then(openThread).catch(handleError);
@@ -3333,7 +3482,9 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           mentionExtra={(m) => { const a = agents.find((v) => v.id === m.id); return a ? memberModel(a) : null; }}
           onBrowseMentionDir={(m, choose) => {
             const a = remoteAgents.find((v) => v.id === m.id);
-            if (a && token) setRemotePick({ host: a.host, api: new Api(token, '', a.host), machine: hosts.find((h) => h.id === a.host)?.label ?? a.host, roots: a.directories, selected: m.cwd ?? '', choose });
+            // With no folder chosen yet, the picker opens where that machine was last left, the way
+            // the new-thread picker opens in the draft's folder — mid-browse, not at the roots list.
+            if (a && token) setRemotePick({ host: a.host, api: new Api(token, '', a.host), machine: hosts.find((h) => h.id === a.host)?.label ?? a.host, roots: a.directories, selected: m.cwd ?? recentRemoteDirs(a.host)[0] ?? '', manage: null, choose });
           }}
           mentionDirectories={coordination?.directories ?? (collaborationDirectories.length ? collaborationDirectories : [activeCwd])}
           onStop={stop}

@@ -231,17 +231,17 @@ export function DirectoryPicker({ api, allowedOnly = false, defaultDirectory, ro
                 <span>{folder.name}</span>
                 {at === null && <small>{folder.path}</small>}
               </button>
-              {at !== null && (
-                <button
-                  type="button"
-                  className="project-browser-enter"
-                  aria-label={t('dir.enter', folder.name)}
-                  title={t('dir.enter', folder.name)}
-                  onClick={() => navigate(folder.path)}
-                >
-                  <IconChevron size={13} />
-                </button>
-              )}
+              {/* The chevron steps in from wherever the list stands — at the roots view too, so
+                  browsing starts with a tap instead of only by typing an address. */}
+              <button
+                type="button"
+                className="project-browser-enter"
+                aria-label={t('dir.enter', folder.name)}
+                title={t('dir.enter', folder.name)}
+                onClick={() => navigate(folder.path)}
+              >
+                <IconChevron size={13} />
+              </button>
             </div>
           ))}
           {(at === null || info) && shown.length === 0 && <p className="project-browser-note">{word ? t('dir.noMatch') : t('dir.empty')}</p>}

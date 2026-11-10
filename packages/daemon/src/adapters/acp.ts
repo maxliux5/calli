@@ -55,6 +55,8 @@ const RATE_LIMIT_KINDS: Record<string, { label: string; scope?: string; modelIds
   seven_day: { label: '7D' },
   seven_day_opus: { label: '7D', scope: 'Opus', modelIds: ['opus'] },
   seven_day_sonnet: { label: '7D', scope: 'Sonnet', modelIds: ['sonnet'] },
+  // Fable's share of the weekly pool (a sub-cap inside seven_day, not a separate allowance).
+  seven_day_overage_included: { label: '7D', scope: 'Fable', modelIds: ['fable'] },
 };
 
 const percent = (v: unknown): number | null => {

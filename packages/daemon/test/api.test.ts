@@ -16,6 +16,7 @@ import { PiRpcAdapter } from '../src/adapters/pi.js';
 import type { AgentAdapter } from '../src/adapters/types.js';
 import { AttachmentStore, sniffImageType, sniffSvg } from '../src/attachments.js';
 import { createHttpServer, tokenMatches } from '../src/http.js';
+import { LocalSessions } from '../src/local-sessions.js';
 import { Store } from '../src/store.js';
 import { matchTurns, ThreadManager } from '../src/threads.js';
 import { contentHash } from '../src/writing.js';
@@ -475,7 +476,7 @@ test('model and command lists are served per agent; unknown agents are 404', asy
   const models = (await (await api('/api/agents/claude/models')).json()) as Array<{ id: string }>;
   assert.deepEqual(models.map((m) => m.id), ['default', 'big', 'small', 'broken']);
   const commands = (await (await api('/api/agents/claude/commands')).json()) as Array<{ name: string }>;
-  assert.deepEqual(commands.map((c) => c.name), ['compact', 'review', 'goal', 'cost', 'stats']);
+  assert.deepEqual(commands.map((c) => c.name), ['compact', 'review', 'goal', 'cost', 'stats', 'context']);
   assert.equal((await api('/api/agents/nope/models')).status, 404);
 });
 
@@ -1090,6 +1091,55 @@ test('import: a session with no title is named after its first message', async (
   const res = await api('/api/threads/import', { method: 'POST', body: JSON.stringify({ agent: 'claude', sessionId: 'hist-c' }) });
   assert.equal(res.status, 201);
   assert.equal(((await res.json()) as { title: string }).title, 'first question');
+});
+
+test('local sessions: listed as external rows, and an import turns one into a normal thread', async () => {
+  // A second server over the same manager, carrying the local-session scanner; the page's list
+  // comes from its cache, not from starting an agent per request.
+  const adapters = new Map<string, AgentAdapter>();
+  adapters.set('claude', new ClaudeAcpAdapter([process.execPath, join(here, 'fixtures', 'fake-acp.mjs')]));
+  const scanner = new LocalSessions({
+    adapters,
+    workdirs: () => [workdir],
+    importedSessions: () => store.agentSessionOwners(),
+    instances: () => [{ id: 'claude', hidden: false, store: 'claude:' }],
+  });
+  await scanner.scan();
+  const srv = createHttpServer({ manager, token: TOKEN, webDir: null, version: 'test', localSessions: scanner });
+  try {
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+    const root = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+    const call = async (path: string) => fetch(root + path, { headers: auth });
+
+    // hist-b is a thread already (imported above); hist-a became one too. hist-elsewhere is
+    // outside the workdirs. What is left of the fake agent's sessions: the undated hist-c… which
+    // the import just above also took. Everything the scan began with is accounted for.
+    const page = await (await call('/api/local-sessions?limit=100')).json() as { sessions: Array<{ sessionId: string; agent: string }>; nextCursor: string | null };
+    for (const row of page.sessions) {
+      assert.equal(store.findThreadByAgentSession(row.agent, row.sessionId), null, `${row.sessionId} is not a thread`);
+      assert.notEqual(row.sessionId, 'hist-elsewhere', 'outside the allowed directories');
+    }
+
+    // A fresh session shows up, imports through the same endpoint the page uses, and leaves the
+    // external list for the threads list.
+    writeFileSync(process.env.FAKE_ACP_SESSIONS_FILE!, JSON.stringify([
+      { sessionId: 'hist-external', cwd: workdir, title: 'From a terminal', updatedAt: '2026-03-05T09:00:00.000Z' },
+    ]));
+    await scanner.scan();
+    const listed = await (await call('/api/local-sessions')).json() as { sessions: Array<{ sessionId: string }> };
+    assert.deepEqual(listed.sessions.map((s) => s.sessionId), ['hist-external']);
+    const made = await fetch(`${root}/api/threads/import`, {
+      method: 'POST', headers: auth, body: JSON.stringify({ agent: 'claude', sessionId: 'hist-external' }),
+    });
+    assert.equal(made.status, 201);
+    const thread = await made.json() as { id: string };
+    const after = await (await call('/api/local-sessions')).json() as { sessions: Array<{ sessionId: string }> };
+    assert.deepEqual(after.sessions, [], 'no longer external');
+    const threads = await (await call('/api/threads')).json() as Array<{ id: string }>;
+    assert.ok(threads.some((t) => t.id === thread.id), 'listed as the thread it became');
+  } finally {
+    srv.close();
+  }
 });
 
 test('import: pi sessions are found from its files and imported with tool calls and pictures', async () => {

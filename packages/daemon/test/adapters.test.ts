@@ -318,7 +318,7 @@ test('ClaudeAcpAdapter: model list and slash commands come from the agent', asyn
   assert.equal(models[1].description, 'For hard work');
   assert.equal(await adapter.models(), models, 'the probe runs once and is cached');
   // What the agent announced, then the commands it answers without announcing them.
-  assert.deepEqual((await adapter.commands()).map((c) => c.name), ['compact', 'review', 'goal', 'cost', 'stats']);
+  assert.deepEqual((await adapter.commands()).map((c) => c.name), ['compact', 'review', 'goal', 'cost', 'stats', 'context']);
 });
 
 test('ClaudeAcpAdapter: permission mode, model and effort are applied when the native session starts', async (t) => {
@@ -454,7 +454,7 @@ test('ClaudeAcpAdapter: commands keep the argument hint and are tracked per dire
   assert.deepEqual(commands[0], { name: 'compact', description: 'Summarise the conversation', hint: '<instructions>' });
   assert.equal('hint' in commands[1], false);
   // A directory with no session yet falls back to a known list instead of nothing.
-  assert.deepEqual((await adapter.commands('/somewhere/else')).map((c) => c.name), ['compact', 'review', 'goal', 'cost', 'stats']);
+  assert.deepEqual((await adapter.commands('/somewhere/else')).map((c) => c.name), ['compact', 'review', 'goal', 'cost', 'stats', 'context']);
   await session.close();
 });
 
@@ -954,7 +954,7 @@ test('formatPiCompact and formatPiStats cope with partial answers', () => {
 test('Claude: commands it answers but does not announce are added, once', () => {
   assert.deepEqual(withUnlistedCommands([]), [], 'nothing known yet');
   const listed = [{ name: 'compact', description: '' }, { name: 'stats', description: 'already there' }];
-  assert.deepEqual(withUnlistedCommands(listed).map((c) => c.name), ['compact', 'stats', 'goal', 'cost']);
+  assert.deepEqual(withUnlistedCommands(listed).map((c) => c.name), ['compact', 'stats', 'goal', 'cost', 'context']);
 });
 
 // TRAE CLI speaks ACP too (see acp.ts); these tests cover what is its own. The fake agent takes

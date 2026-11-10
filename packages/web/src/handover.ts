@@ -17,6 +17,20 @@ export function latestHandoverThread(thread: Thread, threads: Thread[]): Thread 
   return (leaves.length ? leaves : candidates).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))[0] ?? thread;
 }
 
+/**
+ * The segment after `from` on the way to the chain's `latest` one: what reading an earlier segment
+ * goes on into. Branches that do not lead to `latest` are not part of the way.
+ */
+export function nextSegment(from: Thread, latest: Thread, threads: Thread[]): Thread | undefined {
+  const byId = new Map(threads.map(item => [item.id, item]));
+  const seen = new Set<string>();
+  for (let at: Thread | undefined = latest; at && !seen.has(at.id); at = at.handover?.mode === 'continue' ? byId.get(at.handover.sourceId) : undefined) {
+    seen.add(at.id);
+    if (at.handover?.mode === 'continue' && at.handover.sourceId === from.id) return at;
+  }
+  return undefined;
+}
+
 /** Reset loaded ancestors when the daemon changes a relation anywhere on the visible path. */
 export function handoverHistoryKey(thread: Thread | undefined, threads: Thread[]): string {
   const seen = new Set<string>();

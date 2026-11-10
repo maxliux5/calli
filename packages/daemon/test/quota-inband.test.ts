@@ -27,10 +27,12 @@ test('a rate_limit_event becomes quota windows, unknown kinds stay as they are',
       five_hour: { utilization: 0.9, resetsAt: now + 3600 },
       seven_day: { utilization: 0.42, resetsAt: now + 86400 },
       seven_day_opus: { utilization: 0.71 },
+      seven_day_overage_included: { utilization: 0.05 },
     },
   })!;
   assert.deepEqual(quota.windows.map(w => [w.label, w.scope, w.usedPercent]).sort((a, b) => a[2] - b[2]),
-    [['5H', undefined, 90], ['7D', undefined, 42], ['7D', 'Opus', 71]].sort((a, b) => a[2] - b[2]));
+    [['5H', undefined, 90], ['7D', undefined, 42], ['7D', 'Opus', 71], ['7D', 'Fable', 5]].sort((a, b) => a[2] - b[2]));
+  assert.deepEqual(quota.windows.find(w => w.scope === 'Fable')?.modelIds, ['fable'], 'the Fable pool is scoped to Fable models');
   assert.ok(quota.windows[0].resetsAt && Date.parse(quota.windows[0].resetsAt) > Date.now());
   // A rejection about a window it did not itemize counts as that window being full.
   const rejected = acpRateLimitQuota({ status: 'rejected', rateLimitType: 'seven_day_sonnet', resetsAt: now + 7200 })!;

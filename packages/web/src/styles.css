@@ -68,6 +68,11 @@
   --chart-2: #eb6834;
   --chart-3: #4a3aa7;
   --chart-4: #e34948;
+  /* The machine token charts' four kinds, in stacking order (validated as a set; see THIRD_PARTY_NOTICES.md). */
+  --usage-input: #2a78d6;
+  --usage-output: #eb6834;
+  --usage-cache-write: #6250d6;
+  --usage-cache-read: #1baf7a;
   --user-bg: #eceae4;
   --positive-bg: #e6f3eb;
   --lightbox: rgba(18, 17, 16, 0.9);
@@ -157,6 +162,10 @@
     --chart-2: #d95926;
     --chart-3: #9085e9;
     --chart-4: #e66767;
+    --usage-input: #3987e5;
+    --usage-output: #d95926;
+    --usage-cache-write: #9085e9;
+    --usage-cache-read: #199e70;
     --user-bg: #2f2d2a;
   --positive-bg: #1d3327;
   --lightbox: rgba(0, 0, 0, 0.92);
@@ -218,6 +227,10 @@
   --chart-2: #d95926;
   --chart-3: #9085e9;
   --chart-4: #e66767;
+  --usage-input: #3987e5;
+  --usage-output: #d95926;
+  --usage-cache-write: #9085e9;
+  --usage-cache-read: #199e70;
   --user-bg: #2f2d2a;
   --positive-bg: #1d3327;
   --lightbox: rgba(0, 0, 0, 0.92);
@@ -1271,6 +1284,41 @@ html.list-open body {
 
 .thread-note.waiting { color: var(--warn); }
 .thread-note.error { color: var(--danger); }
+.thread-note.external { color: var(--muted); }
+
+/* A conversation the agent already has, sitting among the threads until someone opens it. The
+   title reads like any thread's; what is quieted is the trim — the agent mark is faded and a
+   small dot at the row's end says it is on disk, not a thread yet. */
+.thread-row.external .thread-meta :is(.agent-mark, .agent-tag) {
+  opacity: .5;
+}
+
+.thread-row.external .external-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--faint);
+  margin-left: 6px;
+  flex: none;
+}
+
+/* Asking for the next page of the machine's sessions: where the list ended. */
+.sidebar-more-sessions {
+  display: block;
+  margin: 2px 10px 10px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.sidebar-more-sessions:hover {
+  background: var(--hover);
+  color: var(--text);
+}
 
 /* Which agent runs a thread matters less than what the thread is: the mark stays out of the way. */
 .thread-meta .agent-mark { opacity: 0.7; }
@@ -2136,7 +2184,7 @@ html.list-open body {
 .exhausted-note { display: flex; flex-direction: column; align-items: center; margin: 6px 0; }
 .exhausted-line {
   display: flex; align-items: center; gap: 14px; align-self: stretch;
-  color: var(--danger); font-size: 13.5px; font-weight: 550;
+  color: color-mix(in srgb, var(--warn) 70%, var(--muted)); font-size: 13.5px; font-weight: 550;
 }
 .exhausted-line::before,
 .exhausted-line::after { content: ''; flex: 1; height: 1px; background: var(--border); }
@@ -2458,9 +2506,101 @@ html.list-open body {
 .composer-bar .composer-permission { width: 40px; height: 40px; flex: none; }
 .composer-voice { flex: none; }
 .composer-bar > .pop:has(> .usage) { flex: none; }
-.pop-panel.anchored-pop.context-usage-panel { width: min(320px, calc(100vw - 24px)); }
+.pop-panel.anchored-pop.context-usage-panel { width: min(340px, calc(100vw - 24px)); }
 .context-usage-panel.high .context-percent { color: var(--warn); }
 .context-percent { float: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+
+/* The window bar under the headline, in the ring's own colours: the fill is the theme's quiet
+   foreground, the track is what is left; a nearly full window turns the fill warning-coloured. */
+.context-usage-panel .usage-bar {
+  display: flex;
+  height: 6px;
+  margin: 0 10px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  overflow: hidden;
+}
+
+.context-usage-panel .usage-bar-fill {
+  border-radius: inherit;
+  background: var(--muted);
+  transition: width 0.2s ease;
+}
+
+.context-usage-panel.high .usage-bar-fill { background: var(--warn); }
+
+/* What the latest model request was made of, one hue per part. The colours come from the chart
+   set, so every palette keeps a set that was validated together. */
+.context-usage-panel .usage-compose {
+  display: flex;
+  gap: 1px;
+  height: 5px;
+  margin: 0 10px 6px;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+
+.context-usage-panel .usage-compose > div { min-width: 2px; }
+.usage-compose .s-read, .usage-swatch.s-read { background: var(--chart-1); }
+.usage-compose .s-write, .usage-swatch.s-write { background: var(--chart-2); }
+.usage-compose .s-uncached, .usage-swatch.s-uncached { background: var(--chart-3); }
+.usage-compose .s-output, .usage-swatch.s-output { background: var(--chart-4); }
+
+/* A legend row: colour chip, quiet label, the count with its share of the request on the right. */
+.context-usage-panel .usage-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 0 10px 8px;
+  font-size: 13px;
+}
+
+.context-usage-panel .usage-legend-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.usage-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 3px;
+  flex: none;
+  align-self: center;
+}
+
+.usage-legend-label { color: var(--muted); }
+.usage-legend-value {
+  margin-left: auto;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.usage-legend-share,
+.usage-legend-note {
+  margin-left: 6px;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+/* The session totals arrive a moment after the panel opens; placeholders hold the rows' room. */
+.context-usage-panel .usage-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 8px 10px 10px;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.context-usage-panel .usage-skeleton-row {
+  height: 13px;
+  border-radius: var(--radius-sm);
+  background: var(--hover);
+}
+
+.context-usage-panel .usage-skeleton-row.wide { width: 55%; }
 
 /* On a phone, a running turn with an empty box leaves one line: add, write, stop. Touching the
    line is focus, and focus brings the whole box back before the keyboard can cover anything. */
@@ -2899,6 +3039,13 @@ a.pop-item {
   justify-content: space-between;
   gap: 8px;
   margin: -6px -8px 10px 0;
+}
+
+.project-dialog-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
 }
 
 .project-dialog-head .dialog-title {
@@ -10046,6 +10193,9 @@ div.file-card:hover { background: var(--surface); }
 .overview-foot { display: flex; align-items: center; gap: 6px; margin-top: 3px; padding: 6px 7px 0; color: var(--faint); font-size: 11px; }
 .overview-group + .overview-foot { border-top: 1px solid var(--border); }
 .overview-readings { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* The readings open the trace; they read as text and only say so when touched. */
+.overview-readings-link { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 2px; margin: -1px -2px; border: 0; border-radius: var(--radius-sm); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.overview-readings-link:hover { background: var(--hover); color: var(--text); }
 .overview-trace { flex: none; display: inline-flex; align-items: center; gap: 1px; margin-left: auto; padding: 2px 3px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
 .overview-trace:hover { background: var(--hover); color: var(--text); }
 /* One file's whole history, turned by turn: the path and its numbers stay on top while the diff
@@ -10414,7 +10564,8 @@ button.coord-row-name { cursor: pointer; }
 }
 
 .obs-chart-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; }
-.obs-chart-legend button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 0; border: 0; background: none; color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.obs-chart-legend button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 0; border: 0; background: none; color: var(--text); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.obs-chart-legend em { white-space: nowrap; }
 .obs-chart-legend button[aria-pressed="false"] { opacity: .45; text-decoration: line-through; }
 .obs-chart-legend button:disabled { cursor: default; }
 .obs-chart-legend i, .obs-chart-tip-row i { width: 16px; border-top-width: 2px; flex-shrink: 0; }
@@ -10428,6 +10579,113 @@ button.coord-row-name { cursor: pointer; }
 .obs-chart-table table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .obs-chart-table th, .obs-chart-table td { padding: 8px; text-align: right; border-bottom: 1px solid var(--border); font-weight: normal; }
 .obs-chart-table th:first-child { text-align: left; }
+
+/* ---------- Machine usage: the detail the machines list in settings opens ---------- */
+
+/* The legend's count, next to its kind's name. */
+.obs-chart-legend em { color: var(--muted); font-style: normal; font-variant-numeric: tabular-nums; }
+
+/* Today over every machine (persona's TodayTokens): a headline number with the share bar below. */
+.mu-today { display: flex; flex-direction: column; gap: 6px; padding: 18px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); margin-bottom: 16px; }
+.mu-today > span { color: var(--muted); font-size: 12px; }
+.mu-today > strong { font-size: 26px; font-weight: 550; letter-spacing: -.3px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mu-share-bar { display: flex; height: 8px; border-radius: var(--radius-pill); overflow: hidden; background: var(--hover); }
+.mu-share-bar i { background: var(--border-strong); min-width: 2px; }
+.mu-share-legend { display: flex; flex-wrap: wrap; gap: 2px 14px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.mu-share-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.mu-share-legend i { width: 10px; height: 10px; border-radius: 3px; background: var(--border-strong); flex-shrink: 0; }
+.mu-today small { color: var(--faint); font-size: 12px; }
+
+/* One machine: a card with today's tokens, the rate now, and the last hour's line. */
+.mu-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+.mu-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); text-align: left; cursor: pointer; font: inherit; color: var(--text); min-width: 0; }
+.mu-card:hover { background: var(--hover); }
+.mu-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.mu-card-head strong { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-card-head small { color: var(--muted); font-size: 12px; flex-shrink: 0; white-space: nowrap; }
+.mu-card-stat { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.mu-card-today { color: var(--muted); font-size: 12px; }
+.mu-card-today strong { display: block; color: var(--text); font-size: 20px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.mu-card-now { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; flex-shrink: 0; white-space: nowrap; }
+.mu-card-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.mu-spark { width: 100%; height: 36px; color: var(--chart-total); }
+.mu-spark path { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+
+/* The stacked kinds keep a 2px surface gap between them; offline stretches read as a flat grey. */
+.mu-stack { stroke: var(--surface); stroke-width: 2; stroke-linejoin: round; }
+.mu-offline { fill: var(--border); }
+.mu-chart-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; margin: 0; color: var(--muted); font-size: 12px; pointer-events: none; }
+
+/* One machine's detail: one filter row, then the charts beside the share lists. */
+.mu-detail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.mu-detail-head h2 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.2px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The back arrow rides the text's middle, not its shoulder. */
+.mu-detail-head .text-btn { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 8px; color: var(--muted); font-size: 13px; }
+/* One row however narrow: the range control and the two filters hold one line together. */
+.mu-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
+.mu-toolbar .obs-select { min-width: 0; }
+.mu-toolbar .obs-select span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.mu-toolbar .obs-select-brief { display: none; }
+/* The filters ride in Popover wrappers (.pop), which shrink in a flex row and clip their
+   buttons; held at their content's width the row scrolls as one instead. */
+.mu-toolbar .pop { flex: none; }
+.mu-range { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill); flex: none; }
+.mu-range button { border: 0; background: none; padding: 3px 10px; border-radius: var(--radius-pill); color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.mu-range button.selected { background: var(--active); color: var(--text); }
+.mu-detail { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
+.mu-charts { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.mu-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+/* The chart card's own top: the four numbers as one plain row (persona), no boxes of their own. */
+.mu-figures { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px 16px; padding: 2px 2px 12px; }
+.mu-figures span { display: block; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.mu-figures strong { font-size: 20px; font-weight: 550; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mu-head-side { display: inline-flex; align-items: center; gap: 12px; margin-left: auto; }
+/* The peak reads as one number with its moment; it never breaks inside itself. */
+.mu-peak { white-space: nowrap; }
+.mu-mode { display: inline-flex; gap: 2px; padding: 1px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill); }
+.mu-mode button { border: 0; background: none; padding: 2px 9px; border-radius: var(--radius-pill); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.mu-mode button.selected { background: var(--active); color: var(--text); }
+.mu-shares { padding: 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.mu-shares h3 { margin: 0 0 8px; font-size: 12px; font-weight: 550; color: var(--muted); }
+.mu-shares button { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 9px 10px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer; min-width: 0; }
+.mu-shares button:hover { background: var(--hover); }
+.mu-shares button.selected { background: var(--active); }
+.mu-share-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-share-numbers { display: flex; align-items: baseline; gap: 8px; flex-shrink: 0; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mu-share-numbers small { color: var(--muted); font-size: 11px; }
+/* The share lists while the report is on its way: rows of the same height, no text to be wrong. */
+.mu-share-skeleton { height: 34px; border-radius: var(--radius-sm); background: var(--hover); margin: 6px 0; }
+/* Both columns' first cards start flush with the grid's top edge (the chart card's own margin
+   would otherwise drop it below the share card beside it). */
+.mu-detail > * > :first-child { margin-top: 0; }
+.mu-today > strong.unknown { color: var(--faint); }
+/* The machine's own number on its row in the machines settings page: reading it is separate
+   from managing the machine, so it is a button of its own that opens the machines page. */
+.host-today { flex: none; min-width: 56px; text-align: right; padding: 4px 8px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; cursor: pointer; }
+.host-today:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.host-today:disabled { cursor: default; }
+@media (max-width: 900px) {
+  .mu-detail { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 480px) {
+  .mu-figures strong { font-size: 16px; }
+  /* Four kinds pair into two columns: one line would have to break a name to fit, and a name
+     is never broken. */
+  .mu-charts .obs-chart-legend { display: grid; grid-template-columns: repeat(2, minmax(0, max-content)); gap: 2px 12px; }
+  .mu-charts .obs-chart-legend button { gap: 4px; font-size: 11px; padding: 5px 0; }
+  .mu-charts .obs-chart-legend i { width: 12px; }
+  .mu-charts .obs-chart-legend em { font-size: 11px; }
+  /* The chart's title row keeps one line: the mode choice and the refresh. The peak reading
+     moves aside (the crosshair reads any moment on a tap). */
+  .mu-head-side .mu-peak { display: none; }
+  /* The filter row fits the screen: short labels, a closer gap, a smaller range control, the
+     refresh already in the chart's header. A picked value stays visible, cut with an ellipsis. */
+  .mu-toolbar { gap: 6px; }
+  .mu-range button { padding: 3px 7px; font-size: 11px; }
+  .mu-toolbar .obs-select { padding: 0 5px; font-size: 12px; }
+  .mu-toolbar .obs-select-text { display: none; }
+  .mu-toolbar .obs-select-brief { display: inline; max-width: 60px; }
+}
 
 /* ---------- Plan document and the bottom sheet ---------- */
 
@@ -11878,9 +12136,19 @@ button.trace-step-head:hover { background: var(--hover); }
 .handover-divider { border: 0; background: none; font-family: inherit; text-align: left; cursor: pointer; width: 100%; }
 .handover-divider:hover { color: var(--text); }
 .handover-divider[aria-expanded="true"] svg:last-child { transform: rotate(90deg); }
-/* The segment boundary reads like the fork mark: a quiet green word between two hairlines. */
-.handover-boundary .handover-divider { display: flex; padding: 0; }
-.handover-boundary .handover-summary { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); font-size: 13px; line-height: 1.65; padding: 12px 0 12px 24px; border-left: 1px solid var(--border); }
+/* The segment boundary reads like the fork mark, a quiet word between two hairlines; under it what the
+   successor was given, folded like the plan in the conversation: one line, the whole text hung under a hairline. */
+.handover-card { margin: 2px 0 6px; }
+.handover-card-head { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: 13px; text-align: left; cursor: pointer; transition: color 0.12s; }
+.handover-card-head.placeholder { cursor: default; }
+@media (hover: hover) { .handover-card-head:hover { color: var(--text); } }
+.handover-card-head > svg { flex: none; margin-left: auto; }
+.handover-card-kind { flex: none; font-variant-numeric: tabular-nums; }
+.handover-card-preview { min-width: 0; flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); }
+.handover-card-body { max-height: min(420px, 55dvh); overflow: auto; margin: 4px 0 6px 6px; padding: 2px 0 2px 13px; border-left: 1px solid var(--border); color: var(--muted); font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+.handover-card-body .markdown { font-size: 13px; line-height: 1.65; }
+.handover-card-empty { padding: 2px 0 6px; color: var(--faint); font-size: 12.5px; text-align: center; }
+.chain-later { min-height: 28px; padding: 6px 0; color: var(--muted); font-size: 12px; text-align: center; }
 .chain-beginning { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 0; }
 .handover-readonly { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; max-width: var(--content-w); margin: 0 auto; padding: 8px 16px; color: var(--muted); font-size: 12px; }
 .handover-readonly-actions { display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-shrink: 0; }
@@ -11904,6 +12172,9 @@ button.trace-step-head:hover { background: var(--hover); }
 .auto-order-head strong { flex-shrink: 0; }
 .auto-order-head span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-size: 12px; }
 .auto-order-edit { padding: 0 0 16px; }
+.auto-order-edit .hint { margin: 0 0 12px; color: var(--muted); font-size: 12.5px; line-height: 1.65; }
+.auto-orders.single { margin-top: 0; max-height: none; overflow: visible; }
+.auto-orders.single section { border-top: 0; border-bottom: 1px solid var(--border); }
 .auto-order-edit ol { margin: 0 0 12px; padding: 0; list-style: none; }
 .auto-order-edit li { display: flex; align-items: center; gap: 8px; padding: 4px 0; color: var(--muted); }
 .auto-order-name { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -12674,6 +12945,10 @@ button.proactive-row-title:hover { color: var(--muted); }
 .pet > * { pointer-events: auto; }
 /* The thread list slides in over the desk on a phone; she stays with the desk. */
 body:has(.app.drawer-open) .pet { visibility: hidden; }
+/* A modal dialog has the screen: she would stand on it — .app's transform keeps the dialog's own
+   z-index inside .app's stacking context, below her in the page's root context — so she steps
+   away instead. A desk spread pile is modal too, but portaled out and below her on purpose. */
+body:has(.app .dialog-scrim) .pet { visibility: hidden; }
 .pet-back { --pet-w: 68px; }
 /* Where she stands, as her own left edge and how high her feet ride above the visual viewport bottom:
    outside .app, so with a phone keyboard up she rides above it too. */
@@ -14032,7 +14307,7 @@ body:has(.settings-page, .action-sheet) .pet { display: none; }
 .overview-panel .overview-plan .plan-entry { height: 30px; }
 .overview-foot { flex: none; height: 46px; box-sizing: border-box; margin-top: 3px; padding: 4px 7px 0; border-top: 1px solid var(--border); }
 .overview-readings { display: flex; flex-direction: column; line-height: 15px; }
-.overview-readings > span { height: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overview-readings > span, .overview-readings > .overview-readings-link { height: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .overview-status.failed { color: var(--warn); }
 .overview-refresh { flex: none; width: 30px; height: 30px; color: var(--muted); }
 /* A full list is a page in the main column; the conversation stays mounted underneath it. */
