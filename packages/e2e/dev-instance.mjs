@@ -19,6 +19,11 @@ const host = hostIndex >= 0 ? args[hostIndex + 1] : undefined;
 async function smoke(daemon) {
   const agents = await (await api(daemon, '/api/agents')).json();
   if (!agents.some((a) => a.id === 'pi' && a.available)) throw new Error('fake pi agent is not available');
+  // The test hub's agents are the fakes it was built with; anything else means this machine's
+  // real CLIs or accounts auto-joined it.
+  const builtIn = ['claude', 'pi', 'agy', 'traex', 'codex', 'zcode', 'dsh', 'doubao'];
+  const extra = agents.filter((a) => !builtIn.includes(a.id));
+  if (extra.length) throw new Error(`the test hub picked up agents beyond its fakes: ${extra.map((a) => a.id).join(', ')}`);
   const html = await fetch(daemon.base + '/');
   if (!html.ok) throw new Error(`GET / answered ${html.status}`);
 

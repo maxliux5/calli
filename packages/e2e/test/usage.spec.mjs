@@ -1,7 +1,8 @@
 // Context occupancy must survive reloads, shrink independently of billed totals, and clear when unknown.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startDaemon, openUi, api, launchBrowser, repoRoot } from '../harness.mjs';
 
@@ -22,17 +23,17 @@ after(async () => {
   await daemon?.stop();
 });
 
-async function makeThread(agent, title) {
-  const response = await api(daemon, '/api/threads', { method: 'POST', body: JSON.stringify({ agent, cwd: daemon.workdir, title }) });
+async function makeThread(hub, agent, title) {
+  const response = await api(hub, '/api/threads', { method: 'POST', body: JSON.stringify({ agent, cwd: hub.workdir, title }) });
   assert.equal(response.status, 201);
   return response.json();
 }
 
-async function send(thread, text) {
-  const response = await api(daemon, `/api/threads/${thread.id}/turns`, { method: 'POST', body: JSON.stringify({ text }) });
+async function send(hub, thread, text) {
+  const response = await api(hub, `/api/threads/${thread.id}/turns`, { method: 'POST', body: JSON.stringify({ text }) });
   assert.ok(response.ok);
   for (let i = 0; i < 100; i++) {
-    const current = await (await api(daemon, `/api/threads/${thread.id}`)).json();
+    const current = await (await api(hub, `/api/threads/${thread.id}`)).json();
     if (current.status !== 'running') {
       assert.equal(current.status, 'idle');
       return;
@@ -60,8 +61,8 @@ async function expectUsage(page, percent) {
 }
 
 test('Codex shows current context on desktop and phone in both themes, including after reload', async () => {
-  const thread = await makeThread('codex', 'context regression');
-  await send(thread, 'usage');
+  const thread = await makeThread(daemon, 'codex', 'context regression');
+  await send(daemon, thread, 'usage');
   for (const mobile of [false, true]) {
     for (const colorScheme of ['light', 'dark']) {
       const context = await browser.newContext({
@@ -115,7 +116,7 @@ test('Codex shows current context on desktop and phone in both themes, including
       }
     }
   }
-  await send(thread, 'usage compacted');
+  await send(daemon, thread, 'usage compacted');
   const context = await browser.newContext();
   try {
     const page = await context.newPage();
@@ -132,8 +133,8 @@ test('Codex shows current context on desktop and phone in both themes, including
 });
 
 test('Pi clears its previous context after compaction and measures it again after a response', async () => {
-  const thread = await makeThread('pi', 'pi context regression');
-  await send(thread, 'hello');
+  const thread = await makeThread(daemon, 'pi', 'pi context regression');
+  await send(daemon, thread, 'hello');
   const context = await browser.newContext();
   try {
     const page = await context.newPage();
@@ -156,11 +157,128 @@ test('Pi clears its previous context after compaction and measures it again afte
     await usage.click();
     await panel.getByText('暂未获取上下文用量，下一次响应后更新。', { exact: true }).waitFor();
     assert.equal(await meter.count(), 0, 'unknown context is not shown as a percentage');
-    await send(thread, 'hello again');
+    // A manual compact from the hub shows as the compaction tool row, not a native event, so the
+    // history line stays away here; the automatic path below covers it.
+    await send(daemon, thread, 'hello again');
     await expectUsage(page, 1);
     await meter.waitFor();
     assert.equal(await meter.innerText(), '1%');
   } finally {
     await context.close();
+  }
+});
+
+test('the context panel shows the request composition, session totals and the /context entry', async () => {
+  // A daemon of its own: the telemetry fixtures change the numbers the shared daemon asserts above.
+  // Claude's live usage needs a config dir the fixture can write and the adapter tails; both get
+  // the same scratch directory through the instance env.
+  const claudeConfig = mkdtempSync(join(tmpdir(), 'calli-claude-config-'));
+  const hub = await startDaemon({
+    CALLI_AGENTS_JSON: JSON.stringify({ agents: [
+      { id: 'pi', adapter: 'pi', command: [process.execPath, join(repoRoot, 'daemon', 'test', 'fixtures', 'fake-pi.mjs')] },
+      { id: 'claude', adapter: 'claude', command: [process.execPath, join(repoRoot, 'daemon', 'test', 'fixtures', 'fake-acp.mjs')],
+        env: { FAKE_LIVE_USAGE: '1', CLAUDE_CONFIG_DIR: claudeConfig } },
+    ] }),
+    FAKE_TELEMETRY: '1',
+  });
+  try {
+    const pi = await makeThread(hub, 'pi', 'panel composition');
+    await send(hub, pi, 'hello');
+    // A native automatic compaction: this is the path the history line counts.
+    await send(hub, pi, 'auto-compact');
+    const claude = await makeThread(hub, 'claude', 'panel entry');
+    await send(hub, claude, 'usage');
+    await send(hub, claude, 'live usage');
+
+    // Desktop: the composition of the latest request, what the daemon stored for the session,
+    // and the compact action — but no /context entry, because pi has no such command.
+    for (const colorScheme of ['light', 'dark']) {
+      const context = await browser.newContext({ viewport: { width: 1400, height: 900 }, colorScheme });
+      try {
+        const page = await context.newPage();
+        await openUi(page, hub);
+        await selectThread(page, pi, false);
+        const usage = await expectUsage(page, 1);
+        await usage.click();
+        const panel = page.locator('.context-usage-panel');
+        await panel.locator('.usage-bar-fill').waitFor();
+        const legend = panel.locator('.usage-legend-row');
+        await legend.nth(0).waitFor();
+        // input is normalized to include the cache, so the parts add up to the request's 170 tokens.
+        assert.deepEqual((await legend.allInnerTexts()).map((text) => text.replace(/\s+/g, '')), [
+          '缓存读取4023.5%',
+          '缓存写入105.8%',
+          '未缓存输入10058.8%',
+          '输出2011.7%含推理5',
+        ]);
+        assert.match(await panel.locator('.pop-sep', { hasText: '最近一次请求' }).innerText(), /最近一次请求 · fixture-model/);
+        await panel.locator('.pop-head-row', { hasText: '会话累计' }).waitFor();
+        await panel.locator('.pop-rows div', { hasText: '缓存命中' }).first().waitFor();
+        await panel.getByRole('button', { name: /压缩/ }).waitFor();
+        assert.equal(await panel.getByRole('button', { name: /\/context/ }).count(), 0, 'pi has no context command');
+        await panel.getByText(/本会话已压缩 1 次 · 上次 \d{2}:\d{2}（自动）/).waitFor();
+        const bounds = await panel.boundingBox();
+        assert.ok(bounds && bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= page.viewportSize().width + 1);
+        if (process.env.CALLI_E2E_SHOTS_DIR) {
+          mkdirSync(process.env.CALLI_E2E_SHOTS_DIR, { recursive: true });
+          await page.screenshot({ path: join(process.env.CALLI_E2E_SHOTS_DIR, `context-panel-desktop-${colorScheme}.png`) });
+        }
+      } finally {
+        await context.close();
+      }
+    }
+
+    // Phones in both themes: the same panel, clamped into the viewport.
+    for (const colorScheme of ['light', 'dark']) {
+      const phone = await browser.newContext({
+        viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, colorScheme,
+      });
+      try {
+        const page = await phone.newPage();
+        await openUi(page, hub);
+        await selectThread(page, pi, true);
+        const usage = await expectUsage(page, 1);
+        await usage.click();
+        const panel = page.locator('.context-usage-panel');
+        await panel.locator('.usage-legend-row').nth(0).waitFor();
+        await page.waitForTimeout(450);
+        const bounds = await panel.boundingBox();
+        assert.ok(bounds && bounds.x >= 0 && bounds.y >= 0
+          && bounds.x + bounds.width <= page.viewportSize().width + 1
+          && bounds.y + bounds.height <= page.viewportSize().height + 1);
+        if (process.env.CALLI_E2E_SHOTS_DIR) {
+          await page.screenshot({ path: join(process.env.CALLI_E2E_SHOTS_DIR, `context-panel-phone-${colorScheme}.png`) });
+        }
+      } finally {
+        await phone.close();
+      }
+    }
+
+    // Claude lists /context through the adapter's unlisted commands; the entry sends it as a turn.
+    const entry = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+    try {
+      const page = await entry.newPage();
+      await openUi(page, hub);
+      await selectThread(page, claude, false);
+      const usage = await expectUsage(page, 26);
+      await usage.click();
+      const panel = page.locator('.context-usage-panel');
+      const command = panel.getByRole('button', { name: /\/context/ });
+      await command.waitFor();
+      // The live session file gives request-level samples the panel composes.
+      await panel.locator('.pop-sep', { hasText: '最近一次请求' }).waitFor();
+      const sent = page.waitForRequest((request) => {
+        if (!new URL(request.url()).pathname.endsWith(`/api/threads/${claude.id}/turns`)) return false;
+        const body = JSON.parse(request.postData() ?? '{}');
+        return body.text === '/context';
+      });
+      await command.click();
+      await sent;
+      await panel.waitFor({ state: 'hidden' });
+    } finally {
+      await entry.close();
+    }
+  } finally {
+    await hub.stop();
   }
 });

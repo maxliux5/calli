@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { Section, Thread } from '../src/api.js';
-import { buildActivity, buildMerged, buildSidebar, clampSidebarWidth, handoverGroups, markTerms, navOverflow, defaultSidebarWidth, savedSidebarWidth, searchTerms, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, taggedAgents, threadAttention, type HostSource } from '../src/sidebar.js';
+import type { ExternalSession, Section, Thread } from '../src/api.js';
+import { buildActivity, buildMerged, buildSidebar, clampSidebarWidth, externalThreadRow, handoverGroups, markTerms, navOverflow, defaultSidebarWidth, savedSidebarWidth, searchTerms, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, taggedAgents, threadAttention, withExternalSessions, type HostSource } from '../src/sidebar.js';
 import { threadMark } from '../src/notices.js';
 
 let clock = 0;
@@ -309,4 +309,25 @@ test('the merged list puts every machine in one activity order, names where each
   assert.equal(model.count, 5, 'the member is under its lead, not a row of its own');
   assert.deepEqual(model.notes.map((n) => `${n.hostId}:${n.state}`), ['gpu:offline', 'new:loading'], 'a remembered list being refreshed needs no note');
   assert.deepEqual(buildMerged(sources, 'there', now, null).groups.flatMap((g) => g.items.map((i) => i.thread.id)), ['there']);
+});
+
+test("a machine's sessions mix into the list by their time, as threads of their directory", () => {
+  const session = (sessionId: string, cwd: string, at: string | null): ExternalSession =>
+    ({ agent: 'claude', sessionId, cwd, title: `terminal ${sessionId}`, updatedAt: at });
+  const newest = thread('n', { cwd: '/work/code', updatedAt: '2026-03-03T10:00:00Z' });
+  const oldest = thread('o', { cwd: '/work/code', updatedAt: '2026-03-01T10:00:00Z' });
+  const merged = withExternalSessions([newest, oldest], [
+    session('mid', '/work/code', '2026-03-02T10:00:00Z'),
+    session('other-dir', '/work/other', '2026-03-04T10:00:00Z'),
+    session('nodate', '/work/code', null),
+  ]);
+  // By time, whatever kind of row it is; undated sessions go last, as the daemon orders them.
+  assert.deepEqual(ids(merged), ['ext:claude:other-dir', 'n', 'ext:claude:mid', 'o', 'ext:claude:nodate']);
+  const model = buildSidebar(merged, [], '');
+  assert.deepEqual(model.projects.map((p) => [p.name, ids(p.threads)]), [['other', ['ext:claude:other-dir']], ['code', ['n', 'ext:claude:mid', 'o', 'ext:claude:nodate']]]);
+  // The row carries what a click needs to import it.
+  assert.equal(externalThreadRow(session('mid', '/w', null)).external?.sessionId, 'mid');
+  // Threads alone come through unchanged.
+  const alone = [newest];
+  assert.equal(withExternalSessions(alone, []), alone);
 });

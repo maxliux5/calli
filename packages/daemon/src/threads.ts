@@ -56,6 +56,7 @@ import { aggregateThreadStats, statsOfTrace, type ThreadStats, type TurnStatsRow
 import { askedText } from './util.js';
 import { MessageEdits } from './message-edits.js';
 import { addWorktree, countChanges, findCheckout, initRepository, removeWorktree, samePath, worktreeLeftovers, type Checkout, type Worktree } from './worktrees.js';
+import { isProbeSession } from './local-sessions.js';
 
 /** Why a copy cannot get a worktree of its own, said to whoever asked for one anyway. */
 const WORKTREE_REFUSALS = {
@@ -552,6 +553,7 @@ export class ThreadManager {
     const allowed = new Map<string, boolean>();
     const workdirs = this.workdirs;
     return sessions
+      .filter((s) => !isProbeSession(s.title))
       // A session whose directory has since been removed cannot be continued, so it is not offered.
       .filter((s) => {
         if (!allowed.has(s.cwd)) allowed.set(s.cwd, !!s.cwd && isWithinWorkdirs(s.cwd, workdirs) && isDirectory(s.cwd));
@@ -875,6 +877,7 @@ export class ThreadManager {
       turns,
       rows,
       tokens: this.store.telemetry.tokenSumsByTurn(threadId),
+      compactions: this.store.compactionSummary(threadId),
     });
   }
 

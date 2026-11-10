@@ -13,7 +13,6 @@ import {
   runSummary,
   splitThinking,
   splitUserQuote,
-  thinkingPreview,
   stepDurationLabel,
   stepStatusLabel,
   stepTitle,
@@ -81,6 +80,28 @@ test('terminal-only and repeated compactions survive replay with turn-scoped ide
   const entry = work[0].entries[0];
   assert.ok(entry.kind === 'compaction');
   assert.equal(compactionLabel(entry), '上下文已压缩');
+});
+
+test('the context panel data: usage readings and the latest request sample', () => {
+  const events = [
+    ev('usage.updated', { used: 1000, size: 200000 }),
+    // Turn samples summarize a whole turn and never pose as one request.
+    ev('usage.sample', { scope: 'turn', input: 900, output: 100 }),
+    ev('usage.sample', { scope: 'request', input: 500, cacheRead: 400, cacheWrite: 60, output: 40, reasoning: 10, model: 'fixture-model' }),
+    // A sample without a single valid number carries nothing and is ignored.
+    ev('usage.sample', { scope: 'update', input: 'junk', output: -5 }),
+    ev('context.compaction', { id: 'c1', status: 'completed', automatic: true }),
+    // An explicit unknown reading invalidates the measurement, e.g. after compaction.
+    ev('usage.updated', { used: null, size: 200000 }),
+  ];
+  const first = buildTimeline(events);
+  assert.equal(first.usage, null);
+  assert.deepEqual(first.lastSample, { scope: 'request', model: 'fixture-model', input: 500, cacheRead: 400, cacheWrite: 60, output: 40, reasoning: 10 });
+
+  // A later update sample takes over as the latest request reading.
+  const later = buildTimeline([...events, ev('usage.sample', { scope: 'update', output: 7 })]);
+  assert.deepEqual(later.lastSample, { scope: 'update', output: 7 });
+  assert.equal(later.usage, null);
 });
 
 test('collaboration turns expose their source and hide runtime instructions', () => {
@@ -668,16 +689,6 @@ test('a turn that says something and ends on a tool call still has an answer: it
   const [, work, answer] = tl.items;
   assert.deepEqual(work.kind === 'work' && work.entries.map((e) => e.kind), ['step']);
   assert.equal(answer.kind === 'assistant' && answer.text, '我来写文件。');
-});
-
-test('thinkingPreview shows where a long thought has got to, not where it began', () => {
-  assert.equal(thinkingPreview([]), '');
-  assert.equal(thinkingPreview(['first.', 'short last.']), 'short last.');
-  const long = `${'start of a long plan '.repeat(20)}and this is the end of it.`;
-  const preview = thinkingPreview(['earlier', long]);
-  assert.ok(preview.startsWith('…') && preview.endsWith('and this is the end of it.'));
-  assert.ok(preview.length < 160);
-  assert.ok(thinkingPreview(['思'.repeat(300)]).length <= 141, 'text without spaces is cut as it is');
 });
 
 test('a tool that finishes after text began still updates the row it started in', () => {
