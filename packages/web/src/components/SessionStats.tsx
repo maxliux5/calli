@@ -137,9 +137,9 @@ function whenLabel(ts: string): string {
   return at.toDateString() === new Date().toDateString() ? hm : `${formatDate(at, { month: 'short', day: 'numeric' })} ${hm}`;
 }
 
-/** The context panel's session totals: read once when the panel opens, then every three seconds
- *  while a turn runs. Errors keep the last reading; a placeholder keeps the rows' room while the
- *  first one is on its way, so the panel does not jump when it arrives. */
+/** The context panel's session totals, one compact block behind "Details": read once when it is
+ *  opened, then every three seconds while a turn runs. Errors keep the last reading; a placeholder
+ *  keeps the rows' room while the first one is on its way, so the panel does not jump. */
 export function ContextTotals({ api, threadId, active, label }: {
   api: Api | null;
   threadId: string;
@@ -170,23 +170,47 @@ export function ContextTotals({ api, threadId, active, label }: {
         <div className="usage-skeleton-row wide" />
         <div className="usage-skeleton-row" />
         <div className="usage-skeleton-row" />
-        <div className="usage-skeleton-row" />
-        <div className="usage-skeleton-row wide" />
       </div>
     );
   }
-  if (state.kind === 'failed') return <div className="pop-foot">{t('pickers.contextStatsFailed')}</div>;
-  const compactions = state.kind === 'ready' ? state.stats.compactions : undefined;
-  const history = compactions && compactions.count > 0 && compactions.last && whenLabel(compactions.last.ts)
-    ? <div className="pop-foot">{t('pickers.contextCompactions', compactions.count, whenLabel(compactions.last.ts), compactions.last.automatic)}</div>
-    : null;
-  if (state.kind !== 'ready') return <>{history ?? <div className="pop-foot">{t('pickers.contextNoTotals')}</div>}</>;
-  return <>
-    {state.stats.tokens
-      ? <TokenStatsPanel stats={state.stats} label={label} />
-      : <div className="pop-foot">{t('pickers.contextNoTotals')}</div>}
-    {history}
-  </>;
+  const stats = state.kind === 'ready' ? state.stats : null;
+  const tokens = stats?.tokens ?? null;
+  const compactions = stats?.compactions;
+  const n = (value: number | null | undefined) => (value != null ? value.toLocaleString('en-US') : null);
+  // Agents that only tally a native total (Codex's first notification shape) still get a number.
+  const total = tokens ? (tokens.input != null ? tokens.input + (tokens.output ?? 0) : tokens.total) : null;
+  const hit = tokens?.input ? (tokens.cacheRead != null ? tokens.cacheRead / tokens.input : null) : null;
+  const notes: string[] = [];
+  if (tokens && tokens.turnsWithout > 0) notes.push(t('stats.turnsWithout', tokens.turnsWithout));
+  if (compactions && compactions.count > 0 && compactions.last && whenLabel(compactions.last.ts)) {
+    notes.push(t('pickers.contextCompactions', compactions.count, whenLabel(compactions.last.ts), compactions.last.automatic));
+  }
+  return (
+    <>
+      <div className="usage-more-head">
+        {label}
+        {total != null && <span className="usage-more-total">{n(total)}</span>}
+      </div>
+      {tokens ? (
+        <dl className="usage-rows">
+          {hit != null && <div><dt>{t('stats.hit')}</dt><dd>{percentLabel(hit)}</dd></div>}
+          {tokens.input != null && tokens.cacheRead != null && tokens.cacheWrite != null
+            && <div><dt>{t('stats.uncached')}</dt><dd>{n(tokens.input - tokens.cacheRead - tokens.cacheWrite)}</dd></div>}
+          {tokens.cacheRead != null && <div><dt>{t('stats.cacheRead')}</dt><dd>{n(tokens.cacheRead)}</dd></div>}
+          {tokens.cacheWrite != null && <div><dt>{t('stats.cacheWrite')}</dt><dd>{n(tokens.cacheWrite)}</dd></div>}
+          {tokens.output != null && (
+            <div>
+              <dt>{t('stats.output')}</dt>
+              <dd>{n(tokens.output)}{tokens.reasoning ? <span className="pop-sub">{t('stats.inclReasoning', n(tokens.reasoning)!)}</span> : null}</dd>
+            </div>
+          )}
+        </dl>
+      ) : (
+        <div className="usage-more-note">{state.kind === 'failed' ? t('pickers.contextStatsFailed') : t('pickers.contextNoTotals')}</div>
+      )}
+      {notes.map((note) => <div key={note} className="usage-more-note">{note}</div>)}
+    </>
+  );
 }
 
 /**
