@@ -28,7 +28,10 @@ Do not combine --turn with --before or --turns. If calli is not on PATH, use "$C
 Handover commands are read-only and use CALLI_HANDOVER_SOCKET / CALLI_HANDOVER_KEY; collaboration is not required.
 calli team ls
 calli team run NAME|ID [--cwd DIR] --task-file FILE|-
-Team commands use CALLI_URL (or local CALLI_PORT) and CALLI_TOKEN.
+Team commands use CALLI_URL (or CALLI_HOST and CALLI_PORT) and CALLI_TOKEN.
+calli ask --text-file FILE|- [--timeout SECONDS]
+  Says the text to the personal assistant (Router) and waits for its reply, default 300 seconds.
+  Prints {threadId, reply}; reply is null when the assistant has not answered in time. Same credentials as team.
 FILE may be - for stdin. Reuse the request ID only when retrying the same request.
 Members can message existing teammates; only the lead can spawn or stop members.
 A remote member's task is also written to a handoff markdown file on its machine, and the result it
@@ -52,16 +55,42 @@ try {
     await toolsMain(args);
     process.exit(process.exitCode ?? 0);
   }
-  if (args[0] === 'team') {
-    const base = process.env.CALLI_URL || `http://127.0.0.1:${process.env.CALLI_PORT || 8787}`;
+  if (args[0] === 'team' || args[0] === 'ask') {
+    // Like scripts/restart.sh: a hub bound to one interface is not on loopback.
+    const host = !process.env.CALLI_HOST || ['0.0.0.0', '::'].includes(process.env.CALLI_HOST) ? '127.0.0.1' : process.env.CALLI_HOST;
+    const base = process.env.CALLI_URL || `http://${host.includes(':') ? `[${host}]` : host}:${process.env.CALLI_PORT || 8787}`;
     const token = process.env.CALLI_TOKEN;
-    if (!token) throw new Error('Set CALLI_TOKEN for team commands.');
+    if (!token) throw new Error(`Set CALLI_TOKEN for ${args[0]} commands.`);
     const api = async (path, body) => {
       const response = await fetch(new URL(path, base), { method: body ? 'POST' : 'GET', signal: AbortSignal.timeout(30000), headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
       const value = await response.json();
       if (!response.ok) throw new Error(value.error || `HTTP ${response.status}`);
       return value;
     };
+    if (args[0] === 'ask') {
+      const flags = args.slice(1); let file, timeout = 300;
+      while (flags.length) {
+        const flag = flags.shift(), value = flags.shift();
+        if (value === undefined) throw new Error(`Missing value: ${flag}`);
+        if (flag === '--text-file') file = value;
+        else if (flag === '--timeout' && Number(value) > 0) timeout = Number(value);
+        else throw new Error(`Invalid argument: ${flag}`);
+      }
+      if (!file) throw new Error('Give --text-file FILE or --text-file - for stdin.');
+      const text = readFileSync(file === '-' ? 0 : file, 'utf8');
+      // A reply counts only once the Router is idle again and its cached reply has changed.
+      const before = (await api('/api/personal/router')).lastReplyAt;
+      const { threadId } = await api('/api/personal/say', { text });
+      const deadline = Date.now() + timeout * 1000;
+      let reply = null;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 500));
+        const status = await api('/api/personal/router');
+        if (status.threadId === threadId && status.status === 'idle' && status.lastReplyAt !== before) { reply = status.lastReply; break; }
+      }
+      console.log(JSON.stringify({ threadId, reply }));
+      process.exit(0);
+    }
     const [, command, ...flags] = args;
     if (command === 'ls' && !flags.length) console.log(JSON.stringify(await api('/api/teams')));
     else if (command === 'run') {
