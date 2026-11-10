@@ -3482,7 +3482,9 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           mentionExtra={(m) => { const a = agents.find((v) => v.id === m.id); return a ? memberModel(a) : null; }}
           onBrowseMentionDir={(m, choose) => {
             const a = remoteAgents.find((v) => v.id === m.id);
-            if (a && token) setRemotePick({ host: a.host, api: new Api(token, '', a.host), machine: hosts.find((h) => h.id === a.host)?.label ?? a.host, roots: a.directories, selected: m.cwd ?? '', manage: null, choose });
+            // With no folder chosen yet, the picker opens where that machine was last left, the way
+            // the new-thread picker opens in the draft's folder — mid-browse, not at the roots list.
+            if (a && token) setRemotePick({ host: a.host, api: new Api(token, '', a.host), machine: hosts.find((h) => h.id === a.host)?.label ?? a.host, roots: a.directories, selected: m.cwd ?? recentRemoteDirs(a.host)[0] ?? '', manage: null, choose });
           }}
           mentionDirectories={coordination?.directories ?? (collaborationDirectories.length ? collaborationDirectories : [activeCwd])}
           onStop={stop}

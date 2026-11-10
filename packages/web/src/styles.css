@@ -12943,6 +12943,10 @@ button.proactive-row-title:hover { color: var(--muted); }
 .pet > * { pointer-events: auto; }
 /* The thread list slides in over the desk on a phone; she stays with the desk. */
 body:has(.app.drawer-open) .pet { visibility: hidden; }
+/* A modal dialog has the screen: she would stand on it — .app's transform keeps the dialog's own
+   z-index inside .app's stacking context, below her in the page's root context — so she steps
+   away instead. A desk spread pile is modal too, but portaled out and below her on purpose. */
+body:has(.app .dialog-scrim) .pet { visibility: hidden; }
 .pet-back { --pet-w: 68px; }
 /* Where she stands, as her own left edge and how high her feet ride above the visual viewport bottom:
    outside .app, so with a phone keyboard up she rides above it too. */
