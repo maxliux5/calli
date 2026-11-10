@@ -157,8 +157,9 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
   useEffect(() => release, []);
   const pictures = useMemo(() => ({ openFile: openPicture, show, openText: onOpenFile }), [openPicture, show, onOpenFile]);
   const groups = useMemo(() => groupByTurn(items), [items]);
-  // "Show everything" is remembered per thread; switching threads starts folded again.
-  const threadKey = items[0]?.key ?? '';
+  // "Show everything" is remembered per thread; switching threads starts folded again. Not keyed
+  // on the first item: an earlier page put in front would fold away what is being read.
+  const threadKey = historyThreadId ?? items[0]?.key ?? '';
   const [expandedFor, setExpandedFor] = useState<{ key: string; value: boolean }>({ key: '', value: false });
   const expanded = expandedFor.key === threadKey && expandedFor.value;
   useLayoutEffect(() => {

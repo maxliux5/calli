@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../../daemon/src/store';
 import { buildTimeline, hydrateHistoryFiles, liveWorkFromEvents, type Item, type StoredEvent } from '../src/timeline';
-import { historyPage, hydrateWork, mergeHistory, mergeHistoryPage, refreshHistoryPage, watchHistory, type HistoryPage } from '../src/history';
+import { historyPage, hydrateWork, mergeHistory, mergeHistoryPage, prependHistory, refreshHistoryPage, watchHistory, type HistoryPage } from '../src/history';
 import type { EventType } from '../../daemon/src/events';
 import type { Api } from '../src/api';
 
@@ -107,6 +107,18 @@ test('reconnect replaces existing turns without deleting earlier pages or a newe
   const events = [event(1,'old'), event(4,'a'), event(8,'new')];
   const reset = { ...event(7,''), type: 'history.reset', data: { turns: ['a'], events: [event(2,'a'),event(7,'a')] } };
   assert.deepEqual(mergeHistory(events,[reset]).map(e => e.seq), [1,2,7,8]);
+});
+
+test('an earlier page goes in front without dropping answers listed after their work', () => {
+  const event = (seq: number, turnId: string, type: string, data: Record<string, unknown> = {}): StoredEvent => ({ seq, turnId, threadId: 'th', ts: '', type: type as EventType, data });
+  // As the daemon sends a page: the answer (seq 3) comes after the work that ended later (seq 4).
+  const turn = (base: number, id: string) => [event(base, id, 'turn.started', { text: id }), event(base + 3, id, 'usage.updated'), event(base + 2, id, 'message.delta', { text: `answer ${id}` }), event(base + 4, id, 'turn.done')];
+  const loaded = [...turn(10, 'b'), ...turn(20, 'c')];
+  const merged = prependHistory(turn(1, 'a'), loaded);
+  assert.equal(merged.length, 12);
+  const answers = buildTimeline(merged).items.filter(i => i.kind === 'assistant').map(i => i.kind === 'assistant' ? i.text : '');
+  assert.deepEqual(answers, ['answer a', 'answer b', 'answer c']);
+  assert.deepEqual(prependHistory(loaded.slice(0, 2), loaded).map(e => e.seq), loaded.map(e => e.seq));
 });
 
 test('decision recovery replaces stale approval state without dropping older pages or newer events', () => {
