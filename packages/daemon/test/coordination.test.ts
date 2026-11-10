@@ -40,7 +40,9 @@ async function setup() {
     ['doubao', new DoubaoAdapter([process.execPath, join(fixtures, 'fake-doubao.mjs')])],
   ]);
   const store = new Store(dir);
-  const manager = new ThreadManager(store, adapters, [cwd, other], new AttachmentStore(dir));
+  /** Mutable, so a test can make an instance hidden or account-linked after the fact. */
+  const meta: Array<{ id: string; adapter?: string; account?: string | null; hidden?: boolean }> = [];
+  const manager = new ThreadManager(store, adapters, [cwd, other], new AttachmentStore(dir), () => meta);
   const socket = join(dir, 'ipc', 'calli.sock');
   const team = new CoordinationManager(store, manager, socket, { exchangeRoot: join(dir, 'exchange'), resultDir: join(dir, 'results') });
   const local = coordinationServer(team); await listenPrivate(local, socket);
@@ -49,7 +51,7 @@ async function setup() {
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const api = (path: string, body?: unknown, token = 'test-token') => fetch(base + path, { method: body ? 'POST' : 'GET', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const root = await manager.createThread({ agent: 'pi', cwd });
-  return { dir, cwd, other, store, manager, team, root, api, async close() { team.dispose(); await manager.shutdown(); await new Promise<void>(r => local.close(() => r())); await new Promise<void>(r => server.close(() => r())); store.close(); rmSync(dir, { recursive: true, force: true }); } };
+  return { dir, cwd, other, store, manager, team, root, api, adapters, meta, async close() { team.dispose(); await manager.shutdown(); await new Promise<void>(r => local.close(() => r())); await new Promise<void>(r => server.close(() => r())); store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 const spawn = (name: string, agent = 'pi', text = 'hello', extra = {}) => ({ op: 'spawn', name, agent, text, requestId: name, ...extra });
 
@@ -312,6 +314,39 @@ test('members start with the model and effort chosen for their instance, unless 
     assert.equal((await member('later')).model, null);
     const member2 = h.team.view(h.root.id)!.members[0].id;
     await assert.rejects(h.team.setDefaults(member2, {}), /主线程/);
+  } finally { await h.close(); }
+});
+
+test('an instance that joins the hub after the collaboration started is offered to it', async () => {
+  const h = await setup();
+  try {
+    await h.team.enable(h.root.id);
+    assert.equal(h.team.view(h.root.id)!.agents.includes('late'), false);
+    // The hub joins two more instances: a second copy of a CLI, and one hidden on purpose.
+    h.adapters.set('late', new PiRpcAdapter([process.execPath, join(fixtures, 'fake-pi.mjs')]));
+    h.adapters.set('shy', new PiRpcAdapter([process.execPath, join(fixtures, 'fake-pi.mjs')]));
+    h.meta.push({ id: 'shy', hidden: true });
+    // Still the old roster until something uses the team.
+    assert.equal(h.team.view(h.root.id)!.agents.includes('late'), false);
+    // A mention of the latecomer is accepted and brings it onto the roster; the hidden one is not.
+    const text = await h.team.previewMentions(h.root.id, 'do it', [{ kind: 'agent', id: 'late', label: 'late' }]);
+    assert.match(text, /"agent":"late"/);
+    assert.equal(h.team.view(h.root.id)!.agents.includes('late'), true);
+    assert.equal(h.team.view(h.root.id)!.agents.includes('shy'), false);
+    await assert.rejects(h.team.previewMentions(h.root.id, 'no', [{ kind: 'agent', id: 'shy', label: 'shy' }]), /实例不在本次协作中/);
+    await assert.rejects(h.team.previewMentions(h.root.id, 'no', [{ kind: 'agent', id: 'ghost', label: 'ghost' }]), /实例不在本次协作中/);
+    // The same through a whole turn, the path the page takes, and through the lead's own spawn.
+    await h.manager.startTurn(h.root.id, { text: 'go', mentions: [{ kind: 'agent', id: 'late', label: 'late' }] });
+    await wait(() => h.manager.threadView(h.root.id).status !== 'running');
+    const started = h.store.listEvents(h.root.id, 0, -1).filter(e => e.type === 'turn.started').at(-1)!;
+    assert.match(String(started.data.text), /"agent":"late"/);
+    const job = await h.team.command(h.root.id, spawn('latecomer', 'late')) as any;
+    assert.equal(h.manager.threadView(job.to).agent, 'late');
+    await assert.rejects(h.team.command(h.root.id, spawn('quiet', 'shy')), /实例不在本次协作范围内/);
+    // The lead's own list of instances says the same.
+    const agents = await h.team.command(h.root.id, { op: 'agents' }) as any[];
+    assert.ok(agents.some(a => a.id === 'late'));
+    assert.ok(!agents.some(a => a.id === 'shy'));
   } finally { await h.close(); }
 });
 
