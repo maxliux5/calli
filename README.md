@@ -77,18 +77,39 @@ skills 和 MCP 属于 agent 资源，通过各自的管理页操作，与 Calli 
 
 ## 快速开始
 
-需要 Node.js 22 或更高版本。
+需要 Linux 或 macOS、git 和 Node.js 22 或更高版本。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/maxliux5/calli/main/install.sh | bash
+```
+
+脚本把代码装到 `~/.local/share/calli` 并构建，生成 `~/.config/calli/.env`（随机 token；线程数据放在 `~/.local/state/calli`；agent 默认在家目录工作），在 Linux 上装成 systemd 用户服务，最后打印地址和 token。打开地址，点「连接 hub」粘贴 token 即可；没连接时先显示一套示例数据，可以随便点开看。
+
+- 先看会做什么：`… | bash -s -- --dry-run`
+- 更新：再运行一次。设置、token 和线程数据都保留，等正在跑的线程结束后才重启。
+- 卸载：`… | bash -s -- --uninstall`。只删服务和代码，设置和数据保留。
+- 不装服务：`--no-service`，脚本打印手动启动的命令。没有 systemd（如 macOS）时也是这样。
+
+**让 agent 帮你装**：把这句话发给这台机器上的 Claude Code、Codex 等：
+
+```text
+按 https://raw.githubusercontent.com/maxliux5/calli/main/docs/install-agent.md 在这台机器上安装 Calli
+```
+
+它会先预览、再安装、确认服务在运行，最后告诉你地址和 token；装 Node.js、编译工具这类改系统的事会先问你。
+
+各家 agent CLI 要自己装好并登录，Calli 只调用这台机器上现有的。
+
+### 从源码开发
 
 ```bash
 npm install
-npm run setup               # 生成 .env 和随机 CALLI_TOKEN，并打印出来
+npm run setup               # 生成仓库根目录的 .env 和随机 CALLI_TOKEN，并打印出来
 npm run build
 CALLI_ENV_FILE=../../.env npm start -w @calli/daemon    # 默认监听 127.0.0.1:8787
 ```
 
-打开 `http://127.0.0.1:8787/`。没有连接时先显示一套示例数据，可以随便点开看；点「连接 hub」粘贴 `npm run setup` 打印的 token 即可。要让 agent 在哪些目录工作，编辑 `.env` 里的 `CALLI_WORKDIRS`。
-
-开发时可以分开启动：
+要让 agent 在哪些目录工作，编辑 `.env` 里的 `CALLI_WORKDIRS`。开发时可以分开启动：
 
 ```bash
 CALLI_ENV_FILE=../../.env npm run dev:daemon   # 后端
@@ -129,7 +150,7 @@ GitHub Pages 通过 `.github/workflows/pages.yml` 发布：推送到 `main` 后�
 
 浏览器只连主 hub；主 hub 通过 SSH 隧道访问另一台机器上的 daemon。线程、文件和 agent 都留在各自机器上。
 
-1. **目标机器**：按上面的快速开始安装、配置并构建，再用 `scripts/install-service.sh` 启动服务。保持默认的私有 socket，不必对外开放 HTTP 端口。
+1. **目标机器**：运行上面快速开始里的安装命令。保持默认的私有 socket，不必对外开放 HTTP 端口。之后想用 `scripts/update-hosts.sh` 统一更新，在主 hub 的 hosts.json 里给这台机器写 `"repo": "~/.local/share/calli"`。
 2. **主 hub**：以 daemon 的运行用户配置 SSH 别名和凭据，先手动连接、核实主机密钥，再确认 `ssh -o BatchMode=yes <SSH别名> true` 能成功。服务需要能持续免交互认证；只在当前终端可用的 ssh-agent 或临时票据不一定能被服务使用。
 3. **浏览器**：打开「配置 → 机器」，从 SSH 别名列表添加，或输入别名 / `user@host`。成功后在线程列表顶部切换机器。
 
