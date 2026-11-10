@@ -61,6 +61,8 @@ export interface ThreadStats {
   };
   tokPerSec: number | null;
   tokPerSecApprox: boolean;
+  /** Compactions the agent itself completed, for the context panel's history line. */
+  compactions: { count: number; last: { ts: string; automatic: boolean } | null };
 }
 
 const ms = (a: string, b: string | null | undefined): number => Date.parse(b ?? '') - Date.parse(a);
@@ -115,6 +117,8 @@ export function aggregateThreadStats(input: {
   turns: Array<{ turnId: string }>;
   rows: Map<string, TurnStatsRow>;
   tokens: Map<string, TurnTokenSums>;
+  /** Completed native compactions, read from the event log by the caller. */
+  compactions: { count: number; last: { ts: string; automatic: boolean } | null };
 }): ThreadStats {
   const { threadId, checkedAt, running, runningTurnId, turns, rows, tokens } = input;
   let steps = 0;
@@ -169,5 +173,6 @@ export function aggregateThreadStats(input: {
     tokens: measuredSamples ? { turnsWithout, ...sums } : null,
     tokPerSec: tpsGen > 0 ? tpsOut / (tpsGen / 1000) : null,
     tokPerSecApprox: tpsHub,
+    compactions: input.compactions,
   };
 }

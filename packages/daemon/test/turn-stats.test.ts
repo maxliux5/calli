@@ -173,7 +173,9 @@ test('a turn with usage and no model time still sums tokens; the aggregate keeps
     threadId: 'th', checkedAt: new Date(BASE).toISOString(), running: false,
     turns: [{ turnId: 't1' }, { turnId: 't2' }, { turnId: 't3' }],
     rows, tokens,
+    compactions: { count: 0, last: null },
   });
+  assert.deepEqual(stats.compactions, { count: 0, last: null }, 'the summary passes through untouched');
   assert.equal(stats.turns, 3);
   assert.equal(stats.steps, 9);
   assert.deepEqual(stats.timing, {
@@ -189,10 +191,30 @@ test('a turn with usage and no model time still sums tokens; the aggregate keeps
   const nothing = aggregateThreadStats({
     threadId: 'th', checkedAt: new Date(BASE).toISOString(), running: false,
     turns: [{ turnId: 't3' }], rows: new Map(), tokens: new Map(),
+    compactions: { count: 1, last: { ts: BASE, automatic: true } },
   });
   assert.equal(nothing.timing, null, 'nothing measured anywhere: no reading');
   assert.equal(nothing.tokens, null);
   assert.equal(nothing.tokPerSec, null);
+});
+
+test('the stats response counts completed native compactions for the context panel', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'calli-compaction-stats-'));
+  const store = new Store(dir);
+  const adapter = new PiRpcAdapter(['echo'], {});
+  const manager = new ThreadManager(store, new Map([['pi', adapter]]), [dir], new AttachmentStore(dir));
+  const thread = await manager.createThread({ agent: 'pi', cwd: dir, title: 'compactions' });
+  const id = thread.id;
+  store.appendEvent(id, 't1', 'turn.started', { text: '干活' });
+  store.appendEvent(id, 't1', 'context.compaction', { id: 'c1', status: 'in_progress', automatic: true });
+  store.appendEvent(id, 't1', 'context.compaction', { id: 'c1', status: 'completed', automatic: true });
+  store.appendEvent(id, 't1', 'context.compaction', { id: 'c1', status: 'completed' }); // a replayed terminal update
+  store.appendEvent(id, 't1', 'context.compaction', { id: 'c2', status: 'failed', automatic: true }); // never finished
+  const manual = store.appendEvent(id, 't1', 'context.compaction', { id: 'c3', status: 'completed' }); // no automatic flag
+  store.appendEvent(id, 't1', 'turn.done', { stopReason: 'end_turn' });
+  const stats = manager.threadStats(id);
+  assert.equal(stats.compactions.count, 2, 'distinct completed ids only');
+  assert.deepEqual(stats.compactions.last, { ts: manual.ts, automatic: false }, 'the latest completed one, manual when it said nothing');
 });
 
 test('per-turn stats are stored when a turn ends, backfilled for old ones, and never scanned per read', async () => {

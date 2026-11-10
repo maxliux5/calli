@@ -1768,6 +1768,16 @@ export const en: Messages = {
   'pickers.accounts': 'Signed-in accounts',
   'pickers.addAccount': (agent: string) => `${agent} · add to use this account`,
   'pickers.contextUnknown': 'Context usage is not known yet; it updates after the next response.',
+  'pickers.contextTotals': 'Session total',
+  'pickers.contextLastRequest': (model: string) => `Last request · ${model}`,
+  'pickers.contextLastRequestShort': 'Last request',
+  'pickers.contextCompactions': (count: number, when: string, automatic: boolean) =>
+    count === 1 ? `Compacted once · last ${when}${automatic ? ' (auto)' : ''}`
+      : `Compacted ${count} times · last ${when}${automatic ? ' (auto)' : ''}`,
+  'pickers.contextDetail': 'Run /context for an exact breakdown',
+  'pickers.contextDetailHint': 'The agent replies with the numbers it computed itself',
+  'pickers.contextStatsFailed': 'Could not read the session totals',
+  'pickers.contextNoTotals': 'No session usage data yet',
   'pickers.contextUsage': 'Context usage',
   'pickers.contextUsagePercent': (percent: number) => `${percent}% of context used · View details`,
   'pickers.contextUsageUnknown': 'Context usage unknown · View details',

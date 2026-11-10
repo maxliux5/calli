@@ -72,6 +72,19 @@ export interface Usage {
   cost?: { amount: number; currency: string };
 }
 
+/** One model request's token accounting, as the agent reported it (the daemon's UsageSample, mirrored). */
+export interface UsageSample {
+  /** request: one model call; update: a native counter delta that stands for the latest call. */
+  scope: 'request' | 'update';
+  model?: string;
+  input?: number;
+  output?: number;
+  total?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  reasoning?: number;
+}
+
 export interface ApprovalOption {
   optionId: string;
   name: string;
@@ -308,6 +321,8 @@ export interface Timeline {
   awaitingApproval: boolean;
   /** The latest context usage the agent reported, if it reports any. */
   usage: Usage | null;
+  /** The latest per-request token sample the agent reported, if it reports any. */
+  lastSample: UsageSample | null;
 }
 
 /**
@@ -470,6 +485,7 @@ export function buildTimeline(events: StoredEvent[], speech: readonly VoiceTrans
   let lastSeq = 0;
   let running = false;
   let usage: Usage | null = null;
+  let lastSample: UsageSample | null = null;
   let waiting: Extract<Item, { kind: 'waiting' }> | null = null;
 
   type Work = Extract<Item, { kind: 'work' }>;
@@ -662,6 +678,31 @@ export function buildTimeline(events: StoredEvent[], speech: readonly VoiceTrans
           }
         }
         break;
+
+      case 'usage.sample': {
+        // The composition of the latest model request. Request samples are one call each; update
+        // samples are native counter deltas that stand for the latest call. Turn samples summarize
+        // a whole turn and never pose as one request, so they are left out.
+        if (ev.data.scope !== 'request' && ev.data.scope !== 'update') break;
+        const count = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+        const input = count(ev.data.input);
+        const output = count(ev.data.output);
+        const cacheRead = count(ev.data.cacheRead);
+        const cacheWrite = count(ev.data.cacheWrite);
+        const reasoning = count(ev.data.reasoning);
+        if (input === undefined && output === undefined && cacheRead === undefined && cacheWrite === undefined && reasoning === undefined) break;
+        lastSample = {
+          scope: ev.data.scope,
+          ...(typeof ev.data.model === 'string' && ev.data.model ? { model: ev.data.model } : {}),
+          ...(input !== undefined ? { input } : {}),
+          ...(output !== undefined ? { output } : {}),
+          ...(count(ev.data.total) !== undefined ? { total: count(ev.data.total)! } : {}),
+          ...(cacheRead !== undefined ? { cacheRead } : {}),
+          ...(cacheWrite !== undefined ? { cacheWrite } : {}),
+          ...(reasoning !== undefined ? { reasoning } : {}),
+        };
+        break;
+      }
 
       case 'turn.phase':
         if (waiting && waiting.turnId === turn) {
@@ -874,7 +915,14 @@ export function buildTimeline(events: StoredEvent[], speech: readonly VoiceTrans
   if (running && waiting && !items.some(it => it.turnId === waiting!.turnId && it.kind !== 'user')) items.push(waiting);
   const withSummaries = addTurnSummaries(items, finished, stopped);
   const awaitingApproval = running && items.some((it) => (it.kind === 'approval' && it.decision === null) || (it.kind === 'input' && it.answer === null));
-  return { items: withVoiceItems(withSummaries, events, speech), lastSeq, running, awaitingApproval, usage };
+  return {
+    items: withVoiceItems(withSummaries, events, speech),
+    lastSeq,
+    running,
+    awaitingApproval,
+    usage,
+    lastSample,
+  };
 }
 
 const compactTokens = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));

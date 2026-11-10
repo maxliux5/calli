@@ -873,6 +873,7 @@ export class ThreadManager {
       turns,
       rows,
       tokens: this.store.telemetry.tokenSumsByTurn(threadId),
+      compactions: this.store.compactionSummary(threadId),
     });
   }
 

@@ -123,6 +123,7 @@ const UNLISTED_COMMANDS: SlashCommand[] = [
   { name: 'goal', description: '设置原生目标并持续执行；不带参数查看，clear 清除', hint: '[目标 | clear]', kind: 'command' },
   { name: 'cost', description: 'Show plan usage limits and what is using them' },
   { name: 'stats', description: 'Show plan usage limits and what is using them' },
+  { name: 'context', description: 'Show the context window breakdown the agent computed itself' },
 ];
 
 /** The agent's list plus the commands it answers but does not list, without duplicates. */

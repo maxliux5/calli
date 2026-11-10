@@ -2828,13 +2828,19 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
 
   // Older daemons advertise /compact before they expose the dedicated capability.
   const canCompact = activeCaps?.compact ?? (commandsByKey[commandsKey] ?? []).some((command) => command.name === 'compact' && command.kind !== 'skill');
+  // The agent's own context breakdown command, when its list has one (Claude Code's /context).
+  const hasContextCommand = (commandsByKey[commandsKey] ?? []).some((command) => command.name === 'context' && command.kind !== 'skill');
 
   const right = (
     <>
       {selected && (timeline.usage || canCompact) && <UsageMeter
         key={selected.id}
         usage={timeline.usage}
+        sample={timeline.lastSample}
+        api={api}
+        threadId={selected.id}
         onCompact={canCompact ? () => send('/compact', []) : undefined}
+        onContext={hasContextCommand ? () => send('/context', []) : undefined}
         running={running}
         compactQueued={selected.queued?.some((message) => message.text.trim() === '/compact')}
         compactDisabled={(selected.queued?.length ?? 0) >= MAX_QUEUED}

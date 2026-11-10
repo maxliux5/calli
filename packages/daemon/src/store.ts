@@ -1514,6 +1514,17 @@ export class Store {
     }
   }
 
+  /** Completed native compactions, by distinct id: a replayed terminal update counts once. */
+  compactionSummary(threadId: string): { count: number; last: { ts: string; automatic: boolean } | null } {
+    const done = "type='context.compaction' AND json_extract(data, '$.status')='completed'";
+    const count = (this.db.prepare(`SELECT COUNT(DISTINCT json_extract(data, '$.id')) AS n FROM events WHERE thread_id=? AND ${done}`).get(threadId) as { n: number }).n;
+    if (!count) return { count: 0, last: null };
+    const row = this.db
+      .prepare(`SELECT ts, json_extract(data, '$.automatic') AS automatic FROM events WHERE thread_id=? AND ${done} ORDER BY seq DESC LIMIT 1`)
+      .get(threadId) as { ts: string; automatic: number | null } | undefined;
+    return { count, last: row ? { ts: row.ts, automatic: row.automatic === 1 } : null };
+  }
+
   /** Repair a hub-generated prompt's display without changing its agent input or event identity. */
   setTurnDisplayText(threadId: string, seq: number, displayText: string): void {
     const row = this.db.prepare("SELECT * FROM events WHERE thread_id=? AND seq=? AND type='turn.started'").get(threadId, seq) as unknown as EventRow | undefined;
