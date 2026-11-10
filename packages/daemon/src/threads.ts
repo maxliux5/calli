@@ -4,6 +4,7 @@ import { LarkChannel } from './channels/lark.js';
 import { PersonalService } from './personal.js';
 import { AutoHandover, type AutoHandoverView, type HandoverTarget, type SettledOutcome } from './auto-handover.js';
 import { AutoCompact } from './auto-compact.js';
+import type { HandoverLink } from './handover-mode.js';
 import { QuotaResume, type ResumeView } from './quota-resume.js';
 import type { VoiceTransport } from './voice-sessions.js';
 import { VoiceConversation } from './voice-conversation.js';
@@ -297,6 +298,9 @@ function isDirectory(path: string): boolean {
  * Owns thread lifecycle: starts agent sessions, runs turns, persists every event,
  * fans events out to subscribers, and routes approval decisions back to agents.
  */
+/** The most context, in tokens, a handover still carries over by copying the conversation. */
+const RESUME_HANDOVER_MAX_CONTEXT = 50_000;
+
 export class ThreadManager {
   coordination?: CoordinationManager;
   borrowing?: import('./borrowing.js').BorrowingService;
@@ -2118,7 +2122,7 @@ export class ThreadManager {
   }
 
   /** A fresh conversation in the source's exact directory, sharing its existing worktree. No agent is started. */
-  async createHandoverThread(threadId: string, agent: string, model?: string, mode?: unknown): Promise<ThreadView> {
+  async createHandoverThread(threadId: string, agent: string, model?: string, mode?: unknown, method?: HandoverLink['method']): Promise<ThreadView> {
     const source = this.getThread(threadId);
     if (mode !== undefined && mode !== 'continue' && mode !== 'branch') throw new HttpError(400, 'invalid handover mode');
     // Whoever takes over from here, the work leaves this thread; stop waiting for its quota.
@@ -2138,7 +2142,7 @@ export class ThreadManager {
       effort: sameKind ? source.effort ?? undefined : undefined,
       sectionId: source.sectionId,
     }, source.worktree, { sourceId: source.id, title: source.title, agent: source.agent, mode: selected,
-      sourceSeq: this.store.history.latest(source.id) });
+      sourceSeq: this.store.history.latest(source.id), ...(method ? { method } : {}) });
     this.personal.inherit(source.id, successor.id);
     return successor;
   }
@@ -2537,7 +2541,7 @@ export class ThreadManager {
   async handoverSummary(
     threadId: string,
     turnId: string | null,
-    opts: { carryFailed?: boolean } = {},
+    opts: { carryFailed?: boolean; compress?: boolean } = {},
   ): Promise<{ pending: true } | { summary: string; source: 'agent' | 'log' }> {
     const thread = this.threadView(threadId);
     const events = this.listEventsSince(threadId, 0);
@@ -2563,7 +2567,9 @@ export class ThreadManager {
     const failedTurn = lastTurn && this.store.listTurnEvents(threadId, lastTurn).some(e => e.type === 'turn.error') ? lastTurn : null;
     const retryStart = failedTurn ? this.store.listTurnEvents(threadId, failedTurn).find(e => e.type === 'turn.started') : undefined;
     const retry = opts.carryFailed && retryStart ? String(retryStart.data.displayText ?? retryStart.data.text ?? '') : '';
-    const brief = [context, synthesizeBrief(events)].filter(Boolean).join('\n\n');
+    // The source could not write its own summary: another agent reads the record, when one is set up for that.
+    const written = opts.compress ? await this.autoCompact.summarizeForHandover(threadId) : null;
+    const brief = [context, written, synthesizeBrief(events)].filter(Boolean).join('\n\n');
     return { summary: retry ? `${brief}\n\n## 继续未完成的这一轮\n\n${retry}` : brief, source: 'log' };
   }
 
@@ -2605,9 +2611,9 @@ export class ThreadManager {
         summaryTurn = null;
       }
     }
-    const result = await this.handoverSummary(id, summaryTurn);
+    const result = await this.handoverSummary(id, summaryTurn, { compress: true });
     if ('summary' in result) return result.summary;
-    const fallback = await this.handoverSummary(id, null);
+    const fallback = await this.handoverSummary(id, null, { compress: true });
     if ('summary' in fallback) return fallback.summary;
     throw new HttpError(409, 'handover summary unavailable');
   }
@@ -2670,7 +2676,7 @@ export class ThreadManager {
       const sessionId = await this.importHandoverSession(id, agent);
       if (sessionId) return this.executeResumeHandover(id, target, sessionId, failed, note?.trim());
     }
-    const result = await this.handoverSummary(id, null);
+    const result = await this.handoverSummary(id, null, { compress: true });
     if (!('summary' in result)) throw new HttpError(409, 'handover summary unavailable');
     return this.executeAutoHandover(id, target, result.summary, failed, note?.trim());
   }
@@ -2682,6 +2688,9 @@ export class ThreadManager {
   async canResumeHandover(id: string, target: string, failedTurn: string | null): Promise<boolean> {
     const thread = this.getThread(id);
     if (target === thread.agent || !thread.agentSessionId || !this.adapters.get(thread.agent)?.sessionLocation || !this.adapters.get(target)?.importSession) return false;
+    // The copy starts the successor with the whole context on a cold cache, and every step after
+    // re-reads it; past this size a brief and `calli history` cost far less than carrying it over.
+    if ((this.store.lastContextUsed(id) ?? 0) > RESUME_HANDOVER_MAX_CONTEXT) return false;
     // A teammate's place moves with the successor's first turn; without a failed turn to resend there is none.
     if (!failedTurn && this.coordination?.metadata(id)) return false;
     const agents = await this.listAgents();
@@ -2709,7 +2718,7 @@ export class ThreadManager {
   async executeResumeHandover(id: string, target: HandoverTarget, sessionId: string, failedTurn: string | null, note?: string): Promise<ThreadView> {
     const source = this.getThread(id);
     this.quotaResume.drop(id);
-    const successor = await this.createHandoverThread(id, target.agent, target.model, 'continue');
+    const successor = await this.createHandoverThread(id, target.agent, target.model, 'continue', 'resume');
     this.store.updateThread(successor.id, { agentSessionId: sessionId });
     this.autoHandover.inherit(id, successor.id);
     const adapter = this.adapters.get(target.agent)!;
@@ -2742,7 +2751,7 @@ export class ThreadManager {
     const source = this.getThread(id);
     // The work moves; waiting for this agent's quota to come back is moot.
     this.quotaResume.drop(id);
-    const successor = await this.createHandoverThread(id, target.agent, target.model, 'continue');
+    const successor = await this.createHandoverThread(id, target.agent, target.model, 'continue', 'summary');
     this.autoHandover.inherit(id, successor.id);
     const adapter = this.adapters.get(target.agent)!;
     // Preserve the user's execution and permission choices when the successor supports them.

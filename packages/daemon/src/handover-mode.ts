@@ -10,6 +10,8 @@ export interface HandoverLink {
   detached?: boolean;
   /** Source event boundary at creation; sequence numbers avoid equal timestamp ambiguity. */
   sourceSeq?: number;
+  /** How the work was carried over: the source's session copied as it was, or a written summary. */
+  method?: 'resume' | 'summary';
 }
 
 /** Derive the display relation from facts without rewriting stored links. */

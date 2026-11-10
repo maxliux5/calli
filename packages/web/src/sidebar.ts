@@ -172,11 +172,20 @@ function urgency(t: Thread, selectedId: string | null): number | null {
  */
 export function buildActivity(threads: Thread[], search: string, now: Date, selectedId: string | null): ActivityModel {
   const visible = matching(threads, search);
-  const newestFirst = (a: Thread, b: Thread) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0);
+  // A handover chain is one entry, kept whole: it stands under its most pressing member, and under
+  // the day any of them last moved. Split by urgency, the original and its successor would sit in
+  // different groups, far apart.
+  const chains = handoverGroups(visible).map(({ members }) => ({
+    members,
+    urgent: Math.min(...members.map((t) => urgency(t, selectedId) ?? Infinity)),
+    moved: members.reduce((time, t) => (t.updatedAt > time ? t.updatedAt : time), ''),
+  }));
+  const newestFirst = (a: { moved: string }, b: { moved: string }) => (a.moved < b.moved ? 1 : a.moved > b.moved ? -1 : 0);
 
-  const priority = visible
-    .filter((t) => urgency(t, selectedId) !== null)
-    .sort((a, b) => urgency(a, selectedId)! - urgency(b, selectedId)! || newestFirst(a, b));
+  const priority = chains
+    .filter((c) => c.urgent !== Infinity)
+    .sort((a, b) => a.urgent - b.urgent || newestFirst(a, b))
+    .flatMap((c) => c.members);
 
   const today = startOfDay(now);
   const ages: Array<{ key: string; label: string; within: number }> = [
@@ -187,11 +196,11 @@ export function buildActivity(threads: Thread[], search: string, now: Date, sele
     { key: 'older', label: t('sidebar.group.older'), within: Infinity },
   ];
   const byAge = new Map<string, Thread[]>();
-  for (const t of visible.filter((t) => urgency(t, selectedId) === null).sort(newestFirst)) {
+  for (const chain of chains.filter((c) => c.urgent === Infinity).sort(newestFirst)) {
     // Rounded: a day that a clock change made 23 or 25 hours long is still one day.
-    const days = Math.round((today - startOfDay(new Date(t.updatedAt))) / DAY_MS);
+    const days = Math.round((today - startOfDay(new Date(chain.moved))) / DAY_MS);
     const { key } = ages.find((a) => days <= a.within)!;
-    byAge.set(key, [...(byAge.get(key) ?? []), t]);
+    byAge.set(key, [...(byAge.get(key) ?? []), ...chain.members]);
   }
 
   return {
@@ -202,8 +211,11 @@ export function buildActivity(threads: Thread[], search: string, now: Date, sele
   };
 }
 
-/** Group explicit handovers only, within the caller's existing section or project. */
-export function handoverGroups(threads: Thread[]): Array<{ key: string; latest: Thread; members: Thread[] }> {
+/**
+ * Group explicit handovers only, within the caller's existing section or project. The groups are
+ * the most recently moved first, or with `keepOrder` in the order their first thread has in `threads`.
+ */
+export function handoverGroups(threads: Thread[], keepOrder = false): Array<{ key: string; latest: Thread; members: Thread[] }> {
   const byId = new Map(threads.map((t) => [t.id, t]));
   const root = (t: Thread): string => {
     const seen = new Set<string>();
@@ -225,6 +237,7 @@ export function handoverGroups(threads: Thread[]): Array<{ key: string; latest: 
     const parents = new Set(members.map((t) => t.handover?.sourceId));
     return { key, latest: members.find((t) => !parents.has(t.id)) ?? members[0], members };
   }).sort((a, b) => {
+    if (keepOrder) return Math.min(...a.members.map((t) => threads.indexOf(t))) - Math.min(...b.members.map((t) => threads.indexOf(t)));
     const newest = (members: Thread[]) => members.reduce((time, t) => t.updatedAt > time ? t.updatedAt : time, '');
     return newest(b.members).localeCompare(newest(a.members));
   });

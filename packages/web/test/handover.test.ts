@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { handoverHistoryKey, latestHandoverThread, takeoverMention } from '../src/handover';
+import { handoverHistoryKey, latestHandoverThread, nextSegment, takeoverMention } from '../src/handover';
 import type { Thread } from '../src/api';
 
 const segment = (id: string, parent?: string) => ({ id, createdAt: id, handover: parent ? { sourceId: parent, mode: 'continue' } : null }) as Thread;
@@ -35,4 +35,16 @@ test('one local instance brought in with @ takes over only while the thread is o
   assert.equal(takeoverMention([{ ...agent, host: 'box' }], true, 'claude3'), null);
   assert.equal(takeoverMention([agent], true, 'claude2'), null, 'not the stranded instance itself');
   assert.equal(takeoverMention([], true), null);
+});
+
+test('reading on from an earlier segment goes through the chain toward the latest, not into another branch', () => {
+  const a = segment('a'), b = segment('b', 'a'), c = segment('c', 'b'), side = segment('side', 'a'), unrelated = segment('z');
+  const all = [a, b, c, side, unrelated];
+  assert.equal(nextSegment(a, c, all)?.id, 'b');
+  assert.equal(nextSegment(b, c, all)?.id, 'c');
+  assert.equal(nextSegment(c, c, all), undefined, 'the latest has nothing after it');
+  assert.equal(nextSegment(side, c, all), undefined, 'a branch that does not lead to the latest');
+  assert.equal(nextSegment(unrelated, c, all), undefined);
+  const loop = [segment('x', 'y'), segment('y', 'x')];
+  assert.equal(nextSegment(unrelated, loop[0], [...loop, unrelated]), undefined, 'a broken cycle ends instead of spinning');
 });

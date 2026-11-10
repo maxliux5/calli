@@ -51,6 +51,11 @@ export class AutoHandover {
     const stored = this.store.hubSetting<Partial<HandoverSettings>>('handover.settings', defaults());
     return { ...defaults(), ...stored, resume: stored.resume === true, method: stored.method === 'summary' ? 'summary' : 'resume' };
   }
+  /** A hub that never saved this setting starts with it on, between accounts of one product (see `targets`). */
+  seedDefault(): void {
+    if (this.store.hubSetting<HandoverSettings | null>('handover.settings', null)) return;
+    this.store.saveHubSetting('handover.settings', { ...defaults(), enabled: true });
+  }
   configure(input: unknown): HandoverSettings {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new HttpError(400, 'invalid handover settings');
     const v = input as HandoverSettings;
@@ -154,7 +159,8 @@ export class AutoHandover {
     const kind = agents.find(a => a.id === thread.agent)?.adapter;
     // The default stays within the same product: another account of the same adapter. A different
     // agent takes over only when the order lists it explicitly.
-    const order = this.settings().orders[thread.agent] ?? agents.filter(a => a.id !== thread.agent && a.adapter === kind)
+    const listed = this.settings().orders[thread.agent];
+    const order = listed ?? agents.filter(a => a.id !== thread.agent && a.adapter === kind)
       .map(a => ({ agent: a.id }));
     const model = await this.manager.handoverModel(thread.agent, thread.model);
     const out: HandoverTarget[] = [];
@@ -168,6 +174,10 @@ export class AutoHandover {
       if (target.model && !targetModel || target.agent === thread.agent && (!target.model || targetModel === model)) continue;
       const concrete = { agent: target.agent, ...(targetModel ? { model: targetModel } : {}) };
       const quota = await this.quota(target.agent);
+      // Unlisted, a candidate has to prove it is a subscription: a plan with usage windows. A bridge
+      // to a third-party model runs on the same adapter but has none, and takes over only when the
+      // order names it.
+      if (!listed && !quota?.windows.length) continue;
       if (quota) this.recover(concrete, quota);
       if (this.isBlocked(concrete)) continue;
       const windows = quota ? instanceWindows(quota, targetModel) : [];

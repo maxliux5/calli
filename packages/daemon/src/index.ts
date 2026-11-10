@@ -75,6 +75,7 @@ async function main(): Promise<void> {
   const dirs = new Workdirs(workdirs, join(config.dataDir, 'workdirs.json'), join(config.dataDir, 'scratch'));
   const manager = new ThreadManager(store, adapters, dirs, new AttachmentStore(config.dataDir), () => registry.list());
   manager.recoverInterrupted();
+  manager.autoHandover.seedDefault();
   manager.personal.proactive.recover();
   // Started after recovery: turns a restart cut off are not news from a Worker.
   const workerReports = new WorkerReports(manager);

@@ -47,7 +47,31 @@ export function AutoHandoverNotice({ api, thread, agents }: { api: Api; thread: 
   </div>;
 }
 
-function AddTarget({ api, agents, add }: { api: Api; agents: AgentInfo[]; add: (target: HandoverTarget) => void }) {
+const targetLabel = (agents: AgentInfo[], target: HandoverTarget) => [agents.find(a => a.id === target.agent)?.label ?? target.agent, target.model].filter(Boolean).join(' · ');
+
+/** An ordered list of agents, reordered by drag or from the row's menu. */
+function TargetList({ agents, list, label, onChange }: { agents: AgentInfo[]; list: HandoverTarget[]; label: string; onChange: (next: HandoverTarget[]) => void }) {
+  const [dragged, setDragged] = useState<number | null>(null);
+  const move = (from: number, to: number) => {
+    if (to < 0 || to >= list.length) return;
+    const next = [...list];
+    next.splice(to, 0, next.splice(from, 1)[0]); onChange(next);
+  };
+  return <ol aria-label={label}>{list.map((target, i) => <li key={`${target.agent}:${target.model}`} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); if (dragged !== null) move(dragged, i); setDragged(null); }}>
+    <span className="auto-order-grip" draggable onDragStart={() => setDragged(i)} onDragEnd={() => setDragged(null)} title={t('auto.drag')}><IconGrip size={16} /></span>
+    {agents.find(a => a.id === target.agent)?.icon && <AgentMark path={agents.find(a => a.id === target.agent)!.icon!} size={16} />}
+    <span className="auto-order-name">{targetLabel(agents, target)}</span>
+    <Popover triggerClassName="icon-btn auto-order-more" panelClassName="auto-order-menu" label={t('auto.targetActions', targetLabel(agents, target))} triggerLabel={t('auto.targetActions', targetLabel(agents, target))} trigger={<IconMore size={16} />} align="end" placement="below">
+      {close => <div role="menu">
+        <button className="pop-item compact" role="menuitem" disabled={!i} onClick={() => { move(i, i - 1); close(); }}>{t('auto.up')}</button>
+        <button className="pop-item compact" role="menuitem" disabled={i === list.length - 1} onClick={() => { move(i, i + 1); close(); }}>{t('auto.down')}</button>
+        <button className="pop-item compact" role="menuitem" onClick={() => { onChange(list.filter((_, n) => n !== i)); close(); }}>{t('auto.remove')}</button>
+      </div>}
+    </Popover>
+  </li>)}</ol>;
+}
+
+function AddTarget({ api, agents, addLabel, add }: { api: Api; agents: AgentInfo[]; addLabel: string; add: (target: HandoverTarget) => void }) {
   const [agent, setAgent] = useState(agents.find(a => !a.hidden)?.id ?? '');
   const [models, setModels] = useState<ModelOption[] | null>(null);
   const [model, setModel] = useState('');
@@ -66,20 +90,20 @@ function AddTarget({ api, agents, add }: { api: Api; agents: AgentInfo[]; add: (
         {!models && !error && <p>{t('common.loading')}</p>}{error && <p role="alert">{error}</p>}
       </div>}
     </Popover>
-    <button className="ghost" onClick={() => add({ agent, ...(model ? { model } : {}) })}>{t('auto.add')}</button>
+    <button className="ghost" onClick={() => add({ agent, ...(model ? { model } : {}) })}>{addLabel}</button>
   </div>;
 }
 
 export function HandoverSettingsDialog({ api, agents, onClose }: { api: Api; agents: AgentInfo[]; onClose: () => void }) {
   const [value, setValue] = useState<HandoverSettings | null>(null);
   const [compact, setCompact] = useState<AutoCompactSettings | null>(null);
-  const [compactModels, setCompactModels] = useState<ModelOption[] | null>(null);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [opened, setOpened] = useState('');
   const [saved, setSaved] = useState('');
   const [savedNotice, setSavedNotice] = useState(false);
   const [savedCompact, setSavedCompact] = useState('');
+  const [compressOpen, setCompressOpen] = useState(false);
   const dirty = value !== null && JSON.stringify(value) !== saved || compact !== null && JSON.stringify(compact) !== savedCompact;
   usePageDraft(dirty, saving);
   const [dragged, setDragged] = useState<number | null>(null);
@@ -90,18 +114,8 @@ export function HandoverSettingsDialog({ api, agents, onClose }: { api: Api; age
     void api.autoCompactSettings().then(({ settings }) => { setCompact(settings); setSavedCompact(JSON.stringify(settings)); }).catch(() => setCompact(null));
   };
   useEffect(load, [api]);
-  useEffect(() => {
-    let alive = true; setCompactModels(null);
-    if (compact?.agent) void api.models(compact.agent).then(m => { if (alive) setCompactModels(m); }).catch(() => undefined);
-    return () => { alive = false; };
-  }, [api, compact?.agent]);
   const setOrder = (id: string, list: HandoverTarget[]) => setValue(v => v && ({ ...v, orders: { ...v.orders, [id]: list } }));
-  const label = (target: HandoverTarget) => [agents.find(a => a.id === target.agent)?.label ?? target.agent, target.model].filter(Boolean).join(' · ');
-  const move = (id: string, from: number, to: number) => {
-    const order = [...(value?.orders[id] ?? [])];
-    if (to < 0 || to >= order.length) return;
-    order.splice(to, 0, order.splice(from, 1)[0]); setOrder(id, order);
-  };
+  const label = (target: HandoverTarget) => targetLabel(agents, target);
   const save = async () => {
     if (!value || saving) return;
     setSaving(true); setError(''); setSavedNotice(false);
@@ -132,20 +146,17 @@ export function HandoverSettingsDialog({ api, agents, onClose }: { api: Api; age
         <div className="auto-setting-line"><span>{t('compact.enable')}</span><button aria-label={t('compact.enable')} className="auto-toggle" role="switch" aria-checked={compact.enabled} onClick={() => setCompact({ ...compact, enabled: !compact.enabled })}>{t(compact.enabled ? 'auto.on' : 'auto.off')}</button></div>
         {compact.enabled && <>
           <label className="auto-setting-line">{t('compact.threshold')}<input inputMode="numeric" value={compact.threshold} onChange={e => setCompact({ ...compact, threshold: Number(e.target.value) })} disabled={!value.enabled} /></label>
-          <div className="auto-setting-line"><span id="compact-agent">{t('compact.agent')}</span>
-            <div className="auto-add">
-              <button type="button" className={`chip${!compact.agent ? ' on' : ''}`} role="radio" aria-checked={!compact.agent} aria-labelledby="compact-agent" onClick={() => setCompact({ ...compact, agent: null, model: null })}>{t('compact.native')}</button>
-              <AgentPicker api={api} agents={agents.filter(a => !a.hidden)} value={compact.agent ?? agents.find(a => !a.hidden)?.id ?? ''} onChange={agent => setCompact({ ...compact, agent, model: null })} />
-              {compact.agent && <Popover triggerClassName="context-btn" label={t('auto.modelDefault')} trigger={compactModels?.find(m => m.id === compact.model)?.label ?? t('auto.modelDefault')}>
-                {close => <div role="menu">
-                  <button className="pop-item compact" role="menuitemradio" aria-checked={!compact.model} onClick={() => { setCompact({ ...compact, model: null }); close(); }}>{t('auto.modelDefault')}</button>
-                  {compactModels?.map(m => <button className="pop-item compact" role="menuitemradio" aria-checked={compact.model === m.id} key={m.id} onClick={() => { setCompact({ ...compact, model: m.id }); close(); }}>{m.label}</button>)}
-                </div>}
-              </Popover>}
-            </div>
-          </div>
-          <p className="auto-setting-hint">{t('compact.hint')}</p>
         </>}
+        <div className="auto-orders single"><section>
+          <button className="auto-order-head" aria-expanded={compressOpen} onClick={() => setCompressOpen(!compressOpen)}>
+            <strong>{t('compact.agents')}</strong><span>{compact.agents.map(label).join(' → ') || t('compact.none')}</span><IconChevron size={14} open={compressOpen} />
+          </button>
+          {compressOpen && <div className="auto-order-edit">
+            <p className="hint">{t('compact.hint')}</p>
+            <TargetList agents={agents} list={compact.agents} label={t('compact.order')} onChange={next => setCompact({ ...compact, agents: next })} />
+            <AddTarget api={api} agents={agents.filter(a => !a.hidden)} addLabel={t('compact.add')} add={target => { if (!compact.agents.some(x => x.agent === target.agent && x.model === target.model)) setCompact({ ...compact, agents: [...compact.agents, target] }); }} />
+          </div>}
+        </section></div>
       </>}
       <div className="auto-setting-line"><span>{t('auto.resume')}</span><button aria-label={t('auto.resume')} className="auto-toggle" role="switch" aria-checked={value.resume === true} onClick={() => setValue({ ...value, resume: value.resume !== true })}>{t(value.resume === true ? 'auto.on' : 'auto.off')}</button></div>
       <p className="auto-setting-hint">{t('auto.resumeHint')}</p>
@@ -156,19 +167,8 @@ export function HandoverSettingsDialog({ api, agents, onClose }: { api: Api; age
             <strong>{agent.label}</strong><span>{order ? order.map(label).join(' → ') || t('auto.noTargets') : t('auto.defaultOrder')}</span><IconChevron size={14} open={opened === agent.id} />
           </button>
           {opened === agent.id && <div className="auto-order-edit">
-            <ol aria-label={t('auto.order')}>{order?.map((target, i) => <li key={`${target.agent}:${target.model}`} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); if (dragged !== null) move(agent.id, dragged, i); setDragged(null); }}>
-              <span className="auto-order-grip" draggable onDragStart={() => setDragged(i)} onDragEnd={() => setDragged(null)} title={t('auto.drag')}><IconGrip size={16} /></span>
-              {agents.find(a => a.id === target.agent)?.icon && <AgentMark path={agents.find(a => a.id === target.agent)!.icon!} size={16} />}
-              <span className="auto-order-name">{label(target)}</span>
-              <Popover triggerClassName="icon-btn auto-order-more" panelClassName="auto-order-menu" label={t('auto.targetActions', label(target))} triggerLabel={t('auto.targetActions', label(target))} trigger={<IconMore size={16} />} align="end" placement="below">
-                {close => <div role="menu">
-                  <button className="pop-item compact" role="menuitem" disabled={!i} onClick={() => { move(agent.id, i, i - 1); close(); }}>{t('auto.up')}</button>
-                  <button className="pop-item compact" role="menuitem" disabled={i === order.length - 1} onClick={() => { move(agent.id, i, i + 1); close(); }}>{t('auto.down')}</button>
-                  <button className="pop-item compact" role="menuitem" onClick={() => { setOrder(agent.id, order.filter((_, n) => n !== i)); close(); }}>{t('auto.remove')}</button>
-                </div>}
-              </Popover>
-            </li>)}</ol>
-            <AddTarget api={api} agents={agents} add={target => { if (!order?.some(t => t.agent === target.agent && t.model === target.model)) setOrder(agent.id, [...(order ?? []), target]); }} />
+            <TargetList agents={agents} list={order ?? []} label={t('auto.order')} onChange={next => setOrder(agent.id, next)} />
+            <AddTarget api={api} agents={agents} addLabel={t('auto.add')} add={target => { if (!order?.some(t => t.agent === target.agent && t.model === target.model)) setOrder(agent.id, [...(order ?? []), target]); }} />
             {order && <button className="text-btn" onClick={() => { const orders = { ...value.orders }; delete orders[agent.id]; setValue({ ...value, orders }); }}>{t('auto.reset')}</button>}
           </div>}
         </section>;
