@@ -1,4 +1,4 @@
-import { effectiveHandoverMode, type HandoverLink } from './handover-mode.js';
+import type { HandoverLink } from './handover-mode.js';
 import type { DatabaseSync } from 'node:sqlite';
 import type { StoredEvent } from './events.js';
 import { compactDeltas, replaceMessageTail, toolText } from './events.js';
@@ -432,7 +432,9 @@ export class HistoryStore {
   }
   private handoverStart(thread: string): number {
     const record = this.db.prepare('SELECT handover, created_at FROM threads WHERE id=?').get(thread);
-    if (!record?.handover || effectiveHandoverMode(this.db, JSON.parse(String(record.handover)) as HandoverLink, String(record.created_at)) !== 'continue') return 0;
+    // Read as part of a chain, the first turn of a handed-over segment is its folded card, whether the
+    // relay was automatic or by hand. Read on its own (not a chain), nothing is hidden.
+    if (!record?.handover || (JSON.parse(String(record.handover)) as HandoverLink).detached) return 0;
 
     return Number(this.db.prepare(`SELECT e.seq FROM events e JOIN threads t ON t.id=e.thread_id
       WHERE e.thread_id=? AND t.handover IS NOT NULL AND e.type='turn.started' ORDER BY e.seq LIMIT 1`).get(thread)?.seq ?? 0);

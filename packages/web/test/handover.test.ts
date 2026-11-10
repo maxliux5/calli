@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { handoverHistoryKey, latestHandoverThread, nextSegment, takeoverMention } from '../src/handover';
+import { handoverHistoryKey, laterSegment, latestHandoverThread, nextSegment, takeoverMention } from '../src/handover';
 import type { Thread } from '../src/api';
 
 const segment = (id: string, parent?: string) => ({ id, createdAt: id, handover: parent ? { sourceId: parent, mode: 'continue' } : null }) as Thread;
@@ -47,4 +47,21 @@ test('reading on from an earlier segment goes through the chain toward the lates
   assert.equal(nextSegment(unrelated, c, all), undefined);
   const loop = [segment('x', 'y'), segment('y', 'x')];
   assert.equal(nextSegment(unrelated, loop[0], [...loop, unrelated]), undefined, 'a broken cycle ends instead of spinning');
+});
+
+test('a conversation handed over to by hand follows its source only while the source has stood still', () => {
+  const by = (id: string, over: Record<string, unknown> = {}, handover: Record<string, unknown> = {}) =>
+    ({ id, createdAt: id, status: 'idle', handover: { sourceId: 'a', mode: 'branch', automatic: false, sourceMoved: false, ...handover }, ...over }) as unknown as Thread;
+  const a = { id: 'a', createdAt: 'a', status: 'idle', handover: null } as unknown as Thread;
+  const older = by('b1'), newer = by('b2');
+  assert.equal(laterSegment(a, a, [a, older, newer])?.id, 'b2', 'the newest conversation handed over to');
+  assert.equal(laterSegment(a, a, [a, by('b', {}, { sourceMoved: true })]), undefined, 'the source went on after the handover');
+  assert.equal(laterSegment(a, a, [a, by('b', {}, { sourceMoved: undefined })]), undefined, 'an older daemon does not say; stay independent');
+  assert.equal(laterSegment({ ...a, status: 'running' } as Thread, a, [a, older]), undefined, 'the source is running a turn now');
+  assert.equal(laterSegment(a, a, [a, by('b', {}, { detached: true })]), undefined, 'detached by the user');
+  assert.equal(laterSegment(a, a, [a, by('b', {}, { automatic: true })]), undefined, 'a relay that diverged is not one by hand');
+  // An automatic chain toward the latest takes precedence over a conversation started from the same source.
+  const next = by('next', {}, { mode: 'continue', automatic: true });
+  assert.equal(laterSegment(a, next, [a, next, older])?.id, 'next');
+  assert.equal(laterSegment(a, a, [a, by('other', {}, { sourceId: 'z' })]), undefined, 'handed over from another conversation');
 });

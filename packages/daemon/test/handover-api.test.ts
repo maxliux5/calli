@@ -127,9 +127,10 @@ test('handover-thread creates an unsent conversation in the same worktree, inclu
     assert.equal(next.sectionId,source.sectionId);
     assert.equal(next.agentSessionId,null);
     assert.equal(next.forkedFrom,null,'handover does not copy the native session');
-    assert.deepEqual(next.handover,{sourceId:source.id,title:source.title,agent:source.agent,mode:'branch',automatic:false,sourceSeq:eventsBefore.at(-1)?.seq ?? 0});
-    const { automatic, ...storedLink } = next.handover;
+    assert.deepEqual(next.handover,{sourceId:source.id,title:source.title,agent:source.agent,mode:'branch',automatic:false,sourceMoved:false,sourceSeq:eventsBefore.at(-1)?.seq ?? 0});
+    const { automatic, sourceMoved, ...storedLink } = next.handover;
     assert.equal(automatic, false);
+    assert.equal(sourceMoved, false);
     assert.deepEqual(store.getThread(next.id)?.handover, storedLink);
     assert.equal(next.status,'idle');
     assert.equal(next.title,'原任务（接手）');
@@ -315,8 +316,8 @@ test('manual handovers always branch without stopping work, automatic handovers 
     assert.equal(manager.threadView(legacy.id).handover?.mode, 'branch');
     assert.equal(store.getThread(legacy.id)!.handover?.mode, undefined);
     store.appendEvent(legacy.id, 'opening', 'turn.started', { text: 'branch context' });
-    const page = await store.history.page(legacy.id, undefined, 0, true);
-    assert.ok(JSON.stringify(page).includes('branch context'), 'branch context is not hidden as a merged boundary');
+    assert.ok(JSON.stringify(await store.history.page(legacy.id, undefined, 0, false)).includes('branch context'), 'read on its own, the branch context is not hidden');
+    assert.ok(!JSON.stringify(await store.history.page(legacy.id, undefined, 0, true)).includes('branch context'), 'read as part of a chain it is the folded card of the boundary');
   } finally {
     await manager.shutdown(); await new Promise<void>(r => server.close(() => r())); store.close(); rmSync(root, { recursive: true, force: true });
   }

@@ -108,7 +108,7 @@ import { MergedHistory } from './components/MergedHistory';
 import { currentPlan, PlanButton } from './components/PlanPanel';
 import { HandoverComposer } from './components/HandoverComposer';
 import { WritingBar } from './components/WritingBar';
-import { handoverHistoryKey, latestHandoverThread, nextSegment } from './handover';
+import { handoverHistoryKey, laterSegment, latestHandoverThread } from './handover';
 import { TurnRuler } from './components/TurnRuler';
 import { NewProjectDialog, ProjectPicker, RootsDialog } from './components/Projects';
 import { NoteMarks, type NoteMark } from './components/NoteMarks';
@@ -3340,7 +3340,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
             <MergedHistory
               key={`${handoverHistoryKey(selected, threads)}:${mergedHandover}`}
               api={api} thread={selected} merged={mergedHandover} ready={historyReady} agentLabel={agentLabel}
-              laterOf={viewingEarlier && latestSegment ? thread => nextSegment(thread, latestSegment, threads) : undefined}
+              laterOf={latestSegment ? thread => laterSegment(thread, latestSegment, threads) : undefined}
               onOpenFinds={onRouterThread ? () => openDesk(true) : undefined}
               onBrowseOlder={() => { stickToBottom.current = false; setAtBottom(false); }}
               canFork={thread => ({ enabled: Boolean(thread.agentSessionId && capsOf(thread.agent)?.fork), any: Boolean(capsOf(thread.agent)?.forkAt) })}

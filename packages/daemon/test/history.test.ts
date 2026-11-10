@@ -470,3 +470,28 @@ test('the handover of a successor says how the work was carried over, and previe
     assert.equal(f.store.history.handoverInfo('next', true).text, brief);
   } finally { f.close(); }
 });
+
+test('a manual handover knows whether its source went on, and read as a chain hides its first turn like an automatic one', async () => {
+  const f = fixture();
+  try {
+    f.make('next');
+    f.add('t1', 'turn.started', { text: 'work on the source' });
+    f.add('t1', 'turn.done', {});
+    const sourceSeq = f.store.history.latest('thread');
+    const db = (f.store as any).db;
+    db.prepare('UPDATE threads SET handover = ? WHERE id = ?').run(JSON.stringify({ sourceId: 'thread', title: 'thread', agent: 'pi', mode: 'branch', sourceSeq }), 'next');
+    f.store.appendEvent('next', 'n1', 'turn.started', { text: 'BRIEF given to the new conversation' });
+    f.store.appendEvent('next', 'n1', 'message.delta', { text: 'working on it' });
+    f.store.appendEvent('next', 'n1', 'turn.done', {});
+    assert.equal(f.store.handoverSourceMoved(f.store.getThread('next')!), false, 'the source has not started anything since');
+    const turns = async (chain: boolean) => (await f.store.history.page('next', undefined, 0, chain)).events.filter(e => e.type === 'turn.started').map(e => e.data.text);
+    assert.deepEqual(await turns(false), ['BRIEF given to the new conversation'], 'read on its own, nothing is hidden');
+    assert.deepEqual(await turns(true), [''], 'read as part of a chain, the brief is the folded card');
+    f.add('t2', 'turn.started', { text: 'the source goes on' });
+    assert.equal(f.store.handoverSourceMoved(f.store.getThread('next')!), true);
+    // A detached relay is independent, chain or not.
+    db.prepare("UPDATE threads SET handover = json_set(handover, '$.detached', json('true')) WHERE id = ?").run('next');
+    assert.deepEqual(await turns(true), ['BRIEF given to the new conversation']);
+    assert.equal(f.store.handoverSourceMoved({ ...f.store.getThread('next')!, handover: null }), null);
+  } finally { f.close(); }
+});

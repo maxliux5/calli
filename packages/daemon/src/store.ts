@@ -1,5 +1,5 @@
 import { HttpError } from './errors.js';
-import { effectiveHandoverMode, type HandoverLink } from './handover-mode.js';
+import { effectiveHandoverMode, handoverSourceMoved, type HandoverLink } from './handover-mode.js';
 import { mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -940,6 +940,11 @@ export class Store {
 
   handoverMode(thread: ThreadRecord) {
     return thread.handover ? effectiveHandoverMode(this.db, thread.handover, thread.createdAt) : null;
+  }
+
+  /** Whether the source of this thread's handover has had a turn since; null without a handover. */
+  handoverSourceMoved(thread: ThreadRecord): boolean | null {
+    return thread.handover ? handoverSourceMoved(this.db, thread.handover, thread.createdAt) : null;
   }
 
   detachHandover(id: string): void {

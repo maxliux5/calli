@@ -31,6 +31,20 @@ export function nextSegment(from: Thread, latest: Thread, threads: Thread[]): Th
   return undefined;
 }
 
+/**
+ * What reading `from` goes on into: the next segment of its automatic chain toward `latest`, else
+ * the newest conversation it was handed to by hand. A hand-over only counts while `from` has stood
+ * still since: once it has had a turn of its own, or is running one, the two are separate
+ * conversations and the successor does not follow it.
+ */
+export function laterSegment(from: Thread, latest: Thread, threads: Thread[]): Thread | undefined {
+  const chained = nextSegment(from, latest, threads);
+  if (chained || from.status === 'running') return chained;
+  return threads
+    .filter(item => item.handover?.sourceId === from.id && !item.handover.automatic && !item.handover.detached && item.handover.sourceMoved === false)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))[0];
+}
+
 /** Reset loaded ancestors when the daemon changes a relation anywhere on the visible path. */
 export function handoverHistoryKey(thread: Thread | undefined, threads: Thread[]): string {
   const seen = new Set<string>();
