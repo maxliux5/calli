@@ -1,13 +1,14 @@
-// One machine's token usage, the detail the machines list in settings opens per machine (persona,
-// web/src/views/machines/UsageSection.tsx): the four numbers, the stacked throughput chart, the
-// cache hit rate, and the by-model / by-launcher lists. The arithmetic lives in machine-usage.ts;
-// this file only fetches, lays out and draws.
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
-import { Api, ApiError, type AgentInfo, type HostInfo, type MachineUsageReport } from '../api';
+// The machines page (a first-class page at #/machines, persona's web/src/views/machines): one
+// card per machine with today's tokens, and a detail view with the token charts behind each card.
+// The address owns the level (#/machines is the list, #/machines/<id|local> a detail); the
+// arithmetic lives in machine-usage.ts; this file only fetches, lays out and draws.
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
+import { Api, ApiError, type AgentInfo, type HostInfo, type MachineUsageReport, type UsageTokens } from '../api';
+import { hostStatus } from '../hosts';
 import { bucketLabel, clockLabel, compactLabel, dayLabel, niceTicks, numberLabel, stepLabel, timeTicks } from '../observability';
 import {
-  USAGE_COLOR, USAGE_FIELD, USAGE_KINDS, hitRate, hitRuns, offlineRuns, perMinute, percentText,
-  stackLayers, totalTokens, type UsageKind,
+  USAGE_COLOR, USAGE_FIELD, USAGE_KINDS, currentPerMinute, hitRate, hitRuns, offlineRuns, perMinute, percentText,
+  stackLayers, todayTokens, totalTokens, type UsageKind,
 } from '../machine-usage';
 import { t } from '../i18n';
 import { Popover } from './Popover';
@@ -21,7 +22,7 @@ const KIND_LABEL: Record<UsageKind, string> = {
 };
 
 /** A machine the page shows: the hub's own, or one of the configured remotes. */
-export interface Machine {
+interface Machine {
   /** null is the hub's own machine. */
   id: string | null;
   label: string;
@@ -49,6 +50,110 @@ function useWidth(box: React.RefObject<HTMLDivElement | null>, dep: unknown): nu
     return () => observer.disconnect();
   }, [box, dep]);
   return width;
+}
+
+/** One machine's card numbers: today's tokens and the last hour's per-minute line. */
+type Summary = { day: UsageTokens | null; hour: MachineUsageReport | null; state: 'loading' | 'ok' | 'old' | 'failed' };
+
+/** The detail page's empty machine table: a stable identity, so the poll's effect rests. */
+const NO_MACHINES: Machine[] = [];
+
+function useSummaries(machines: Machine[]): Map<string, Summary> {
+  const [summaries, setSummaries] = useState<Map<string, Summary>>(new Map());
+  useEffect(() => {
+    // A detail page asks for nothing; an empty read still lands as a new Map, which re-arms.
+    if (machines.length === 0) return;
+    let alive = true;
+    const read = async () => {
+      const next = new Map<string, Summary>();
+      await Promise.all(machines.map(async (machine) => {
+        // A remote that is down cannot answer; the card says so instead of a fetch that cannot land.
+        if (machine.host && machine.host.status === 'offline') {
+          next.set(machine.id ?? '', { day: null, hour: null, state: 'failed' });
+          return;
+        }
+        try {
+          const [day, hour] = await Promise.all([machine.api.machineUsage(24), machine.api.machineUsage(1)]);
+          if (alive) next.set(machine.id ?? '', { day: todayTokens(day), hour, state: 'ok' });
+        } catch (error) {
+          next.set(machine.id ?? '', { day: null, hour: null, state: error instanceof ApiError && error.status === 404 ? 'old' : 'failed' });
+        }
+      }));
+      if (alive) setSummaries(next);
+    };
+    void read();
+    const timer = setInterval(() => { if (!document.hidden) void read(); }, 60_000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [machines]);
+  return summaries;
+}
+
+/** The last hour as a small line, a break over the offline steps. */
+function Spark({ report }: { report: MachineUsageReport | null }) {
+  const values = report ? report.points.map(point => ({ v: perMinute(totalTokens(point), report.step), gap: point.gap })) : [];
+  const peak = Math.max(1, ...values.map(v => v.v));
+  const x = (i: number) => (i / Math.max(1, values.length - 1)) * 118 + 1;
+  const y = (v: number) => 33 - (v / peak) * 30;
+  const runs: string[] = [];
+  let run = '';
+  values.forEach((value, i) => {
+    if (value.gap) { if (run) runs.push(run); run = ''; return; }
+    run += `${run ? 'L' : 'M'}${x(i).toFixed(1)},${y(value.v).toFixed(1)}`;
+  });
+  if (run) runs.push(run);
+  return <svg className="mu-spark" viewBox="0 0 120 36" preserveAspectRatio="none" aria-hidden="true">
+    {runs.map((path, i) => <path key={i} d={path} />)}
+  </svg>;
+}
+
+/** Today over every machine, with each machine's share as a neutral bar (persona's TodayTokens). */
+function TodayCard({ machines, summaries }: { machines: Machine[]; summaries: Map<string, Summary> }) {
+  const shares = machines
+    .map(machine => ({ machine, day: summaries.get(machine.id ?? '')?.day }))
+    .filter((s): s is { machine: Machine; day: UsageTokens } => s.day != null)
+    .map(s => ({ ...s, tokens: totalTokens(s.day) }))
+    .sort((a, b) => b.tokens - a.tokens);
+  const total = shares.reduce((sum, s) => sum + s.tokens, 0);
+  const missing = machines.filter(m => summaries.get(m.id ?? '')?.state !== 'ok').length;
+  // Persona's shading: the first machine's ink at full strength, each later one a step lighter.
+  const shade = (i: number) => Math.max(0.85 - i * 0.2, 0.2);
+  // Nothing answered yet: the number is unknown, not zero, and the card keeps its shape.
+  const unknown = !shares.length && missing > 0;
+  return <section className="mu-today">
+    <span>{t('machine.today')}</span>
+    <strong title={unknown ? undefined : numberLabel(total)} className={unknown ? 'unknown' : ''}>{unknown ? '—' : total ? compactLabel(total) : '0'}</strong>
+    <div className="mu-share-bar" role={unknown ? undefined : 'img'} aria-hidden={unknown || undefined} aria-label={unknown ? undefined : shares.map(s => `${s.machine.label} ${compactLabel(s.tokens)}`).join(', ')}>
+      {total > 0 && shares.map((s, i) => <i key={s.machine.id ?? ''} style={{ width: `${(s.tokens / total) * 100}%`, opacity: shade(i) }} title={`${s.machine.label} · ${compactLabel(s.tokens)}`} />)}
+    </div>
+    {total > 0 && <div className="mu-share-legend">{shares.map((s, i) => <span key={s.machine.id ?? ''}><i style={{ opacity: shade(i) }} />{s.machine.label} · {compactLabel(s.tokens)}</span>)}</div>}
+    {missing > 0 && <small>{t('machine.todayMissing', missing)}</small>}
+  </section>;
+}
+
+function MachineList({ machines, summaries, onOpen }: { machines: Machine[]; summaries: Map<string, Summary>; onOpen: (id: string | null) => void }) {
+  return <section aria-label={t('machine.cards')}>
+    <TodayCard machines={machines} summaries={summaries} />
+    <div className="mu-cards">
+      {machines.map(machine => {
+        const summary = summaries.get(machine.id ?? '');
+        const state = summary?.state ?? 'loading';
+        return <button key={machine.id ?? 'local'} type="button" className="mu-card" onClick={() => onOpen(machine.id)}>
+          <span className="mu-card-head">
+            <strong>{machine.label}</strong>
+            <small>{machine.host ? hostStatus(machine.host.status) : t('hosts.localHint')}</small>
+          </span>
+          <span className="mu-card-stat">
+            <span className="mu-card-today">{t('machine.today')} <strong title={state === 'ok' && summary?.day ? numberLabel(totalTokens(summary.day)) : undefined}>{state === 'ok' && summary?.day ? compactLabel(totalTokens(summary.day)) : '—'}</strong></span>
+            <span className="mu-card-now">{state === 'ok' && summary?.hour ? t('machine.nowPerMinute', compactLabel(currentPerMinute(summary.hour))) : state === 'loading' ? '—' : ''}</span>
+          </span>
+          {/* The line keeps its place before and after the numbers arrive, so the grid does not jump. */}
+          <Spark report={state === 'ok' ? summary?.hour ?? null : null} />
+          {state === 'old' && <span className="mu-card-note">{t('machine.oldDaemon')}</span>}
+          {state === 'failed' && <span className="mu-card-note">{machine.host?.status === 'offline' ? hostStatus('offline') : t('machine.loadFailed')}</span>}
+        </button>;
+      })}
+    </div>
+  </section>;
 }
 
 const PAD = { top: 10, right: 12, bottom: 26, left: 48 };
@@ -237,7 +342,7 @@ function HitChart({ report }: { report: MachineUsageReport | null }) {
           <line className="obs-chart-grid" x1={PAD.left} x2={PAD.left + plotW} y1={y(v)} y2={y(v)} />
           <text className="obs-chart-axis" x={PAD.left - 8} y={y(v)} dy="0.32em" textAnchor="end">{Math.round(v * 100)}%</text>
         </g>)}
-        {xLabels.map(i => <text key={i} className="obs-chart-axis" x={x(i)} y={height - 6} textAnchor="middle">
+        {report && xLabels.map(i => <text key={i} className="obs-chart-axis" x={x(i)} y={height - 6} textAnchor="middle">
           {xTicks.every < 1440 ? clockLabel(at(report1.points[i].t)) : dayLabel(at(report1.points[i].t))}
         </text>)}
         {runs.map((run, i) => <path key={i} className="obs-chart-line" style={{ stroke: 'var(--chart-total)' }}
@@ -277,7 +382,7 @@ function ShareList({ title, shares, active, label, onPick }: {
   </section>;
 }
 
-export function MachineDetail({ machine, onBack }: { machine: Machine; onBack: () => void }) {
+function MachineDetail({ machine, onBack }: { machine: Machine; onBack: () => void }) {
   const [hours, setHours] = useState<1 | 24 | 168>(24);
   const [model, setModel] = useState<string | null>(null);
   const [launcher, setLauncher] = useState<string | null>(null);
@@ -360,11 +465,19 @@ export function MachineDetail({ machine, onBack }: { machine: Machine; onBack: (
   </>;
 }
 
-/** The machine a settings path names: '' the hub's own, a host id one of the remotes. Falls back
- *  to the hub's own when the id names no configured machine. In the demo the local machine is the
- *  demo api itself: nothing else is there to answer. */
-export function machineFor(api: Api, token: string, hosts: HostInfo[], key: string): Machine {
-  const host = hosts.find((h) => h.id === key);
-  if (!host) return { id: null, label: t('hosts.local'), host: null, api: api.demo ? api : new Api(token) };
-  return { id: host.id, label: host.label || host.target, host, api: api.demo ? api : new Api(token, '', host.id) };
+/** The machines page: every machine's cards, and one machine's detail behind its card. The
+ *  address names the level — '' the list, 'local' the hub's own machine, a host id a remote. */
+export function MachineUsagePage({ api, token, hosts, open, onOpen }: { api: Api; token: string; hosts: HostInfo[]; open: string; onOpen: (path: string) => void }) {
+  const machines = useMemo<Machine[]>(() => [
+    // In the demo the local machine is the demo api itself: nothing else is there to answer.
+    { id: null, label: t('hosts.local'), host: null, api: api.demo ? api : new Api(token) },
+    ...hosts.map(host => ({ id: host.id, label: host.label || host.target, host, api: api.demo ? api : new Api(token, '', host.id) })),
+  ], [api, token, hosts]);
+  const summaries = useSummaries(open ? NO_MACHINES : machines);
+  return <section className="obs-page">
+    <h1>{t('hosts.machines')}</h1>
+    {open === ''
+      ? <MachineList machines={machines} summaries={summaries} onOpen={id => onOpen(id ?? 'local')} />
+      : <MachineDetail machine={machines.find(m => (m.id ?? '') === (open === 'local' ? '' : open)) ?? machines[0]} onBack={() => onOpen('')} />}
+  </section>;
 }

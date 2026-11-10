@@ -2,18 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { Api, ApiError, AuthError, type HostFailure, type HostInfo } from '../api';
 import { hostProblem, hostStatus } from '../hosts';
 import { todayTokens, totalTokens } from '../machine-usage';
-import { compactLabel, numberLabel } from '../observability';
+import { compactLabel } from '../observability';
 import { Dialog } from './Dialog';
 import { SettingsSection, usePageDraft } from './PageNavigation';
-import { MachineDetail, machineFor } from './MachineUsagePage';
 import { IconCheck, IconChevron, IconClose, IconComputer, IconGlobe, IconPlus, IconServer, IconSettings } from './icons';
 import { Popover } from './Popover';
 import { t } from '../i18n';
-
-/** A settings path part back to its id, however it was encoded. */
-function safeDecode(value: string): string {
-  try { return decodeURIComponent(value); } catch { return value; }
-}
 
 /** ssh's own words, for whoever has to fix it. When no daemon answered there is nothing of ssh's to quote. */
 const SshSaid = ({ host }: { host: Pick<HostInfo, 'code' | 'error'> }) =>
@@ -21,7 +15,6 @@ const SshSaid = ({ host }: { host: Pick<HostInfo, 'code' | 'error'> }) =>
 
 /** Every machine's tokens today, one read for the line above the list and each row's number.
  *  A machine that is down cannot answer; its number waits as a dash, not as a zero. */
-const NO_MACHINES: Array<{ key: string; host: HostInfo | null }> = [];
 function useTodays(api: Api, token: string, machines: Array<{ key: string; host: HostInfo | null }>): Map<string, number | null> {
   const [todays, setTodays] = useState<Map<string, number | null>>(new Map());
   useEffect(() => {
@@ -178,9 +171,8 @@ interface PanelProps {
   /** For asking each machine its own usage: the page's token, which every proxy call reuses. */
   token: string;
   hosts: HostInfo[];
-  /** The settings path of this page: 'machines' is the list, 'machines/<id|local>' a detail. */
-  path: string;
-  onNavigate: (path: string) => void;
+  /** Opens the machine's usage detail on the machines page: reading it is separate from managing it. */
+  onOpenUsage: (machine: string | null) => void;
   /** Called after machines were added, removed or retried, so the rest of the page hears of it. */
   onChanged: () => Promise<void>;
   onClose: () => void;
@@ -191,46 +183,25 @@ interface PanelProps {
  * The machines this hub shows besides its own. Adding one takes only what ssh calls it: the hub
  * signs in, finds the Calli running there, and keeps a connection to it.
  */
-export function HostsPanel({ api, token, hosts, path, onNavigate, onChanged, onError }: PanelProps) {
-  // Which machine's detail the path names: 'local' the hub's own, otherwise a host id.
-  const detailKey = path.startsWith('machines/') ? safeDecode(path.slice('machines/'.length)) : null;
+export function HostsPanel({ api, token, hosts, onOpenUsage, onChanged, onError }: PanelProps) {
   const machines = useMemo(() => [
     { key: 'local', host: null as HostInfo | null, label: t('hosts.local') },
     ...hosts.map((host) => ({ key: host.id, host, label: host.label || host.target })),
   ], [hosts]);
-
-  // The hooks run for both shapes of the page; the detail asks nothing of its own.
-  const todays = useTodays(api, token, detailKey !== null ? NO_MACHINES : machines);
-
-  // The detail is its own sub-page; the list below it is not drawn.
-  if (detailKey !== null) {
-    const machine = machineFor(api, token, hosts, detailKey === 'local' ? '' : detailKey);
-    return <div className="mu-in-settings">
-      <MachineDetail machine={machine} onBack={() => onNavigate('machines')} />
-    </div>;
-  }
-
-  return <HostsList api={api} hosts={hosts} machines={machines} todays={todays} onNavigate={onNavigate} onChanged={onChanged} onError={onError} />;
+  const todays = useTodays(api, token, machines);
+  return <HostsList api={api} hosts={hosts} machines={machines} todays={todays} onOpenUsage={onOpenUsage} onChanged={onChanged} onError={onError} />;
 }
 
 /** The list itself: today over every machine in one line, one row per machine, and the adding. */
-function HostsList({ api, hosts, machines, todays, onNavigate, onChanged, onError }: {
+function HostsList({ api, hosts, machines, todays, onOpenUsage, onChanged, onError }: {
   api: Api;
   hosts: HostInfo[];
   machines: Array<{ key: string; host: HostInfo | null; label: string }>;
   todays: Map<string, number | null>;
-  onNavigate: (path: string) => void;
+  onOpenUsage: (machine: string | null) => void;
   onChanged: () => Promise<void>;
   onError: (e: unknown) => void;
 }) {
-  const shares = machines
-    .map((machine) => ({ machine, tokens: todays.get(machine.key) ?? null }))
-    .filter((s): s is { machine: { key: string; host: HostInfo | null; label: string }; tokens: number } => s.tokens !== null)
-    .sort((a, b) => b.tokens - a.tokens);
-  const total = shares.reduce((sum, s) => sum + s.tokens, 0);
-  const unknown = machines.length > 0 && shares.length === 0;
-  // Persona's shading: the first machine's ink at full strength, each later one a step lighter.
-  const shade = (i: number) => Math.max(0.85 - i * 0.2, 0.2);
   const [candidates, setCandidates] = useState<string[] | null>(null);
   const [candidatesError, setCandidatesError] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -296,14 +267,6 @@ function HostsList({ api, hosts, machines, todays, onNavigate, onChanged, onErro
   return (
     <>
     <SettingsSection title={t('hosts.machines')} hint={t('hosts.hint')} className="hosts-settings">
-        {/* Today over every machine in one line: the number, then each machine's share of it. */}
-        <div className="hosts-today-line">
-          <span>{t('machine.today')}</span>
-          <strong title={unknown ? undefined : numberLabel(total)} className={unknown ? 'unknown' : ''}>{unknown ? '—' : total ? compactLabel(total) : '0'}</strong>
-          <div className="mu-share-bar" role={unknown ? undefined : 'img'} aria-label={unknown ? undefined : shares.map((s) => `${s.machine.label} ${compactLabel(s.tokens)}`).join(', ')}>
-            {total > 0 && shares.map((s, i) => <i key={s.machine.key} style={{ width: `${(s.tokens / total) * 100}%`, opacity: shade(i) }} title={`${s.machine.label} · ${compactLabel(s.tokens)}`} />)}
-          </div>
-        </div>
         <div className="panel-list">
           {/* The hub's own machine reads here too: its usage is one click away like the rest. */}
           <div className="panel-row single host-row">
@@ -315,7 +278,7 @@ function HostsList({ api, hosts, machines, todays, onNavigate, onChanged, onErro
                 <span>{t('hosts.localHint')}</span>
               </div>
             </div>
-            <MachineToday today={todays.get('local') ?? null} onOpen={() => onNavigate('machines/local')} />
+            <MachineToday today={todays.get('local') ?? null} onOpen={() => onOpenUsage(null)} />
           </div>
           {hosts.map((h) => (
             <div key={h.id} className="panel-row single host-row">
@@ -335,7 +298,7 @@ function HostsList({ api, hosts, machines, todays, onNavigate, onChanged, onErro
                   </p>
                 )}
               </div>
-              <MachineToday today={todays.get(h.id) ?? null} onOpen={() => onNavigate(`machines/${encodeURIComponent(h.id)}`)} />
+              <MachineToday today={todays.get(h.id) ?? null} onOpen={() => onOpenUsage(h.id)} />
               {h.status !== 'online' && (
                 <button className="text-btn" disabled={busy !== null} onClick={() => void retry(h)}>
                   {t('common.retry')}

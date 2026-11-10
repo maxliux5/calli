@@ -10487,15 +10487,31 @@ button.coord-row-name { cursor: pointer; }
 /* The legend's count, next to its kind's name. */
 .obs-chart-legend em { color: var(--muted); font-style: normal; font-variant-numeric: tabular-nums; }
 
-/* Today over every machine, one quiet line above the machine list: the total, then each
-   machine's share of it as a single bar (persona's shading, first machine full strength). */
+/* Today over every machine (persona's TodayTokens): a headline number with the share bar below. */
+.mu-today { display: flex; flex-direction: column; gap: 6px; padding: 18px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); margin-bottom: 16px; }
+.mu-today > span { color: var(--muted); font-size: 12px; }
+.mu-today > strong { font-size: 26px; font-weight: 550; letter-spacing: -.3px; font-variant-numeric: tabular-nums; }
 .mu-share-bar { display: flex; height: 8px; border-radius: var(--radius-pill); overflow: hidden; background: var(--hover); }
 .mu-share-bar i { background: var(--text); min-width: 2px; }
-.hosts-today-line { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; }
-.hosts-today-line > span { flex: none; color: var(--muted); font-size: 12px; }
-.hosts-today-line > strong { font-size: 15px; font-weight: 550; letter-spacing: -.2px; font-variant-numeric: tabular-nums; }
-.hosts-today-line > strong.unknown { color: var(--faint); }
-.hosts-today-line > .mu-share-bar { flex: 1; min-width: 40px; height: 6px; }
+.mu-share-legend { display: flex; flex-wrap: wrap; gap: 2px 14px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.mu-share-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.mu-share-legend i { width: 10px; height: 10px; border-radius: 3px; background: var(--text); flex-shrink: 0; }
+.mu-today small { color: var(--faint); font-size: 12px; }
+
+/* One machine: a card with today's tokens, the rate now, and the last hour's line. */
+.mu-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+.mu-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); text-align: left; cursor: pointer; font: inherit; color: var(--text); min-width: 0; }
+.mu-card:hover { background: var(--hover); }
+.mu-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.mu-card-head strong { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-card-head small { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+.mu-card-stat { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.mu-card-today { color: var(--muted); font-size: 12px; }
+.mu-card-today strong { display: block; color: var(--text); font-size: 20px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.mu-card-now { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; flex-shrink: 0; }
+.mu-card-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.mu-spark { width: 100%; height: 36px; color: var(--chart-total); }
+.mu-spark path { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
 
 /* The stacked kinds keep a 2px surface gap between them; offline stretches read as a flat grey. */
 .mu-stack { stroke: var(--surface); stroke-width: 2; stroke-linejoin: round; }
@@ -10539,19 +10555,14 @@ button.coord-row-name { cursor: pointer; }
 /* Both columns' first cards start flush with the grid's top edge (the chart card's own margin
    would otherwise drop it below the share card beside it). */
 .mu-detail > * > :first-child { margin-top: 0; }
-/* The usage detail as a settings sub-page runs the section's width: when the chart and the
-   lists no longer fit side by side, the two share lists pair up under the charts instead. */
-.mu-in-settings .mu-side { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; align-items: start; }
-/* The machine's own number on its row in the machines list: reading it is separate from
-   managing the machine, so it is a button of its own. */
+.mu-today > strong.unknown { color: var(--faint); }
+/* The machine's own number on its row in the machines settings page: reading it is separate
+   from managing the machine, so it is a button of its own that opens the machines page. */
 .host-today { flex: none; min-width: 56px; text-align: right; padding: 4px 8px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; cursor: pointer; }
 .host-today:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .host-today:disabled { cursor: default; }
 @media (max-width: 900px) {
   .mu-detail { grid-template-columns: minmax(0, 1fr); }
-}
-@media (max-width: 760px) {
-  .mu-in-settings { padding: 22px 18px 48px; }
 }
 @media (max-width: 480px) {
   .mu-figures strong { font-size: 16px; }
@@ -13739,7 +13750,7 @@ body:has(.settings-page, .action-sheet) .pet { display: none; }
 .settings-nav-row:hover { background: var(--hover); }
 .settings-nav-row.selected { background: var(--active); }
 .settings-detail { flex: 1; min-width: 0; overflow-y: auto; overscroll-behavior: contain; }
-.settings-detail > :is(.agents-page, .teams-page, .skills-page, .mcp-page, .extensions-page, .activity-page, .obs-page, .mu-in-settings) { width: 100%; max-width: 1040px; margin: 0 auto; padding: 28px 36px 60px; }
+.settings-detail > :is(.agents-page, .teams-page, .skills-page, .mcp-page, .extensions-page, .activity-page, .obs-page) { width: 100%; max-width: 1040px; margin: 0 auto; padding: 28px 36px 60px; }
 .settings-section { display: flex; flex-direction: column; min-height: 100%; width: 100%; max-width: 820px; margin: 0 auto; overflow: visible; color: var(--text); }
 .settings-section:is(.personal-settings, .push-settings, .auto-settings, .look-panel, .general-settings) { width: 100%; max-width: 820px; max-height: none; padding: 0; }
 .settings-section-body { flex: 1; min-width: 0; padding: 28px 40px 40px; }

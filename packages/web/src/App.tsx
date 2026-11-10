@@ -63,6 +63,7 @@ import { fileRef } from './files';
 import { AddAgentDialog } from './components/AddAgentDialog';
 import { OnboardingDialog } from './components/OnboardingDialog';
 import { ObservabilityPage } from './components/ObservabilityPage';
+import { MachineUsagePage } from './components/MachineUsagePage';
 import { QuotaBoard } from './components/QuotaBoard';
 import { QuotaNavigation } from './quota-reading';
 import { SelectionMenu } from './components/SelectionMenu';
@@ -167,11 +168,12 @@ const MCP_HASH = '#/mcp';
 const SCHEDULES_HASH = '#/schedules';
 const ACTIVITY_HASH = '#/activity';
 const OBSERVABILITY_HASH = '#/observability';
+const MACHINES_HASH = '#/machines';
 const EXTENSIONS_HASH = '#/extensions';
 /** The hub's own pages. Any other `#/…` may be an extension's view; see extensions/routes.ts. */
-const CORE_ROUTES = ['#/settings', AGENTS_HASH, TEAMS_HASH, TODOS_HASH, DESK_HASH, SKILLS_HASH, MCP_HASH, SCHEDULES_HASH, ACTIVITY_HASH, OBSERVABILITY_HASH, EXTENSIONS_HASH];
+const CORE_ROUTES = ['#/settings', AGENTS_HASH, TEAMS_HASH, TODOS_HASH, DESK_HASH, SKILLS_HASH, MCP_HASH, SCHEDULES_HASH, ACTIVITY_HASH, OBSERVABILITY_HASH, MACHINES_HASH, EXTENSIONS_HASH];
 
-type MainView = 'settings' | 'agents' | 'teams' | 'thread' | 'todos' | 'desk' | 'schedules' | 'activity' | 'observability' | 'skills' | 'mcp' | 'extensions' | 'ext';
+type MainView = 'settings' | 'agents' | 'teams' | 'thread' | 'todos' | 'desk' | 'schedules' | 'activity' | 'observability' | 'machines' | 'skills' | 'mcp' | 'extensions' | 'ext';
 
 function quotaAccount(path: string): string | undefined {
   if (!path.startsWith('quota/')) return undefined;
@@ -181,6 +183,7 @@ function quotaAccount(path: string): string | undefined {
 /** The page an address opens; null for none (a thread). Skills and MCP are the hub's own machinery, which the demo has none of. */
 function viewForHash(hash: string, connected: boolean): MainView | null {
   if (hash.startsWith('#/schedules/')) return 'schedules';
+  if (hash.startsWith('#/machines/')) return 'machines';
   if (hash === '#/settings' || hash.startsWith('#/settings/')) return 'settings';
   if (hash.startsWith('#/thread/')) return null;
   switch (hash) {
@@ -194,6 +197,8 @@ function viewForHash(hash: string, connected: boolean): MainView | null {
       return 'activity';
     case OBSERVABILITY_HASH:
       return connected ? 'observability' : null;
+    case MACHINES_HASH:
+      return 'machines';
     case AGENTS_HASH:
       return connected ? 'agents' : null;
     case TEAMS_HASH:
@@ -562,6 +567,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   // Those pages have addresses of their own, so a reload or a bookmark lands back on them.
   const [threadLink, setThreadLink] = useState(() => window.location.hash.startsWith('#/thread/') ? window.location.hash : null);
   const [schedulePath, setSchedulePath] = useState(() => window.location.hash.startsWith('#/schedules/') ? window.location.hash.slice('#/schedules/'.length) : '');
+  const [machinePath, setMachinePath] = useState(() => window.location.hash.startsWith('#/machines/') ? window.location.hash.slice('#/machines/'.length) : '');
   const [settingsPath, setSettingsPath] = useState(() => start === 'machines' ? 'machines' : window.location.hash.replace(/^#\/settings\/?/, ''));
   // `list`: the phone's thread list was open, so closing settings goes back to it.
   const settingsOrigin = useRef<{ view: MainView; thread: string | null; hash: string; scroll: number; pinned: boolean; entry: string; list: boolean } | null>(null);
@@ -942,6 +948,10 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const [observabilityFocus, setObservabilityFocus] = useState<string | undefined>(undefined);
   // Bumped on every visit so the page opens on the requested tab, even when it is already showing.
   const [observabilityKey, setObservabilityKey] = useState(0);
+  // Bumped on every visit so the page opens on its list, even when it is already showing.
+  const [machineKey, setMachineKey] = useState(0);
+  /** The thread the machines page was opened from; the browser's back returns to it. */
+  const machinesOrigin = useRef<string | null>(null);
   /** Other agent CLIs found on this host, added from the settings menu — not the picker. */
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [onboardOpen, setOnboardOpen] = useState(false);
@@ -1146,6 +1156,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const onActivity = view === 'activity' && !selectedId;
   const onAgents = view === 'agents' && !selectedId;
   const onObservability = view === 'observability' && !selectedId;
+  const onMachines = view === 'machines';
   const onTeams = view === 'teams' && !selectedId;
   const onSkills = view === 'skills' && !selectedId;
   const onMcp = view === 'mcp' && !selectedId;
@@ -1155,7 +1166,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const extOpen = onExt && extensions && extTarget ? resolveExtensionRoute(extTarget, extensions) : null;
   const extName = extOpen ? extensions?.find((e) => e.manifest.id === extOpen.extensionId)?.manifest.name[locale()] ?? extOpen.extensionId : '';
   /** The name of the page the main area shows instead of a thread, for the top bar; null on a thread. */
-  const viewTitle = onSettings ? t('sidebar.settings') : onDesk ? t('desk.title') : onObservability ? t('obs.title') : onAgents ? t('agents.title') : onTeams ? t('teams.title') : onTodos
+  const viewTitle = onSettings ? t('sidebar.settings') : onDesk ? t('desk.title') : onObservability ? t('obs.title') : onMachines ? t('hosts.machines') : onAgents ? t('agents.title') : onTeams ? t('teams.title') : onTodos
     ? t('todos.title')
     : onSchedules
       ? t('sidebar.schedules')
@@ -1218,12 +1229,12 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const extWant = onExt ? (extOpen ? extensionHash(extOpen) : extTarget ?? '') : '';
   useEffect(() => {
     if (threadLink) return;
-    const want = onSettings ? `#/settings${settingsPath ? `/${settingsPath}` : ''}` : onDesk ? DESK_HASH : onObservability ? OBSERVABILITY_HASH : onAgents ? AGENTS_HASH : onTeams ? TEAMS_HASH : onTodos ? TODOS_HASH : onSchedules ? `${SCHEDULES_HASH}${schedulePath ? `/${schedulePath}` : ''}` : onActivity ? ACTIVITY_HASH : onSkills ? SKILLS_HASH : onMcp ? MCP_HASH : onExtensions ? EXTENSIONS_HASH : extWant;
+    const want = onSettings ? `#/settings${settingsPath ? `/${settingsPath}` : ''}` : onDesk ? DESK_HASH : onObservability ? OBSERVABILITY_HASH : onMachines ? `${MACHINES_HASH}${machinePath ? `/${machinePath}` : ''}` : onAgents ? AGENTS_HASH : onTeams ? TEAMS_HASH : onTodos ? TODOS_HASH : onSchedules ? `${SCHEDULES_HASH}${schedulePath ? `/${schedulePath}` : ''}` : onActivity ? ACTIVITY_HASH : onSkills ? SKILLS_HASH : onMcp ? MCP_HASH : onExtensions ? EXTENSIONS_HASH : extWant;
     if (window.location.hash !== want) {
       window.history.replaceState(window.history.state, '', want || window.location.pathname + window.location.search);
     }
     appHref.current = window.location.pathname + window.location.search + window.location.hash;
-  }, [schedulePath, onSettings, settingsPath, onDesk, onObservability, onAgents, onTeams, onTodos, onActivity, onSkills, onSchedules, onMcp, onExtensions, extWant, threadLink]);
+  }, [schedulePath, machinePath, onSettings, settingsPath, onDesk, onObservability, onMachines, onAgents, onTeams, onTodos, onActivity, onSkills, onSchedules, onMcp, onExtensions, extWant, threadLink]);
 
   // Whether the directory a new thread would start in is a git repository. Asked once per directory picked.
   useEffect(() => {
@@ -1269,6 +1280,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
         if (next !== 'settings') setSelectedId(null);
         setView(next);
         if (next === 'schedules') setSchedulePath(hash.startsWith('#/schedules/') ? hash.slice('#/schedules/'.length) : '');
+      if (next === 'machines') setMachinePath(hash.startsWith('#/machines/') ? hash.slice('#/machines/'.length) : '');
         if (next === 'settings') setSettingsPath(hash.replace(/^#\/settings\/?/, ''));
         if (next === 'ext') setExtTarget(hash);
         setDrawer(false);
@@ -2233,6 +2245,11 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       return true;
     }
     if (onSchedules && schedulePath) { openSchedules(''); return true; }
+    if (onMachines) {
+      if (machinePath) { openMachines(''); return true; }
+      setView('thread'); setSelectedId(machinesOrigin.current);
+      return true;
+    }
     if (compact) { setDrawer(true); return true; }
     return false;
   };
@@ -2303,6 +2320,16 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     setObservabilityFocus(focusAgent);
     setObservabilityKey((n) => n + 1);
     setView('observability');
+    setDrawer(false);
+  });
+
+  const openMachines = (path = '') => navigate(() => {
+    // Where the browser's back lands when the page itself is left: the thread it was opened from.
+    if (view !== 'machines') machinesOrigin.current = selectedId;
+    setSelectedId(null);
+    setMachinePath(path);
+    setMachineKey((n) => n + 1);
+    setView('machines');
     setDrawer(false);
   });
 
@@ -2857,9 +2884,8 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
         { id: 'teams', label: t('teams.title'), icon: IconAgents, render: () => <TeamsPage api={api} agents={agents} onReload={reloadTeams} /> },
         { id: 'skills', label: t('composerMenu.skills'), icon: IconSparkle, render: () => <SkillsPage api={api} token={token} hostId={hostId} hosts={hosts} agents={agents} onError={handleError} /> },
         { id: 'mcp', label: 'MCP', icon: IconGlobe, render: () => <McpPage api={api} token={token} hostId={hostId} hosts={hosts} agents={agents} onError={handleError} /> },
+        { id: 'machines', label: t('hosts.machines'), icon: IconServer, render: () => <HostsPanel api={api} token={token} hosts={hosts} onOpenUsage={machine => openMachines(machine ?? 'local')} onChanged={reloadHosts} onClose={closeSettings} onError={handleError} /> },
       ] : []),
-      // The demo's machines are made up: reading them is exactly what it is for.
-      { id: 'machines', label: t('hosts.machines'), icon: IconServer, render: () => <HostsPanel api={api} token={token} hosts={hosts} path={settingsPath} onNavigate={openSettings} onChanged={reloadHosts} onClose={closeSettings} onError={handleError} /> },
       { id: 'extensions', label: t('extensions.title'), icon: IconPuzzle, render: () => <ExtensionsPage api={api} demo={demo} extensions={extensions} threads={threads} onReload={() => void reloadExtensions()} onChange={changeExtension} onOpenView={openExtensionView} onError={handleError} /> },
     ] },
     { label: t('settings.history'), entries: [
@@ -3004,6 +3030,8 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           onNewSection={threadActions.newSection}
           onOpenTodos={showcase ? undefined : openTodos}
           todosActive={onTodos}
+          onOpenMachines={showcase ? undefined : () => openMachines()}
+          machinesActive={onMachines}
           onOpenDesk={showcase ? undefined : () => openDesk()}
           deskActive={onDesk || onRouterThread}
           petBust={petBust}
@@ -3203,6 +3231,17 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
             ) : (
               <div className="loading-note">{t('common.loading')}</div>
             )}
+          </div>
+        ) : onMachines ? (
+          <div key="machines" className="scroller">
+            <MachineUsagePage
+              key={`${hostId ?? 'local'}:${machineKey}`}
+              api={api}
+              token={token}
+              hosts={hosts}
+              open={machinePath}
+              onOpen={openMachines}
+            />
           </div>
         ) : onObservability ? (
           <div key="observability" className="scroller">
