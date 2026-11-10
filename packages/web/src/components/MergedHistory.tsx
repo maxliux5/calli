@@ -4,7 +4,7 @@ import { historyPage, mergeHistory, type HistoryPage } from '../history';
 import { buildTimeline } from '../timeline';
 import { t } from '../i18n';
 import { IconChevron, IconHandover } from './icons';
-import { ThreadView } from './ThreadView';
+import { Prose, ThreadView } from './ThreadView';
 
 type ViewProps = ComponentProps<typeof ThreadView>;
 type Segment = { thread: Thread; page: HistoryPage };
@@ -16,26 +16,31 @@ type Props = ViewProps & {
   canFork: (thread: Thread) => { enabled: boolean; any: boolean };
   onSegmentFile: (thread: Thread, path: string) => Promise<void>;
   onSegmentPreview: (thread: Thread, path: string) => void;
-  /** Which adapter an instance belongs to: a seam between products is shown, a same-type relay is not. */
-  agentAdapter: (id: string) => string | undefined;
+  /** The segment that follows, on the way to the chain's latest one; none at the end. Reading an earlier segment goes on into it. */
+  laterOf?: (thread: Thread) => Thread | undefined;
 };
 
-/** Only a change of product needs a visible seam; another account of the same type reads as one conversation. */
-const crossesProduct = (thread: Thread, agentAdapter: (id: string) => string | undefined): boolean =>
-  thread.handover?.mode === 'continue' && agentAdapter(thread.handover.agent) !== agentAdapter(thread.agent);
+/** Every relay leaves a fold at its start with what the successor was given, whichever account or product took over. */
+const continues = (thread: Thread): boolean => thread.handover?.mode === 'continue';
 
 /** Each earlier segment owns its client, cursor and action targets. No ancestor reads on mount. */
-export function MergedHistory({ api, thread, merged, ready, agentLabel, agentAdapter, onBrowseOlder, onSegmentFork, canFork, onSegmentFile, onSegmentPreview, ...current }: Props) {
+export function MergedHistory({ api, thread, merged, ready, agentLabel, laterOf, onBrowseOlder, onSegmentFork, canFork, onSegmentFile, onSegmentPreview, ...current }: Props) {
   const [segments, setSegments] = useState<Segment[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<'missing' | 'failed' | null>(null);
+  const [later, setLater] = useState<Segment[]>([]);
+  const [loadingLater, setLoadingLater] = useState(false);
+  const [laterFailed, setLaterFailed] = useState(false);
+  const pendingLater = useRef(false);
+  const sentinel = useRef<HTMLDivElement>(null);
   const pending = useRef(false);
   const generation = useRef(0);
   const root = useRef<HTMLDivElement>(null);
   const restore = useRef<number | null>(null);
   useEffect(() => {
-    generation.current++; pending.current = false;
+    generation.current++; pending.current = false; pendingLater.current = false;
     setSegments([]); setLoading(false); setError(null);
+    setLater([]); setLoadingLater(false); setLaterFailed(false);
   }, [api, thread.id, merged]);
   useLayoutEffect(() => {
     const scroller = root.current?.closest<HTMLElement>('.scroller');
@@ -71,6 +76,37 @@ export function MergedHistory({ api, thread, merged, ready, agentLabel, agentAda
       if (generation.current === version) { pending.current = false; setLoading(false); }
     }
   };
+  // Reading on from an earlier segment: the next one is read from its beginning, a page at a time,
+  // as the end of this one comes into view, so the chain scrolls like one conversation.
+  const tail = later.at(-1);
+  const nextThread = laterOf?.(tail?.thread ?? thread);
+  const hasLater = merged && Boolean(tail?.page.hasNewer || nextThread);
+  const loadLater = async () => {
+    if (pendingLater.current || !ready) return;
+    const same = Boolean(tail?.page.hasNewer);
+    const target = same ? tail!.thread : nextThread;
+    if (!target) return;
+    pendingLater.current = true; setLoadingLater(true); setLaterFailed(false); onBrowseOlder();
+    const version = generation.current;
+    try {
+      const page = await api.historyPage(target.id, undefined, same ? tail!.page.nextCursor ?? undefined : undefined, true, undefined, true);
+      if (generation.current !== version) return;
+      setLater(previous => same
+        ? [...previous.slice(0, -1), { thread: target, page: { ...page, events: [...tail!.page.events, ...page.events.filter(event => event.seq > (tail!.page.events.at(-1)?.seq ?? 0))] } }]
+        : [...previous, { thread: target, page }]);
+    } catch { if (generation.current === version) setLaterFailed(true); }
+    finally { if (generation.current === version) { pendingLater.current = false; setLoadingLater(false); } }
+  };
+  const loader = useRef(loadLater);
+  loader.current = loadLater;
+  useEffect(() => {
+    const node = sentinel.current;
+    if (!node || !hasLater || !ready || loadingLater || laterFailed) return;
+    const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) void loader.current(); },
+      { root: root.current?.closest<HTMLElement>('.scroller') ?? null, rootMargin: '0px 0px 600px 0px' });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasLater, ready, loadingLater, laterFailed, later]);
   if (!merged) return <ThreadView {...current} />;
   const localOlder = segments.length ? segments[0].page.hasOlder : current.hasOlder;
   const oldest = segments[0]?.thread ?? thread;
@@ -80,20 +116,29 @@ export function MergedHistory({ api, thread, merged, ready, agentLabel, agentAda
     chain: true, observeOlder: true, olderError: error ? t(error === 'missing' ? 'handover.chain.missing' : 'handover.chain.failed') : undefined };
   const beginning = ready && !more ? <div className="row chain-beginning" role="status">{t('handover.chain.beginning')}</div> : null;
   return <div className="merged-history" ref={root}>
-    {segments.map((segment, i) => <EarlierSegment key={segment.thread.id} segment={segment} api={api} agentLabel={agentLabel} agentAdapter={agentAdapter}
+    {segments.map((segment, i) => <EarlierSegment key={segment.thread.id} segment={segment} api={api} agentLabel={agentLabel}
       fork={canFork(segment.thread)} onFork={turn => onSegmentFork(segment.thread, turn)}
       onOpenFile={path => onSegmentFile(segment.thread, path)} onPreview={path => onSegmentPreview(segment.thread, path)}
       older={i === 0 ? olderProps : { observeOlder: false, chain: true }} prefix={i === 0 ? beginning : null} />)}
     <div data-history-thread={thread.id} className="history-segment current-segment">
       <ThreadView {...current} {...(segments.length ? { hasOlder: false, observeOlder: false, chain: true } : olderProps)}
-        beforeItems={<>{!segments.length && beginning}{ready && !current.hasOlder && crossesProduct(thread, agentAdapter) && <HandoverBoundary api={api} thread={thread} agentLabel={agentLabel} turnId={current.items.find(item => item.kind === 'user' && item.handoverCollapsed)?.turnId ?? undefined} />}</>}
+        beforeItems={<>{!segments.length && beginning}{ready && !current.hasOlder && continues(thread) && <HandoverBoundary api={api} thread={thread} agentLabel={agentLabel} turnId={current.items.find(item => item.kind === 'user' && item.handoverCollapsed)?.turnId ?? undefined} />}</>}
       />
     </div>
+    {later.map(segment => <EarlierSegment key={segment.thread.id} segment={segment} api={api} agentLabel={agentLabel}
+      fork={canFork(segment.thread)} onFork={turn => onSegmentFork(segment.thread, turn)}
+      onOpenFile={path => onSegmentFile(segment.thread, path)} onPreview={path => onSegmentPreview(segment.thread, path)}
+      older={{ observeOlder: false, chain: true }} prefix={null} />)}
+    {laterFailed
+      ? <div className="history-status" role="alert">{t('handover.chain.laterFailed')} <button className="text-btn" onClick={() => setLaterFailed(false)}>{t('common.retry')}</button></div>
+      : hasLater
+        ? <div ref={sentinel} className="chain-later" role={loadingLater ? 'status' : undefined}>{loadingLater ? t('common.loading') : null}</div>
+        : null}
   </div>;
 }
 
-function EarlierSegment({ segment, api, agentLabel, agentAdapter, fork, onFork, onOpenFile, onPreview, older, prefix }: {
-  segment: Segment; api: Api; agentLabel: Props['agentLabel']; agentAdapter: Props['agentAdapter']; fork: ReturnType<Props['canFork']>;
+function EarlierSegment({ segment, api, agentLabel, fork, onFork, onOpenFile, onPreview, older, prefix }: {
+  segment: Segment; api: Api; agentLabel: Props['agentLabel']; fork: ReturnType<Props['canFork']>;
   onFork: (id: string) => void; onOpenFile: (path: string) => Promise<void>; onPreview: (path: string) => void;
   older: Partial<ViewProps>; prefix: ReactNode;
 }) {
@@ -105,7 +150,7 @@ function EarlierSegment({ segment, api, agentLabel, agentAdapter, fork, onFork, 
   return <div data-history-thread={thread.id} className="history-segment">
     <ThreadView historyApi={api} historyThreadId={thread.id} items={timeline.items} roots={roots} loadImage={loadImage} loadFile={loadFile}
       onOpenFile={onOpenFile} onPreview={onPreview} onFork={fork.enabled ? onFork : undefined} forkAnyTurn={fork.any} {...older}
-      beforeItems={<>{prefix}{!page.hasOlder && crossesProduct(thread, agentAdapter) && <HandoverBoundary api={api} thread={thread} agentLabel={agentLabel} turnId={page.events.find(event => event.type === 'turn.started')?.turnId ?? undefined} />}
+      beforeItems={<>{prefix}{!page.hasOlder && continues(thread) && <HandoverBoundary api={api} thread={thread} agentLabel={agentLabel} turnId={page.events.find(event => event.type === 'turn.started')?.turnId ?? undefined} />}
         {!timeline.items.length && <div className="row chain-beginning">{t('handover.chain.empty')}</div>}</>} />
   </div>;
 }
@@ -123,16 +168,24 @@ function HandoverBoundary({ api, thread, agentLabel, turnId }: { api: Api; threa
     return () => { alive = false; };
   }, [api, thread.id, turnId, open, attempt]);
   const reason = info?.reason === 'plan_exhausted' ? t('handover.chain.exhausted') : info?.reason === 'interrupted' ? t('handover.chain.interrupted') : info?.reason ? t('handover.chain.error') : '';
+  const kind = !info?.size ? '' : info.method === 'resume' ? t('handover.card.resume') : t(info.method === 'summary' ? 'handover.card.summary' : 'handover.card.text', info.size);
+  // Like the plan in the conversation: one quiet line that folds out into the whole text, hung under a hairline.
   return <div className="row handover-boundary" data-handover-thread={thread.id} data-turn={turnId}>
-    <button type="button" className="fork-mark handover-divider" aria-expanded={open} onClick={() => setOpen(value => !value)}>
-      <span className="fork-mark-label">
-        <IconHandover size={15} />{t('handover.trail.from', agentLabel(thread.handover!.agent))}{reason ? ` · ${reason}` : ''}
-        <IconChevron size={12} />
-      </span>
-    </button>
+    <div className="fork-mark">
+      <span className="fork-mark-label"><IconHandover size={15} />{t('handover.trail.from', agentLabel(thread.handover!.agent))}{reason ? ` · ${reason}` : ''}</span>
+    </div>
     {failed && <div className="history-status" role="alert">{t('handover.chain.detailFailed')} <button className="text-btn" onClick={() => setAttempt(n => n + 1)}>{t('common.retry')}</button></div>}
-    {open && !failed && <div className="handover-summary" role="region" aria-label={t('handover.chain.summary')}>
-      {loading || info?.text === undefined ? <span role="status">{t('common.loading')}</span> : info.text || t('handover.chain.noSummary')}
+    {!failed && !info && <div className="handover-card-head placeholder" aria-hidden="true" />}
+    {!failed && info && !info.size && <div className="handover-card-empty">{t('handover.chain.noSummary')}</div>}
+    {!failed && info && info.size > 0 && <div className={`handover-card${open ? ' open' : ''}`}>
+      <button type="button" className="handover-card-head" aria-expanded={open} onClick={() => setOpen(value => !value)}>
+        <span className="handover-card-kind">{kind}</span>
+        {!open && info.preview && <span className="handover-card-preview">{info.preview}</span>}
+        <IconChevron size={12} open={open} />
+      </button>
+      {open && <div className="handover-card-body" role="region" aria-label={t('handover.chain.summary')}>
+        {loading || info.text === undefined ? <span role="status">{t('common.loading')}</span> : <Prose text={info.text} />}
+      </div>}
     </div>}
   </div>;
 }

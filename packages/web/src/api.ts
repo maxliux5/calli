@@ -191,6 +191,8 @@ export interface ThreadStats {
   };
   tokPerSec: number | null;
   tokPerSecApprox: boolean;
+  /** Compactions the agent itself completed; absent when an older daemon does not report it. */
+  compactions?: { count: number; last: { ts: string; automatic: boolean } | null };
 }
 
 /** The model and thinking effort members of one instance start with; null leaves the agent's own. */
@@ -226,8 +228,9 @@ export type HandoverMethod = 'resume' | 'summary';
 export interface HandoverSettings { enabled: boolean; threshold: number; orders: Record<string, HandoverTarget[]>; resume?: boolean; method?: HandoverMethod }
 /** Quota-aware context compression ahead of the handover: another agent (a third-party bridge,
  *  say) reads the hub's transcript and writes the brief, so official-account quota buys no summarizing.
- *  `agent: null` means a native /compact in place. Absent on older daemons. */
-export interface AutoCompactSettings { enabled: boolean; threshold: number; agent: string | null; model: string | null; minChars: number; chunkChars: number; maxChars: number }
+ *  `agents` are asked in order, the next when one is unavailable or fails; none means a native
+ *  /compact in place. Absent on older daemons. */
+export interface AutoCompactSettings { enabled: boolean; threshold: number; agents: HandoverTarget[]; minChars: number; chunkChars: number; maxChars: number }
 export interface AutoCompactStatus { last?: { threadId: string; successorId?: string; native: boolean; chars: number; chunks: number; at: string }; error?: { threadId: string; message: string; at: string }; skipped?: { threadId: string; reason: string; chars: number; at: string } }
 /** A watch waiting for the thread's agent quota to reset; the daemon then resends the failed turn. */
 export interface ResumeView { origin: 'user' | 'global'; resetsAt: string | null; nextCheckAt: string; lastError?: string }
@@ -270,7 +273,7 @@ export interface Thread {
   sectionId: string | null;
   /** The thread this one was forked from, if it is a fork. */
   forkedFrom: string | null;
-  handover?: { sourceId: string; title: string; agent: string; mode?: 'continue' | 'branch'; automatic?: boolean; detached?: boolean } | null;
+  handover?: { sourceId: string; title: string; agent: string; mode?: 'continue' | 'branch'; automatic?: boolean; detached?: boolean; method?: 'resume' | 'summary' } | null;
   /**
    * The git worktree the thread runs in, when a fork was given one. `of` is the directory it would
    * be in otherwise, which is the project it is listed under; `ofReal` is that with symlinks
@@ -309,6 +312,11 @@ export interface Thread {
   cwdReal: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Set only on rows this page builds for sessions that are not threads yet (never sent by the
+   * daemon): the row mixes into the list by time, and clicking it imports the session.
+   */
+  external?: ExternalSession;
 }
 
 /** A thread's native goal, as the goal card shows it. Served by the daemon, then updated by events. */
@@ -825,6 +833,59 @@ export interface AgentSession {
   threadId: string | null;
 }
 
+/** A conversation an agent on this machine already has, that is not a thread here yet. It mixes
+ *  into the thread list by its time; opening it imports it and continues it as a thread. */
+export interface ExternalSession {
+  /** The agent instance id, as threads store it. */
+  agent: string;
+  sessionId: string;
+  cwd: string;
+  title: string;
+  updatedAt: string | null;
+}
+
+/** One page of `GET /api/local-sessions`. */
+export interface LocalSessionPage {
+  sessions: ExternalSession[];
+  nextCursor: string | null;
+  scannedAt: string | null;
+}
+
+/** The four kinds of tokens and the replies, summed over some time. */
+export interface UsageTokens {
+  input: number;
+  cacheWrite: number;
+  cacheRead: number;
+  output: number;
+  replies: number;
+}
+
+/** One step of the machine usage series. A step with no usage while the daemon was not running
+ *  is a gap, drawn as a break rather than a zero. */
+export interface UsagePoint extends UsageTokens {
+  /** The step's start, epoch seconds. */
+  t: number;
+  gap: boolean;
+}
+
+/** `GET /api/machine-usage`. */
+export interface MachineUsageReport {
+  hours: 1 | 24 | 168;
+  /** Seconds per point: 60 within the hour, 600 over the day, 3600 over the week. */
+  step: 60 | 600 | 3600;
+  total: UsageTokens;
+  points: UsagePoint[];
+  /** Totals per model and per launcher, busiest first, from the unfiltered window. */
+  models: MachineUsageShare[];
+  /** The empty name is the "other" launcher: a session the hub did not start. */
+  launchers: MachineUsageShare[];
+}
+
+/** Totals for one model or launcher over the window. */
+export interface MachineUsageShare extends UsageTokens {
+  name: string;
+}
+
 /** A web terminal, as the daemon lists it. Exited ones are not listed. */
 export interface TerminalInfo {
   id: string;
@@ -1267,15 +1328,17 @@ export class Api {
     return this.request('GET', `/api/threads/${id}/events?after=${after}`);
   }
 
-  historyPage(id: string, before?: number, after?: number, chain = false, signal?: AbortSignal): Promise<HistoryPage> {
+  /** `forward` reads the eight turns after `after`, from the conversation's beginning on; otherwise the newest eight before `before`. */
+  historyPage(id: string, before?: number, after?: number, chain = false, signal?: AbortSignal, forward = false): Promise<HistoryPage> {
     const params = new URLSearchParams();
     if (before) params.set('before', String(before));
     if (after) params.set('after', String(after));
     if (chain) params.set('chain', '1');
+    if (forward) params.set('forward', '1');
     return this.request('GET', `/api/threads/${id}/history${params.size ? `?${params}` : ''}`, undefined, { signal });
   }
 
-  historyHandover(id: string, full = false): Promise<{ source: { sourceId: string; agent: string; title: string }; turnId: string | null; reason: string | null; text?: string }> {
+  historyHandover(id: string, full = false): Promise<{ source: { sourceId: string; agent: string; title: string }; method: 'resume' | 'summary' | null; turnId: string | null; reason: string | null; size: number; preview: string; text?: string }> {
     return this.request('GET', `/api/threads/${id}/history/handover${full ? '?text=1' : ''}`);
   }
 
@@ -1589,6 +1652,22 @@ export class Api {
   /** Makes a thread out of an existing agent session, history included. */
   importSession(agent: string, sessionId: string): Promise<Thread> {
     return this.request('POST', '/api/threads/import', { agent, sessionId });
+  }
+
+  /** This machine's agent sessions that are not threads here, newest first, one page at a time. */
+  localSessions(cursor?: string | null, limit = 60): Promise<LocalSessionPage> {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (cursor) query.set('cursor', cursor);
+    return this.request('GET', `/api/local-sessions?${query}`);
+  }
+
+  /** This machine's tokens by minute, model and launcher, read off the agents' transcripts. */
+  machineUsage(hours: 1 | 24 | 168, model?: string | null, launcher?: string | null): Promise<MachineUsageReport> {
+    const query = new URLSearchParams({ hours: String(hours) });
+    if (model) query.set('model', model);
+    // An empty launcher is a session the hub did not start; the daemon reads `-` as that too.
+    if (launcher != null) query.set('launcher', launcher === '' ? '-' : launcher);
+    return this.request('GET', `/api/machine-usage?${query}`);
   }
 
   /**

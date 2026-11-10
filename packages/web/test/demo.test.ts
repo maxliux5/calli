@@ -86,3 +86,25 @@ test('files and search work inside the demo threads', async () => {
   const hits = await api.search('深色模式');
   assert.ok(hits.some((h) => h.threadId === 'demo-dark-mode'));
 });
+
+test('the machines tab has demo data to read, whatever it filters', async () => {
+  const api = demoApi();
+  const day = await api.machineUsage(24);
+  assert.equal(day.step, 600);
+  assert.equal(day.points.length, 144);
+  assert.ok(day.models.length >= 2, 'models are listed');
+  assert.ok(day.launchers.some((l) => l.name === ''), 'the "other" launcher is listed');
+  const all = day.total.input + day.total.cacheWrite + day.total.cacheRead + day.total.output;
+  assert.ok(all > 0);
+  assert.ok(day.points.some((p) => p.gap), 'the offline night shows as gaps, not zeros');
+  assert.ok(day.points.some((p) => !p.gap && p.replies >= 3), 'busy steps have enough replies for the hit rate');
+  // A model filter narrows the series but never the share lists it is picked from.
+  const one = await api.machineUsage(24, day.models[0].name);
+  const oneAll = one.total.input + one.total.cacheWrite + one.total.cacheRead + one.total.output;
+  assert.ok(oneAll < all);
+  assert.deepEqual(one.models.map((m) => m.name), day.models.map((m) => m.name));
+  assert.equal(one.points.length, 144);
+  // The other ranges keep their own steps.
+  assert.equal((await api.machineUsage(1)).points.length, 60);
+  assert.equal((await api.machineUsage(168)).step, 3600);
+});

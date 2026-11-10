@@ -13,7 +13,8 @@
 # The layout it expects over there is the one agents have been setting up by hand:
 #   ~/code/calli                    a clone of the project; `git pull` runs here
 #   ~/.local/share/calli-<sha>      a built snapshot without .git; the service runs from one
-#   ~/.config/systemd/user/calli.service, its WorkingDirectory naming the snapshot
+#   ~/.config/systemd/user/calli.service names the snapshot in its WorkingDirectory — often only
+#   through a drop-in (calli.service.d/90-calli-release.conf) that outranks the unit's own line
 # A machine whose hosts.json entry has "repo": "<path>" keeps its clone elsewhere; the service
 # name may differ through CALLI_UPDATE_SERVICE. Code reaches the machines through their own
 # origin: push the hub's branch there first, then run this.
@@ -109,14 +110,24 @@ while :; do
   sleep "$poll"
 done
 
+# Which file pins the running release: the lexically last drop-in that sets WorkingDirectory — a
+# drop-in outranks the unit file's own line, so editing the unit file alone switches nothing on a
+# machine that pins releases this way — or the conventional 90-calli-release.conf when there is
+# none yet. The unit file itself is never touched.
+pin_dir="$HOME/.config/systemd/user/${service}.service.d"
+pin="$(ls "$pin_dir"/*.conf 2>/dev/null | sort | while IFS= read -r f; do grep -q '^WorkingDirectory=' "$f" && printf '%s\n' "$f"; done | tail -n 1)"
+[ -n "$pin" ] || pin="$pin_dir/90-calli-release.conf"
+pin_write() { mkdir -p "$pin_dir"; printf '[Service]\nWorkingDirectory=%s\n' "$1" >"$pin"; }
 put_back() {
-  [ -n "$workdir" ] && sed -i "s#^WorkingDirectory=.*#WorkingDirectory=$workdir#" "$unit"
+  [ -n "$workdir" ] && pin_write "$workdir"
   systemctl --user daemon-reload
   systemctl --user restart "$service" 2>/dev/null || true
 }
 
 say "switching the service onto calli-$new"
-sed -i "s#^WorkingDirectory=.*#WorkingDirectory=$snap#" "$unit"
+mkdir -p "$pin_dir"
+[ -f "$pin" ] && cp "$pin" "$pin.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+pin_write "$snap"
 if ! systemctl --user daemon-reload || ! systemctl --user restart "$service"; then
   put_back
   fail "the switch failed; back on ${workdir##*/}"

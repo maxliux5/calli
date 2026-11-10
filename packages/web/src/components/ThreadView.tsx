@@ -31,7 +31,6 @@ import {
   splitThinking,
   splitNotes,
   splitUserQuote,
-  thinkingPreview,
   stepActive,
   stepCommand,
   stepTitle,
@@ -1339,9 +1338,11 @@ const WorkNote = memo(function WorkNote({ text }: { text: string }) {
 });
 
 /**
- * One stretch of the agent's thinking, kept small: while it is being thought, a line or two of
- * where it has got to; afterwards a single "Thought · Xs" line. Either opens up to the whole text.
- * A model can think for minutes before it acts, and that must not fill the screen.
+ * One stretch of the agent's thinking, kept small: while it is being thought, a fixed window of
+ * a few lines that follows along inside itself; afterwards a single "Thought · Xs" line. Either
+ * opens up to the whole text. A model can think for minutes before it acts, and that must not
+ * fill the screen — nor may the window's height change as the stream writes, or the page under
+ * it jumps with every sentence; the plan is followed the same way (ProposalCard).
  */
 const ThinkingBlock = memo(function ThinkingBlock({ thought, live, defaultOpen = false }: { thought: Thought; live: boolean; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -1369,15 +1370,36 @@ const ThinkingBlock = memo(function ThinkingBlock({ thought, live, defaultOpen =
           <ResourceMore resource={resource} />
         </div>
       ) : (
-        live && (
-          <div className="thinking-body">
-            <p className="thinking-para thinking-live">{thinkingPreview(paragraphs)}</p>
-          </div>
-        )
+        live && <ThinkingWindow paragraphs={paragraphs} />
       )}
     </div>
   );
 });
+
+/** The thought in progress: a window of fixed height whose newest lines are followed inside it, so
+ *  the page around the block never moves while the stream writes. Where the window cuts into what
+ *  has scrolled by, the top fades, like the plan does while it is written. */
+function ThinkingWindow({ paragraphs }: { paragraphs: string[] }) {
+  const [overflow, setOverflow] = useState(false);
+  const windowRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const el = windowRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    setOverflow(el.scrollHeight - el.clientHeight > 8);
+  }, [paragraphs]);
+  return (
+    <div className="thinking-body">
+      <div className={`thinking-live${overflow ? ' overflow' : ''}`} ref={windowRef}>
+        {paragraphs.map((p, i) => (
+          <p key={i} className="thinking-para">
+            {p}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /** From this many finished calls on, a run is one line that counts them. Fewer are shown as they are. */
 const RUN_FOLD_MIN = 2;

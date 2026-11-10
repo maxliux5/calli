@@ -258,6 +258,9 @@ test('context rings stay compact and distinguish unknown, empty and full usage i
       for (const percent of [null, 0, 25, 80, 100]) {
         const html = renderToStaticMarkup(createElement(UsageMeter, {
           usage: percent === null ? null : { used: percent * 1000, size: 100000 },
+          sample: null,
+          api: null,
+          threadId: 'thread',
         }));
         assert.match(html, /class="usage/);
         assert.match(html, /aria-label="[^"]+"/);

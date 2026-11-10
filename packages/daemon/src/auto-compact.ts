@@ -3,6 +3,7 @@ import type { ThreadManager } from './threads.js';
 import type { StoredEvent } from './events.js';
 import { instanceWindows, type HandoverTarget } from './auto-handover.js';
 import { synthesizeBrief, turnMessage } from './handover.js';
+import { compressPrompt, mergePrompt } from './compress-prompts.js';
 import { HttpError } from './errors.js';
 
 /**
@@ -19,10 +20,11 @@ export interface AutoCompactSettings {
   enabled: boolean;
   /** Plan usage, in percent, at which a turn's end triggers the compaction. Below the handover threshold. */
   threshold: number;
-  /** The agent that reads the transcript and writes the brief; null for a native `/compact` in place. */
-  agent: string | null;
-  /** A model on the compression agent; null for its default. */
-  model: string | null;
+  /**
+   * The agents that read the transcript and write the brief, in the order they are tried: the next
+   * one is asked when one is unavailable or fails. Empty for a native `/compact` in place.
+   */
+  agents: HandoverTarget[];
   /** A transcript shorter than this is not worth a compaction, however close the quota is. */
   minChars: number;
   /** Chunks of this size are compressed in parallel; their notes are then merged into one brief. */
@@ -37,7 +39,14 @@ export interface AutoCompactStatus {
   skipped?: { threadId: string; reason: 'transcript-too-small'; chars: number; at: string };
 }
 
-const DEFAULTS: AutoCompactSettings = { enabled: false, threshold: 85, agent: null, model: null, minChars: 240_000, chunkChars: 240_000, maxChars: 1_500_000 };
+const DEFAULTS: AutoCompactSettings = { enabled: false, threshold: 85, agents: [], minChars: 240_000, chunkChars: 240_000, maxChars: 1_500_000 };
+
+/** Settings saved before the list of agents named one agent and its model. */
+type LegacyInput = { agent?: string | null; model?: string | null };
+const legacyAgents = (agent?: string | null, model?: string | null): HandoverTarget[] => (agent ? [{ agent, ...(model ? { model } : {}) }] : []);
+
+/** Per attempt. Antigravity took 281s on its default model for a 35k-character record (160s before the first word), so five minutes is too tight. */
+const COMPRESS_TIMEOUT_MS = 600_000;
 
 const trunc = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}…` : s);
 
@@ -71,43 +80,39 @@ export function chunkText(text: string, size: number): string[] {
   return out;
 }
 
-const compressPrompt = (index: number, of: number, body: string): string => [
-  `这是同一个编码 agent 会话记录的第 ${index}/${of} 段。把它压缩成结构化笔记，供压缩上下文后继续同一个任务使用。`,
-  '保留：任务目标、关键决定及原因、已完成的改动（文件路径、命令、结果）、未完成事项、用户明确提过的要求和偏好。',
-  '用 Markdown 要点，具体（文件名、命令、数字），不复述寒暄、寒暄应答和失败的重复尝试。直接输出笔记，不要解释你在做什么。',
-  '',
-  '<记录>',
-  body,
-  '</记录>',
-].join('\n');
-
-const mergePrompt = (notes: string[]): string => [
-  '以下是同一个会话分段压缩后的笔记。合并去重成一份总摘要，小节：',
-  '## 任务 / ## 已完成 / ## 未完成·下一步 / ## 改过的文件 / ## 验证情况 / ## 用户要求与注意事项',
-  '保留所有具体信息（文件名、命令、数字），删除重复。直接输出摘要。',
-  '',
-  ...notes.map((n, i) => `<段${i + 1}>\n${n}\n</段${i + 1}>`),
-].join('\n\n');
-
 export class AutoCompact {
   constructor(private store: Store, private manager: ThreadManager) {}
 
   settings(): AutoCompactSettings {
-    return { ...DEFAULTS, ...this.store.hubSetting<Partial<AutoCompactSettings>>('autocompact.settings', {}) };
+    const { agent, model, ...stored } = this.store.hubSetting<LegacyInput & Partial<AutoCompactSettings>>('autocompact.settings', {});
+    return { ...DEFAULTS, ...stored, agents: stored.agents ?? legacyAgents(agent, model) };
+  }
+
+  /** The compression agents as given, checked: known instances, no repeats, a handful at most. */
+  private parseAgents(input: unknown): HandoverTarget[] {
+    const invalid = (): never => { throw new HttpError(400, 'invalid auto-compact settings'); };
+    if (!Array.isArray(input) || input.length > 8) return invalid();
+    const seen = new Set<string>();
+    return input.map(t => {
+      if (!t || typeof t.agent !== 'string' || !this.manager.hasAgent(t.agent)
+        || t.model !== undefined && t.model !== null && (typeof t.model !== 'string' || !t.model || t.model.length > 200)) return invalid();
+      const key = JSON.stringify([t.agent, t.model ?? null]);
+      if (seen.has(key)) return invalid();
+      seen.add(key);
+      return { agent: t.agent, ...(t.model ? { model: t.model } : {}) };
+    });
   }
 
   configure(input: unknown): AutoCompactSettings {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new HttpError(400, 'invalid auto-compact settings');
-    const v = input as Partial<AutoCompactSettings>;
+    const v = input as LegacyInput & Partial<AutoCompactSettings>;
     const int = (x: unknown, min: number, max: number): number => {
       if (!Number.isSafeInteger(x) || (x as number) < min || (x as number) > max) throw new HttpError(400, 'invalid auto-compact settings');
       return x as number;
     };
     if (typeof v.enabled !== 'boolean') throw new HttpError(400, 'invalid auto-compact settings');
     const threshold = int(v.threshold, 50, 98);
-    const agent = v.agent === null || v.agent === undefined ? null : v.agent;
-    if (agent !== null && (typeof agent !== 'string' || !this.manager.hasAgent(agent))) throw new HttpError(400, 'invalid auto-compact settings');
-    if (v.model !== null && v.model !== undefined && (typeof v.model !== 'string' || !v.model || v.model.length > 200)) throw new HttpError(400, 'invalid auto-compact settings');
+    const agents = this.parseAgents(v.agents ?? legacyAgents(v.agent, v.model));
     const minChars = v.minChars === undefined ? DEFAULTS.minChars : int(v.minChars, 100, 5_000_000);
     const chunkChars = v.chunkChars === undefined ? DEFAULTS.chunkChars : int(v.chunkChars, 20_000, 1_000_000);
     const maxChars = v.maxChars === undefined ? DEFAULTS.maxChars : int(v.maxChars, 100_000, 10_000_000);
@@ -116,7 +121,7 @@ export class AutoCompact {
     if (v.enabled && handover.enabled && threshold >= handover.threshold) {
       throw new HttpError(400, `auto-compact must fire before the handover threshold (${handover.threshold}), got ${threshold}`);
     }
-    const settings: AutoCompactSettings = { enabled: v.enabled, threshold, agent, model: (v.model || null) as string | null, minChars, chunkChars, maxChars };
+    const settings: AutoCompactSettings = { enabled: v.enabled, threshold, agents, minChars, chunkChars, maxChars };
     this.store.saveHubSetting('autocompact.settings', settings);
     return settings;
   }
@@ -180,7 +185,7 @@ export class AutoCompact {
       return false;
     }
     try {
-      if (!settings.agent) {
+      if (!settings.agents.length) {
         // No compression agent: spend one turn of the same account on its own native compaction.
         this.markDone(threadId, thread.agentSessionId);
         await this.manager.startTurn(threadId, { text: '/compact' });
@@ -207,22 +212,58 @@ export class AutoCompact {
       || this.manager.autoHandover.held(threadId) || this.manager.autoHandover.queuePaused(threadId);
   }
 
-  private async compress(threadId: string, cwd: string, text: string, settings: AutoCompactSettings): Promise<string> {
+  /** The transcript compressed into one summary by the compression agent, and who wrote it. */
+  private async compressBody(threadId: string, text: string, settings: AutoCompactSettings): Promise<{ body: string; label: string }> {
     const agents = await this.manager.listAgents();
-    const compressor = agents.find(a => a.id === settings.agent && a.available && !a.hidden);
-    if (!compressor) throw new HttpError(409, `compression agent unavailable: ${settings.agent}`);
     const body = text.length > settings.maxChars ? `（更早的记录已截断）\n${text.slice(text.length - settings.maxChars)}` : text;
     const chunks = chunkText(body, settings.chunkChars);
-    const ask = (prompt: string): Promise<string> => this.manager.askOnce(settings.agent!, prompt,
-      { model: settings.model, title: `自动压缩 · ${threadId.slice(0, 8)}`, timeoutMs: 300_000 });
-    const notes = await Promise.all(chunks.map((c, i) => ask(compressPrompt(i + 1, chunks.length, c))));
-    const compressed = (chunks.length > 1 ? await ask(mergePrompt(notes)) : notes[0]).trim();
-    if (!compressed) throw new HttpError(502, 'the compression agent returned nothing');
+    let failure: unknown = new HttpError(409, 'no compression agent configured');
+    // In the configured order; one that is unavailable or fails hands the job to the next.
+    for (const target of settings.agents) {
+      const compressor = agents.find(a => a.id === target.agent && a.available && !a.hidden);
+      try {
+        if (!compressor) throw new HttpError(409, `compression agent unavailable: ${target.agent}`);
+        const ask = (prompt: string): Promise<string> => this.manager.askOnce(target.agent, prompt,
+          { model: target.model ?? null, title: `自动压缩 · ${threadId.slice(0, 8)}`, timeoutMs: COMPRESS_TIMEOUT_MS });
+        const notes = await Promise.all(chunks.map((c, i) => ask(compressPrompt(i + 1, chunks.length, c))));
+        const compressed = (chunks.length > 1 ? await ask(mergePrompt(notes)) : notes[0]).trim();
+        if (!compressed) throw new HttpError(502, 'the compression agent returned nothing');
+        return { body: compressed, label: `${compressor.label}${target.model ? ` · ${target.model}` : ''}` };
+      } catch (error) {
+        failure = error;
+        console.error(`[compress] ${target.agent} could not compress ${threadId}: ${error instanceof Error ? error.message : error}`);
+      }
+    }
+    throw failure;
+  }
+
+  /**
+   * A summary for a handover whose source cannot write one itself (its plan ran out, or its summary
+   * turn failed): the compression agent reads the hub's record, so neither the source's quota nor
+   * the successor's context pays for it. Null without a compression agent, or when it fails, and
+   * the handover goes on with the brief the hub assembles from the log.
+   */
+  async summarizeForHandover(threadId: string): Promise<string | null> {
+    const settings = this.settings();
+    if (!settings.agents.length) return null;
+    try {
+      const text = await this.chainTranscript(threadId, settings.maxChars);
+      if (!text.trim()) return null;
+      const { body, label } = await this.compressBody(threadId, text, settings);
+      return [`## 进度（由 ${label} 从记录整理）`, '', trunc(body, 30_000)].join('\n');
+    } catch (error) {
+      console.error(`[handover] could not summarize ${threadId}: ${error instanceof Error ? error.message : error}`);
+      return null;
+    }
+  }
+
+  private async compress(threadId: string, cwd: string, text: string, settings: AutoCompactSettings): Promise<string> {
+    const { body: compressed, label } = await this.compressBody(threadId, text, settings);
     const facts = synthesizeBrief(this.store.listEvents(threadId, 0, -1));
     return [
       '# 上下文压缩',
       '',
-      `线程 ${threadId} 的上下文已由 ${compressor.label}${settings.model ? ` · ${settings.model}` : ''} 压缩；你继续的是同一个任务，不是新任务。`,
+      `线程 ${threadId} 的上下文已由 ${label} 压缩；你继续的是同一个任务，不是新任务。`,
       `工作目录 ${cwd}。先运行 git status、git diff 对齐现状，再从「未完成·下一步」继续。`,
       '',
       compressed,

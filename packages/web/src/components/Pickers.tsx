@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { isFastSpeed, type AgentInfo, type Api, type ModelOption } from '../api';
-import { usageSummary, type Usage } from '../timeline';
+import { usageSummary, type Usage, type UsageSample } from '../timeline';
+import { compactTokens, ContextTotals, percentLabel } from './SessionStats';
 import { EFFORT_LABELS, PERMISSION_LABELS, PERMISSION_ORDER, permissionHint } from '../permissions';
-import { AgentMark, ContextRing, IconBolt, IconEffortGauge, IconCompress, IconRefresh, IconCheck, IconChevron, IconFolder, IconHand, IconPlus, IconShield, IconShieldAlert, IconSparkle, IconWorktree } from './icons';
+import { AgentMark, ContextRing, IconBolt, IconEffortGauge, IconCompress, IconList, IconRefresh, IconCheck, IconChevron, IconFolder, IconHand, IconPlus, IconShield, IconShieldAlert, IconSparkle, IconWorktree } from './icons';
 import { Popover } from './Popover';
 import { EffortSlider } from './EffortSlider';
 import { AgentQuota } from './AgentQuota';
@@ -545,10 +546,57 @@ export function AgentPicker({ api, agents, value, onChange, accounts = [], onAdd
   );
 }
 
+/**
+ * The composition of the latest model request, as the agent itself reported it — no category is
+ * estimated. Only fields the sample actually carries become rows; a reported zero is a real zero,
+ * so zero-value parts stay off both the bar and the legend.
+ */
+function ContextSample({ sample }: { sample: UsageSample }) {
+  const parts: Array<{ key: string; label: string; value: number; seg: string; note?: string }> = [];
+  if (sample.cacheRead) parts.push({ key: 'read', label: t('stats.cacheRead'), value: sample.cacheRead, seg: 's-read' });
+  if (sample.cacheWrite) parts.push({ key: 'write', label: t('stats.cacheWrite'), value: sample.cacheWrite, seg: 's-write' });
+  const uncached = sample.input != null && sample.cacheRead != null && sample.cacheWrite != null
+    ? sample.input - sample.cacheRead - sample.cacheWrite : undefined;
+  if (uncached != null && uncached > 0) parts.push({ key: 'uncached', label: t('stats.uncached'), value: uncached, seg: 's-uncached' });
+  if (sample.output) parts.push({
+    key: 'output', label: t('stats.output'), value: sample.output, seg: 's-output',
+    note: sample.reasoning ? t('stats.inclReasoning', compactTokens(sample.reasoning)) : undefined,
+  });
+  if (parts.length === 0) return null;
+  const total = parts.reduce((sum, part) => sum + part.value, 0);
+  return <>
+    <div className="pop-sep">{sample.model ? t('pickers.contextLastRequest', sample.model) : t('pickers.contextLastRequestShort')}</div>
+    <div className="usage-compose">
+      {parts.map((part) => part.value > 0 && (
+        <div key={part.key} className={part.seg} style={{ width: `${(part.value / total) * 100}%` }} />
+      ))}
+    </div>
+    <div className="usage-legend">
+      {parts.map((part) => (
+        <div key={part.key} className="usage-legend-row">
+          <span className={`usage-swatch ${part.seg}`} />
+          <span className="usage-legend-label">{part.label}</span>
+          <span className="usage-legend-value">
+            {compactTokens(part.value)}<span className="usage-legend-share">{percentLabel(part.value / total)}</span>
+            {part.note && <span className="usage-legend-note">{part.note}</span>}
+          </span>
+        </div>
+      ))}
+    </div>
+  </>;
+}
+
 /** How full the agent's context window is: a small ring that opens to the numbers. */
-export function UsageMeter({ usage, onCompact, running, compactDisabled, compactQueued }: {
+export function UsageMeter({ usage, sample, api, threadId, onCompact, onContext, running, compactDisabled, compactQueued }: {
   usage: Usage | null;
+  /** The latest per-request token sample, when the agent reports any. */
+  sample: UsageSample | null;
+  /** Reads the session totals when the panel opens; null in the built-in demo. */
+  api: Api | null;
+  threadId: string;
   onCompact?: () => Promise<void>;
+  /** Sends the agent's own context breakdown command, when its command list has one. */
+  onContext?: () => Promise<void>;
   running?: boolean;
   compactDisabled?: boolean;
   compactQueued?: boolean;
@@ -557,9 +605,25 @@ export function UsageMeter({ usage, onCompact, running, compactDisabled, compact
   const { percent, high, detail } = usage ? usageSummary(usage)
     : { percent: null, high: false, detail: t('pickers.contextUnknown') };
   const label = percent === null ? t('pickers.contextUsageUnknown') : t('pickers.contextUsagePercent', percent);
+  const actions = onContext || onCompact;
   const details = (close: () => void) => <>
     <div className="pop-title">{t('statusPanel.context')}{usage && <span className="context-percent">{percent}%</span>}</div>
     <div className="pop-note">{detail}{high && t('pickers.contextHigh')}</div>
+    {usage && (
+      <div className="usage-bar" role="presentation">
+        <div className="usage-bar-fill" style={{ width: `${percent}%` }} />
+      </div>
+    )}
+    {sample && <ContextSample sample={sample} />}
+    <ContextTotals api={api} threadId={threadId} active={running} label={t('pickers.contextTotals')} />
+    {actions && <div className="pop-rule" />}
+    {onContext && (
+      <button type="button" className="pop-item compact" onClick={() => { void onContext(); close(); }}>
+        <span className="pop-item-icon"><IconList size={17} /></span>
+        <span className="pop-item-text"><span className="pop-item-label">{t('pickers.contextDetail')}</span>
+          <span className="pop-item-hint">{t('pickers.contextDetailHint')}</span></span>
+      </button>
+    )}
     {onCompact && <button type="button" className="pop-item compact context-compact" disabled={compacting || compactDisabled || compactQueued}
       onClick={async () => {
         setCompacting(true);
