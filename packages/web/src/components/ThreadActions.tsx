@@ -7,8 +7,9 @@ import { HandoverChainDialog } from './HandoverTrail';
 import { HandoverDialog } from './HandoverDialog';
 import { Menu, type MenuEntry } from './Menu';
 import { ChatQuotaMenu } from './ChatQuotaMenu';
-import { IconArchive, IconCheck, IconCopy, IconDot, IconEdit, IconFiles, IconFork, IconHand, IconHandover, IconList, IconPin, IconPlus, IconSparkle, IconTerminal, IconTrace, IconTrash, IconWorktree } from './icons';
+import { IconArchive, IconBoard, IconCheck, IconCopy, IconDot, IconEdit, IconFiles, IconFork, IconHand, IconHandover, IconList, IconPin, IconPlus, IconSparkle, IconTerminal, IconTrace, IconTrash, IconWorktree } from './icons';
 import { formatList, t } from '../i18n';
+import { boardStage, threadAttention, type BoardStage } from '../sidebar';
 
 interface Deps {
   api: Api | null;
@@ -43,6 +44,8 @@ interface Deps {
   markdownOf: (thread: Thread) => Promise<string>;
   /** The auto-titles extension is installed and on: threads get "name it again". */
   autotitle?: boolean;
+  /** The board extension is installed and on: threads can be placed in its columns. */
+  board?: boolean;
   /** The handover chain record, offered on threads that belong to one. */
   chain?: {
     threads: Thread[];
@@ -87,7 +90,7 @@ export function forkBlocked(thread: Thread, turnId?: string): string | null {
  * open thread's own menu serves the conversation being read.
  */
 export function useThreadActions(deps: Deps) {
-  const { api, agents, sections, todos, chain, onTodosChange, onThreadChange, onThreadRemove, onThreadOpen, onMarkedUnread, onSectionsChange, onOpenTerminal, onOpenFiles, onOpenTrace, onError, onBusy, onArchived, markdownOf, autotitle } = deps;
+  const { api, agents, sections, todos, chain, onTodosChange, onThreadChange, onThreadRemove, onThreadOpen, onMarkedUnread, onSectionsChange, onOpenTerminal, onOpenFiles, onOpenTrace, onError, onBusy, onArchived, markdownOf, autotitle, board } = deps;
   /** The chain record when this thread belongs to any handover chain, automatic or manual. */
   const chainOf = (thread: Thread) => chain && (thread.handover
     || chain.threads.some(x => x.handover?.sourceId === thread.id)) ? chain : undefined;
@@ -186,6 +189,17 @@ export function useThreadActions(deps: Deps) {
     const filed = sections.some((s) => s.id === thread.sectionId);
     const linkedTodoIds = new Set(todos.filter((todo) => todo.threads.some((it) => it.id === thread.id)).map((todo) => todo.id));
     const planChoices = todos.filter((todo) => !todo.parentId).slice(0, 30);
+    const stage = boardStage(thread);
+    // Running or waiting on the person decides the column for now; only done can be marked over it.
+    const waiting = threadAttention(thread, null);
+    const live = thread.status === 'running' || (waiting !== null && waiting.kind !== 'unread');
+    const place = (id: BoardStage): MenuEntry => ({
+      id: `board-${id}`,
+      label: t(`actions.board.${id}`),
+      checked: stage === id,
+      disabled: id !== 'done' && live,
+      onSelect: () => void (id === 'done' ? patch(thread, { done: stage !== 'done' }) : stage !== id && patch(thread, { stage: id })),
+    });
     return [
       { id: 'pin', label: thread.pinned ? t('actions.unpin') : t('actions.pin'), icon: IconPin, onSelect: () => run('pin', thread) },
       {
@@ -196,6 +210,7 @@ export function useThreadActions(deps: Deps) {
       },
       { id: 'rename', label: t('actions.rename'), icon: IconEdit, onSelect: () => run('rename', thread) },
       ...(autotitle ? [{ id: 'autotitle', label: t('actions.autotitle'), icon: IconSparkle, onSelect: () => void autoName(thread) }] : []),
+      ...(board ? [{ id: 'board', label: t('actions.board'), icon: IconBoard, submenu: (['backlog', 'doing', 'blocked', 'review', 'done'] as const).map(place) }] : []),
       {
         id: 'section',
         label: t('actions.moveToSection'),

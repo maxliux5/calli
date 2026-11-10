@@ -284,6 +284,8 @@ export interface Thread {
   worktree?: { root: string; branch: string; of: string; ofReal: string } | null;
   /** In no project: working in the hub's scratch area. Missing from daemons that predate it. */
   scratch?: boolean;
+  /** The project directory no longer exists. Missing from daemons that predate it. */
+  projectGone?: boolean;
   /** A turn finished and nobody has looked at the result yet. */
   unread: boolean;
   /** The newest thing the user asked, shown under the title. Null until the first ask. */
@@ -1639,6 +1641,8 @@ export class Api {
       sectionId?: string | null;
       unread?: boolean;
       done?: boolean;
+      /** Places the thread on the board by hand; clears done. */
+      stage?: ProgressReport['stage'];
     },
   ): Promise<Thread> {
     return this.request('PATCH', `/api/threads/${threadId}`, updates);

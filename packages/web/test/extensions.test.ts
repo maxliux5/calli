@@ -5,8 +5,9 @@ import type { Thread } from '../src/api';
 import { DemoApi } from '../src/demo/DemoApi';
 import { demoData } from '../src/demo/data';
 import { BUILTIN_MANIFESTS } from '../src/extensions/catalog';
+import { hasPermission, needsConfirm } from '../src/extensions/permissions';
 import { createWebHost, extensionStorage, type HostInputs } from '../src/extensions/host';
-import { threadSummaries, threadSummary } from '../src/extensions/project';
+import { machineSummaries, threadMachine, parseThreadLink, threadSummaries, threadSummary } from '../src/extensions/project';
 import { enabledViews, extensionHash, looksLikeExtensionRoute, resolveExtensionRoute } from '../src/extensions/routes';
 
 const SECRET = 'SECRET what the user asked';
@@ -31,7 +32,7 @@ test('a thread summary carries the whitelisted fields and nothing a conversation
     null,
   );
   assert.deepEqual(Object.keys(s).sort(), [
-    'agent', 'archived', 'attention', 'createdAt', 'doneAt', 'handover', 'id', 'pinned', 'project', 'report', 'runningSince',
+    'agent', 'archived', 'attention', 'createdAt', 'doneAt', 'handover', 'id', 'pinned', 'project', 'projectGone', 'report', 'runningSince',
     'scheduled', 'status', 'teamSize', 'title', 'unread', 'updatedAt', 'worktree',
   ]);
   assert.ok(!JSON.stringify(s).includes(SECRET));
@@ -256,4 +257,65 @@ test('memory host never queries without installation and drops results after rev
   await assert.rejects(pending);
   await assert.rejects(live.host.memory.sources());
   assert.equal(reads, 2);
+});
+
+
+test('merged summaries label each machine and route UUIDs without falling back locally', () => {
+  const sources = [{ hostId: null, label: 'Here', threads: [thread('a')] }, { hostId: 'dev', label: 'Dev', threads: [thread('b')] }];
+  const merged = machineSummaries(sources, null, true);
+  assert.deepEqual(merged.map(t => t.machine), [{ id: null, label: 'Here' }, { id: 'dev', label: 'Dev' }]);
+  assert.equal(merged[1].report, null, 'remote machines without progress provide no invented report');
+  assert.equal(machineSummaries(sources.slice(1), null, false)[0].machine, undefined);
+  assert.equal(threadMachine(sources, 'a'), null);
+  assert.equal(threadMachine(sources, 'b'), 'dev');
+  assert.throws(() => threadMachine(sources, 'missing'));
+});
+
+test('machine freshness notifies thread subscribers; stage needs progress; thread links preserve machines', async () => {
+  const board = { ...manifest('board'), permissions: ['events.summary', 'progress.report', 'assistant.ask'] as const };
+  const extension = state({ ...board, permissions: [...board.permissions] }, true);
+  const inputs: HostInputs = { extension, threads: [
+    { ...threadSummary(thread('remote'), null), machine: { id: 'dev box', label: 'Dev' } },
+    { ...threadSummary(thread('local'), null), machine: { id: null, label: 'Here' } },
+  ], machines: [{ id: 'dev box', label: 'Dev', state: 'cached', observedAt: null }, { id: null, label: 'Here', state: 'live', observedAt: null }], connection: 'live', observedAt: null, agents: [] };
+  const calls: unknown[] = [];
+  const live = createWebHost('board', inputs, { openThread: id => calls.push(['open', id]),
+    setThreadStage: async (id, stage) => { calls.push(['stage', id, stage]); },
+    setThreadDone: async (id, done) => { calls.push(['done', id, done]); },
+    askAssistant: async text => { calls.push(['ask', text]); },
+    navigate: { peekThread: id => calls.push(['peek', id]), threadMenu: (id, at) => calls.push(['menu', id, at]), newThread: options => calls.push(['new', options]) },
+    ui: () => ({}) as never });
+  let notified = 0;
+  live.host.threads.subscribe(() => { notified++; });
+  live.update({ ...inputs, machines: inputs.machines!.map(m => ({ ...m, state: 'failed' })) });
+  assert.equal(notified, 1);
+  assert.equal(live.host.machines()[0].state, 'failed');
+  assert.equal(live.host.assistant!.threadLink('remote'), '#/thread/remote?machine=dev%20box');
+  assert.equal(live.host.assistant!.threadLink('local'), '#/thread/local');
+  assert.deepEqual(parseThreadLink(live.host.assistant!.threadLink('remote')), { id: 'remote', machine: 'dev box' });
+  assert.deepEqual(parseThreadLink('#/thread/old'), { id: 'old', machine: null });
+  assert.equal(parseThreadLink('#/thread/%zz'), null);
+  await live.host.threads.setStage('remote', 'review');
+  await live.host.threads.setDone('remote', true);
+  live.host.navigate.peekThread('remote');
+  live.host.navigate.threadMenu('remote', { x: 1, y: 2 });
+  live.host.navigate.newThread({ project: '/work/app', machine: 'dev box' });
+  assert.deepEqual(calls.slice(0, 2), [['stage', 'remote', 'review'], ['done', 'remote', true]]);
+  assert.deepEqual(calls.slice(2), [['peek', 'remote'], ['menu', 'remote', { x: 1, y: 2 }], ['new', { project: '/work/app', machine: 'dev box' }]]);
+  live.update({ ...inputs, extension: state(manifest('board'), true) });
+  await assert.rejects(live.host.threads.setStage('remote', 'doing'), /permission/i);
+  await assert.rejects(live.host.assistant!.ask('summary'), /permission/i);
+});
+
+
+test('only the built-in board can defer assistant consent without losing its original grant', () => {
+  const m = { ...manifest('board'), permissions: ['events.summary', 'progress.report', 'assistant.ask'] as import('@calli/extension-api').Permission[] };
+  const upgraded = { ...state(m, true), granted: ['events.summary', 'progress.report'] as import('@calli/extension-api').Permission[] };
+  assert.equal(needsConfirm(upgraded), false);
+  assert.equal(hasPermission(upgraded, 'events.summary'), true);
+  assert.equal(hasPermission(upgraded, 'assistant.ask'), false);
+  assert.equal(needsConfirm({ ...upgraded, source: 'external' }), true);
+  assert.equal(needsConfirm({ ...upgraded, granted: ['events.summary'] }), true);
+  assert.equal(hasPermission({ ...upgraded, enabled: false }, 'events.summary'), false);
+  assert.equal(hasPermission({ ...upgraded, granted: m.permissions }, 'assistant.ask'), true);
 });

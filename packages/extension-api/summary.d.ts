@@ -29,14 +29,17 @@ export type ThreadStatus = 'idle' | 'running' | 'error';
  * - `blocked` — the agent cannot continue without the person.
  * Agents never mark a thread done; only the person does.
  */
-export type ProgressStage = 'doing' | 'review' | 'blocked';
+/** `backlog` is only ever the person's: 「以后再做」. Agents report the other three. */
+export type ProgressStage = 'doing' | 'review' | 'blocked' | 'backlog';
 
 export interface ProgressReport {
   stage: ProgressStage;
   /** One line from the agent; may be empty. Content: handed on only with `progress.report`. */
   note: string;
-  /** ISO time the turn ended. */
+  /** ISO time the turn ended, or the person placed the thread. */
   at: string;
+  /** Set when the person placed the thread from its menu rather than the agent reporting. */
+  by?: 'user';
 }
 
 export interface ThreadSummary {
@@ -44,8 +47,18 @@ export interface ThreadSummary {
   title: string;
   /** Agent instance id, e.g. `codex` or `claude-2`. Use capabilities, never branch on it. */
   agent: string;
-  /** Project directory (worktrees resolve to the directory they were made from). */
+  /**
+   * Project directory with symlinks resolved, so two spellings of one directory are one project
+   * (worktrees resolve to the directory they were made from). `''` for a thread in no project.
+   */
   project: string;
+  /** The project directory no longer exists, e.g. a temporary checkout removed after a run. */
+  projectGone?: boolean;
+  /**
+   * The machine the thread runs on, present only while the view shows several machines
+   * (the sidebar's 「全部」). `id` null is the hub's own machine.
+   */
+  machine?: { id: string | null; label: string };
   status: ThreadStatus;
   /**
    * Same judgement as the sidebar's 「按活动查看」. `null` means nothing to do.

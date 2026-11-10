@@ -190,6 +190,17 @@ export function threadAttention(t: Pick<Thread, 'id' | 'waiting' | 'waitingReaso
   return null;
 }
 
+export type BoardStage = 'backlog' | 'doing' | 'blocked' | 'review' | 'done';
+
+/** The board column a thread sits in, judged in the board's order: done, waiting, running, then what was reported. */
+export function boardStage(t: Pick<Thread, 'id' | 'waiting' | 'waitingReason' | 'unread' | 'status' | 'doneAt' | 'report'>): BoardStage {
+  if (t.doneAt) return 'done';
+  const attention = threadAttention(t, null);
+  if (attention && attention.kind !== 'unread') return 'blocked';
+  if (t.status === 'running') return 'doing';
+  return t.report?.stage ?? 'review';
+}
+
 /** Whether an attention is a person being waited on, as against a result to look at. */
 export const isWait = (a: Attention | null): boolean => a !== null && a.kind !== 'unread' && a.kind !== 'error';
 

@@ -68,7 +68,7 @@ interface Props {
   petBust?: PetBust | null;
   /** The plan page is what the main area shows. */
   todosActive?: boolean;
-  /** Opens the machines page, a first-class page beside the plans link. */
+  /** Opens the machines page, listed behind the nav's "more" button unless it is on screen. */
   onOpenMachines?: () => void;
   machinesActive?: boolean;
   onOpenSchedules?: () => void;
@@ -78,7 +78,7 @@ interface Props {
   desktopRunning?: boolean;
   /** The scheduled-task page is what the main area shows. */
   schedulesActive?: boolean;
-  /** Entries enabled extensions pin to the sidebar, after the hub's own pages. */
+  /** Entries enabled extensions pin to the sidebar: rows of their own after the plans link. */
   extensionNav?: ExtensionNavEntry[];
   /** The phone layout: the list is a page of its own under the conversation, laid out for thumbs. */
   compact?: boolean;
@@ -244,7 +244,7 @@ export function Sidebar({
   /**
    * `chain`: the handover chain this row stands for, newest first, as `handoverGroups` gives it.
    * `on`: in the merged list, the other machine the thread is on (named on the row), and how to open
-   * it there; such a row has no menu, as its actions would go to the machine on screen.
+   * it there. The host routes menu actions to that same machine.
    */
   const row = (thread: Thread, title = thread.title, preview = thread.preview, chain?: Thread[], on?: Elsewhere) => {
     const open = on?.open;
@@ -270,9 +270,9 @@ export function Sidebar({
       className={`thread-row${thread.id === selectedId ? ' active' : ''}${mark === 'unread' || mark === 'waiting' ? ' attention' : ''}`}
       onContextMenu={(e) => {
         e.preventDefault();
-        if (!open) onThreadMenu(thread, e.clientX, e.clientY);
+        onThreadMenu(thread, e.clientX, e.clientY);
       }}
-      {...(open ? {} : longPress(thread))}
+      {...longPress(thread)}
     >
       {/* Two accounts of one agent share a mark; which one runs the thread shows on hover and in the
           open thread's top bar, not as text on every row. */}
@@ -306,7 +306,7 @@ export function Sidebar({
           {mark && <span className={`dot ${mark}`} role="img" aria-label={mark === 'waiting' ? waitingLabel(thread) : MARK_LABELS[mark]} title={mark === 'waiting' ? waitingLabel(thread) : MARK_LABELS[mark]} />}
         </span>
       </button>
-      {!open && (
+      {(
         <button className="row-more" aria-label={t('sidebar.more', thread.title)} onClick={(e) => onThreadMenu(thread, ...below(e))}>
           <IconMore size={16} />
         </button>
@@ -600,11 +600,11 @@ export function Sidebar({
     </nav>
   );
 
-  // The pages after "Plans": behind a "more" button, except the one on screen or one with a state to keep an eye on.
+  // The pages after "Plans" and the pinned views: behind a "more" button, except the one on screen or one with a state to keep an eye on.
   const pages: NavPage[] = [
+    ...(onOpenMachines ? [{ key: 'machines', label: t('hosts.machines'), icon: IconServer, active: machinesActive, onOpen: onOpenMachines }] : []),
     ...(onOpenSchedules ? [{ key: 'schedules', label: t('sidebar.schedules'), icon: IconClock, active: schedulesActive, onOpen: onOpenSchedules }] : []),
     ...(onOpenDesktop ? [{ key: 'desktop', label: t('desktop.title'), icon: IconDesktop, active: false, live: desktopRunning, liveLabel: t('desktop.running'), onOpen: onOpenDesktop }] : []),
-    ...extensionNav.map((entry) => ({ key: entry.key, label: entry.label, icon: (p: { size?: number }) => <HostIcon name={entry.icon} size={p.size} />, active: entry.active, onOpen: entry.onOpen })),
   ];
   const { shown: pagesShown, hidden: pagesHidden } = navOverflow(pages);
 
@@ -685,9 +685,12 @@ export function Sidebar({
                 onOpenTodos && <button key="todos" className={`side-link${todosActive ? ' active' : ''}`} aria-current={todosActive ? 'page' : undefined} onClick={onOpenTodos}>
                   <IconList size={compact ? 21 : 17} /> {t('todos.title')}
                 </button>,
-                onOpenMachines && <button key="machines" className={`side-link${machinesActive ? ' active' : ''}`} aria-current={machinesActive ? 'page' : undefined} onClick={onOpenMachines}>
-                  <IconServer size={compact ? 21 : 17} /> {t('hosts.machines')}
-                </button>,
+                // Views an extension pins (the board) keep a row of their own; the machines wait behind "more".
+                ...extensionNav.map((entry) => (
+                  <button key={entry.key} className={`side-link${entry.active ? ' active' : ''}`} aria-current={entry.active ? 'page' : undefined} onClick={entry.onOpen}>
+                    <HostIcon name={entry.icon} size={compact ? 21 : 17} /> {entry.label}
+                  </button>
+                )),
                 ...pagesShown.map((page) => (
                   <button key={page.key} className={`side-link${page.active ? ' active' : ''}`} aria-current={page.active ? 'page' : undefined} title={page.live ? page.liveLabel : undefined} onClick={page.onOpen}>
                     <page.icon size={compact ? 21 : 17} /> {page.label}
