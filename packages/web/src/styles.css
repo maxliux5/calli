@@ -14154,6 +14154,9 @@ body:has(.settings-page, .action-sheet) .pet { display: none; }
   .composer-slot::before, .composer-slot::after { display: none; }
   .composer-box { box-shadow: var(--glass-rim), var(--glass-halo); }
 }
+/* The docked selection menu hides the box but not the slot, which stays as tall as the box with its
+   notes: its bands would blur a bare stretch of the thread above the menu. The menu is glass itself. */
+.app:has(.selection-menu.docked) .composer-slot::before, .app:has(.selection-menu.docked) .composer-slot::after { display: none; }
 .in-titlebar .main > .topbar::before, .in-titlebar .main > .topbar::after { display: none; }
 
 @media (max-width: 899px) {
