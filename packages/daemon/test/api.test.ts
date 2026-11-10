@@ -475,7 +475,7 @@ test('model and command lists are served per agent; unknown agents are 404', asy
   const models = (await (await api('/api/agents/claude/models')).json()) as Array<{ id: string }>;
   assert.deepEqual(models.map((m) => m.id), ['default', 'big', 'small', 'broken']);
   const commands = (await (await api('/api/agents/claude/commands')).json()) as Array<{ name: string }>;
-  assert.deepEqual(commands.map((c) => c.name), ['compact', 'review', 'goal', 'cost', 'stats']);
+  assert.deepEqual(commands.map((c) => c.name), ['compact', 'review', 'goal', 'cost', 'stats', 'context']);
   assert.equal((await api('/api/agents/nope/models')).status, 404);
 });
 

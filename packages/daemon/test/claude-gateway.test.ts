@@ -230,5 +230,5 @@ test('Claude gateway discovery preserves native slash command discovery', async 
     ANTHROPIC_BASE_URL: gateway.url, CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '1',
   });
   await adapter.models();
-  assert.deepEqual((await adapter.commands()).map(c => c.name), ['compact', 'review', 'goal', 'cost', 'stats']);
+  assert.deepEqual((await adapter.commands()).map(c => c.name), ['compact', 'review', 'goal', 'cost', 'stats', 'context']);
 });

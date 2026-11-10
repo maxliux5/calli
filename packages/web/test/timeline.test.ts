@@ -83,6 +83,28 @@ test('terminal-only and repeated compactions survive replay with turn-scoped ide
   assert.equal(compactionLabel(entry), '上下文已压缩');
 });
 
+test('the context panel data: usage readings and the latest request sample', () => {
+  const events = [
+    ev('usage.updated', { used: 1000, size: 200000 }),
+    // Turn samples summarize a whole turn and never pose as one request.
+    ev('usage.sample', { scope: 'turn', input: 900, output: 100 }),
+    ev('usage.sample', { scope: 'request', input: 500, cacheRead: 400, cacheWrite: 60, output: 40, reasoning: 10, model: 'fixture-model' }),
+    // A sample without a single valid number carries nothing and is ignored.
+    ev('usage.sample', { scope: 'update', input: 'junk', output: -5 }),
+    ev('context.compaction', { id: 'c1', status: 'completed', automatic: true }),
+    // An explicit unknown reading invalidates the measurement, e.g. after compaction.
+    ev('usage.updated', { used: null, size: 200000 }),
+  ];
+  const first = buildTimeline(events);
+  assert.equal(first.usage, null);
+  assert.deepEqual(first.lastSample, { scope: 'request', model: 'fixture-model', input: 500, cacheRead: 400, cacheWrite: 60, output: 40, reasoning: 10 });
+
+  // A later update sample takes over as the latest request reading.
+  const later = buildTimeline([...events, ev('usage.sample', { scope: 'update', output: 7 })]);
+  assert.deepEqual(later.lastSample, { scope: 'update', output: 7 });
+  assert.equal(later.usage, null);
+});
+
 test('collaboration turns expose their source and hide runtime instructions', () => {
   const tl = buildTimeline([ev('turn.started', { text: 'internal instructions', displayText: '来自 审查成员 的结果\n\n状态：本轮已返回，仍需验收\n完成', coordination: { from: 'reviewer' } })]);
   const item = tl.items[0];

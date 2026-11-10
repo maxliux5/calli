@@ -2415,9 +2415,101 @@ html.list-open body {
 .composer-bar .composer-permission { width: 40px; height: 40px; flex: none; }
 .composer-voice { flex: none; }
 .composer-bar > .pop:has(> .usage) { flex: none; }
-.pop-panel.anchored-pop.context-usage-panel { width: min(320px, calc(100vw - 24px)); }
+.pop-panel.anchored-pop.context-usage-panel { width: min(340px, calc(100vw - 24px)); }
 .context-usage-panel.high .context-percent { color: var(--warn); }
 .context-percent { float: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+
+/* The window bar under the headline, in the ring's own colours: the fill is the theme's quiet
+   foreground, the track is what is left; a nearly full window turns the fill warning-coloured. */
+.context-usage-panel .usage-bar {
+  display: flex;
+  height: 6px;
+  margin: 0 10px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  overflow: hidden;
+}
+
+.context-usage-panel .usage-bar-fill {
+  border-radius: inherit;
+  background: var(--muted);
+  transition: width 0.2s ease;
+}
+
+.context-usage-panel.high .usage-bar-fill { background: var(--warn); }
+
+/* What the latest model request was made of, one hue per part. The colours come from the chart
+   set, so every palette keeps a set that was validated together. */
+.context-usage-panel .usage-compose {
+  display: flex;
+  gap: 1px;
+  height: 5px;
+  margin: 0 10px 6px;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+
+.context-usage-panel .usage-compose > div { min-width: 2px; }
+.usage-compose .s-read, .usage-swatch.s-read { background: var(--chart-1); }
+.usage-compose .s-write, .usage-swatch.s-write { background: var(--chart-2); }
+.usage-compose .s-uncached, .usage-swatch.s-uncached { background: var(--chart-3); }
+.usage-compose .s-output, .usage-swatch.s-output { background: var(--chart-4); }
+
+/* A legend row: colour chip, quiet label, the count with its share of the request on the right. */
+.context-usage-panel .usage-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 0 10px 8px;
+  font-size: 13px;
+}
+
+.context-usage-panel .usage-legend-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.usage-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 3px;
+  flex: none;
+  align-self: center;
+}
+
+.usage-legend-label { color: var(--muted); }
+.usage-legend-value {
+  margin-left: auto;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.usage-legend-share,
+.usage-legend-note {
+  margin-left: 6px;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+/* The session totals arrive a moment after the panel opens; placeholders hold the rows' room. */
+.context-usage-panel .usage-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 8px 10px 10px;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.context-usage-panel .usage-skeleton-row {
+  height: 13px;
+  border-radius: var(--radius-sm);
+  background: var(--hover);
+}
+
+.context-usage-panel .usage-skeleton-row.wide { width: 55%; }
 
 /* On a phone, a running turn with an empty box leaves one line: add, write, stop. Touching the
    line is focus, and focus brings the whole box back before the keyboard can cover anything. */

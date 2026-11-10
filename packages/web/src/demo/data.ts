@@ -312,6 +312,8 @@ export function demoData(now = Date.now()): DemoData {
       ].join('\n'),
     });
     dark.add(turn, at(38), 'usage.updated', { used: 46_000, size: 258_000 });
+    // What the latest request was made of, for the context panel's composition rows.
+    dark.add(turn, at(38), 'usage.sample', { scope: 'request', model: 'fixture-model', input: 22_400, cacheRead: 12_800, cacheWrite: 6_400, output: 3_200, reasoning: 1_100 });
     // The plan the answer worked from, one step still on it: a finished step, the one under way,
     // and one not started, all three where the card shows them apart.
     dark.add(turn, at(38), 'plan.updated', { entries: [

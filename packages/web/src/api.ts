@@ -191,6 +191,8 @@ export interface ThreadStats {
   };
   tokPerSec: number | null;
   tokPerSecApprox: boolean;
+  /** Compactions the agent itself completed; absent when an older daemon does not report it. */
+  compactions?: { count: number; last: { ts: string; automatic: boolean } | null };
 }
 
 /** The model and thinking effort members of one instance start with; null leaves the agent's own. */

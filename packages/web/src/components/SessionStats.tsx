@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Api, ThreadStats } from '../api';
 import { Popover } from './Popover';
 import { IconChevronRight, IconDatabase, IconGauge } from './icons';
-import { t } from '../i18n';
+import { formatDate, t } from '../i18n';
 
 /** 61843450 → 61.8M, 61322 → 61K, 820 → 820: token counts that fit a pill. */
 export function compactTokens(value: number): string {
@@ -100,15 +100,16 @@ function SessionStatsPanel({ stats, onOpenTrace }: { stats: ThreadStats; onOpenT
   );
 }
 
-function TokenStatsPanel({ stats }: { stats: ThreadStats }) {
+function TokenStatsPanel({ stats, label }: { stats: ThreadStats; label?: string }) {
   const tokens = stats.tokens;
   if (!tokens) return null;
   const hit = tokens.input ? (tokens.cacheRead != null ? tokens.cacheRead / tokens.input : null) : null;
-  const total = tokens.input != null ? tokens.input + (tokens.output ?? 0) : null;
+  // Agents that only tally a native total (Codex's first notification shape) still get a number.
+  const total = tokens.input != null ? tokens.input + (tokens.output ?? 0) : tokens.total;
   const n = (value: number | null | undefined) => (value != null ? value.toLocaleString('en-US') : null);
   return (
     <>
-      <StatHead icon={<IconDatabase size={15} />} title={t('stats.tokens')} value={n(total)} />
+      <StatHead icon={<IconDatabase size={15} />} title={label ?? t('stats.tokens')} value={n(total)} />
       <dl className="pop-rows">
         {hit != null && <div><dt>{t('stats.hit')}</dt><dd>{percentLabel(hit)}</dd></div>}
         {tokens.input != null && tokens.cacheRead != null && tokens.cacheWrite != null
@@ -126,6 +127,66 @@ function TokenStatsPanel({ stats }: { stats: ThreadStats }) {
       {tokens.turnsWithout > 0 && <div className="pop-foot">{t('stats.turnsWithout', tokens.turnsWithout)}</div>}
     </>
   );
+}
+
+/** "14:32" today, "Oct 12 14:32" before that: the same wording the quota reset times use. */
+function whenLabel(ts: string): string {
+  const at = new Date(ts);
+  if (Number.isNaN(at.getTime())) return '';
+  const hm = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+  return at.toDateString() === new Date().toDateString() ? hm : `${formatDate(at, { month: 'short', day: 'numeric' })} ${hm}`;
+}
+
+/** The context panel's session totals: read once when the panel opens, then every three seconds
+ *  while a turn runs. Errors keep the last reading; a placeholder keeps the rows' room while the
+ *  first one is on its way, so the panel does not jump when it arrives. */
+export function ContextTotals({ api, threadId, active, label }: {
+  api: Api | null;
+  threadId: string;
+  active?: boolean;
+  label: string;
+}) {
+  const [state, setState] = useState<{ kind: 'loading' } | { kind: 'missing' } | { kind: 'failed' } | { kind: 'ready'; stats: ThreadStats }>({ kind: 'loading' });
+  useEffect(() => {
+    if (!api) { setState({ kind: 'missing' }); return; }
+    let stale = false;
+    let running = false;
+    // The panel's host is keyed by thread, so the first mount is the only place that starts from
+    // the placeholder; activity changes re-read without wiping what is already on screen.
+    const read = () =>
+      api.stats(threadId).then(
+        (value) => { if (!stale) { running = value.running; setState(value.tokens || value.compactions ? { kind: 'ready', stats: value } : { kind: 'missing' }); } },
+        () => { if (!stale) setState((prev) => prev.kind === 'ready' ? prev : { kind: 'failed' }); },
+      );
+    void read();
+    const timer = window.setInterval(() => {
+      if (!document.hidden && (active || running)) void read();
+    }, 3000);
+    return () => { stale = true; window.clearInterval(timer); };
+  }, [api, threadId, active]);
+  if (state.kind === 'loading') {
+    return (
+      <div className="usage-skeleton" aria-hidden={true}>
+        <div className="usage-skeleton-row wide" />
+        <div className="usage-skeleton-row" />
+        <div className="usage-skeleton-row" />
+        <div className="usage-skeleton-row" />
+        <div className="usage-skeleton-row wide" />
+      </div>
+    );
+  }
+  if (state.kind === 'failed') return <div className="pop-foot">{t('pickers.contextStatsFailed')}</div>;
+  const compactions = state.kind === 'ready' ? state.stats.compactions : undefined;
+  const history = compactions && compactions.count > 0 && compactions.last && whenLabel(compactions.last.ts)
+    ? <div className="pop-foot">{t('pickers.contextCompactions', compactions.count, whenLabel(compactions.last.ts), compactions.last.automatic)}</div>
+    : null;
+  if (state.kind !== 'ready') return <>{history ?? <div className="pop-foot">{t('pickers.contextNoTotals')}</div>}</>;
+  return <>
+    {state.stats.tokens
+      ? <TokenStatsPanel stats={state.stats} label={label} />
+      : <div className="pop-foot">{t('pickers.contextNoTotals')}</div>}
+    {history}
+  </>;
 }
 
 /**
