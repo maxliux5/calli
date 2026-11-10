@@ -106,6 +106,12 @@ test('fresh near-quota -> agent summary -> countdown -> successor; queued work f
     // The summary path: the brief is written even for another account of the same agent.
     h.manager.autoHandover.configure({ enabled: true, threshold: 90, orders: { agy: [{ agent: 'agy2', model: 'gemini-pro' }] }, method: 'summary' });
     await h.manager.agentQuota('agy'); // The fresh turn must not use this 10% cached value.
+    const seen: string[] = [];
+    const off = h.manager.subscribe(() => {
+      const v = h.manager.autoHandover.view(h.thread.id);
+      const mark = v.state ? `${v.state}${v.step ? `:${v.step}` : ''}` : '';
+      if (mark && seen.at(-1) !== mark) seen.push(mark);
+    });
     await h.manager.startTurn(h.thread.id, { text: 'quota-near' });
     await h.manager.startTurn(h.thread.id, { text: 'queued followup', queue: true });
     await wait(() => h.manager.autoHandover.view(h.thread.id).state === 'countdown');
@@ -113,6 +119,9 @@ test('fresh near-quota -> agent summary -> countdown -> successor; queued work f
     assert.equal(events.filter(e => e.type === 'turn.started').length, 2);
     assert.ok(events.find(e => e.type === 'turn.started' && e.data.handover));
     await h.done();
+    off();
+    // The person is told which step it is on; once the move itself has begun it cannot be called off.
+    assert.deepEqual(seen.filter(m => m !== 'checking'), ['preparing', 'preparing:summary', 'countdown', 'preparing:handover']);
     const next = h.manager.listThreads().find(t => t.handover?.sourceId === h.thread.id)!;
     assert.ok(next); assert.equal(next.handover?.mode, 'continue'); await h.done(next.id);
     assert.equal(next.agent, 'agy2'); assert.equal(next.model, 'gemini-pro');

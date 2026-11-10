@@ -1,4 +1,5 @@
 import type { PushService } from './push.js';
+import type { FeishuChat } from './feishu-chat.js';
 import { DEFAULT_RULES } from './autotitle.js';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
@@ -30,6 +31,7 @@ import { todoStages } from './todo-stage.js';
 
 export interface HttpDeps {
   push?: PushService;
+  feishu?: FeishuChat;
   manager: ThreadManager;
   /** Agent instances beyond the built-in ones. Optional so simple setups and tests need none. */
   registry?: AgentRegistry;
@@ -407,6 +409,16 @@ export function createHttpServer(deps: HttpDeps): Server {
       if (path === '/api/push/settings' && method === 'PUT') return sendJson(res, 200, deps.push.putSettings(await readJson(req)));
       if (path === '/api/push/status' && method === 'GET') return sendJson(res, 200, await deps.push.status(url.searchParams.get('summary') === 'true'));
       if (path === '/api/push/test' && method === 'POST') return sendJson(res, 202, deps.push.test());
+    }
+
+    if (path.startsWith('/api/feishu/')) {
+      if (!deps.feishu) throw new HttpError(503, 'Feishu is unavailable');
+      if (path === '/api/feishu/settings' && method === 'GET') return sendJson(res, 200, deps.feishu.getSettings());
+      if (path === '/api/feishu/settings' && method === 'PUT') return sendJson(res, 200, deps.feishu.putSettings(await readJson(req)));
+      if (path === '/api/feishu/status' && method === 'GET') return sendJson(res, 200, await deps.feishu.status(url.searchParams.get('summary') === 'true'));
+      if (path === '/api/feishu/setup' && method === 'POST') return sendJson(res, 200, await deps.feishu.startSetup());
+      if (path === '/api/feishu/setup' && method === 'DELETE') return sendJson(res, 200, await deps.feishu.cancelSetup());
+      if (path === '/api/feishu/test' && method === 'POST') return sendJson(res, 202, await deps.feishu.test());
     }
 
     if (path === '/api/tools/command' && method === 'POST') {

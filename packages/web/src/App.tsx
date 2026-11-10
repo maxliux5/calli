@@ -2,6 +2,7 @@ import { SettingsPage, type SettingsGroup } from './components/SettingsPage';
 import { AssistantSettingsPage, assistantTitle } from './components/AssistantSettingsPage';
 import { PageNavigation, SettingsSection, usePageNavigation } from './components/PageNavigation';
 import { PushSettingsDialog } from './components/PushSettingsDialog';
+import { FeishuSettingsDialog } from './components/FeishuSettingsDialog';
 import { GeneralSettingsDialog } from './components/GeneralSettingsDialog';
 import { AutoHandoverNotice, HandoverSettingsDialog } from './components/AutoHandover';
 import { useWorkSources, WorkSummary } from './extensions/work';
@@ -117,7 +118,7 @@ import { NoteMarks, type NoteMark } from './components/NoteMarks';
 import { ConnectDialog, DemoBar } from './components/ConnectDialog';
 import { DemoApi, DemoError } from './demo/DemoApi';
 import { type DraftModelPreference, switchDraftModelPreference } from './draft-preferences';
-import { IconCheck, IconBell, AgentMark, IconActivity, IconAgents, IconArchive, IconArrowDown, IconBack, IconClose, IconEdit, IconFolder, IconGauge, IconGlobe, IconImport, IconList, IconMenu, IconSettings, IconMore, IconOverview, IconPalette, IconPlus, IconPuzzle, IconServer, IconSidebar, IconSignIn, IconSignOut, IconSparkle, IconTerminal, IconTrace, IconLanguage, IconWaveform } from './components/icons';
+import { IconCheck, IconBell, AgentMark, IconActivity, IconAgents, IconArchive, IconArrowDown, IconBack, IconClose, IconEdit, IconFolder, IconGauge, IconGlobe, IconImport, IconList, IconMenu, IconSettings, IconMore, IconOverview, IconPalette, IconPlus, IconPuzzle, IconServer, IconSidebar, IconSignIn, IconSignOut, IconSparkle, IconTerminal, IconTrace, IconLanguage, IconWaveform, IconSideChat } from './components/icons';
 import { StatReadings } from './components/SessionStats';
 import { ThreadTracePanel } from './components/TracePanel';
 import { chooseLocale, locale, LOCALES, localeChoice, t } from './i18n';
@@ -1677,7 +1678,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   useEffect(() => {
     const el = scrollerRef.current;
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
-  }, [events]);
+  }, [events, selected?.autoHandover?.state, selected?.autoHandover?.step]);
 
   // Screenshots and slow-rendering blocks grow the thread after the scroll above, which used to
   // leave a reopened thread parked at the top. Watching the thread's height keeps it pinned. The
@@ -2919,6 +2920,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       </div></SettingsSection> },
       ...(!demo ? [
         { id: 'push', label: t('push.title'), icon: IconBell, render: () => <PushSettingsDialog api={api} onClose={closeSettings} /> },
+        { id: 'feishu', label: t('feishu.title'), icon: IconSideChat, render: () => <FeishuSettingsDialog api={api} agents={agents} onClose={closeSettings} /> },
         { id: 'assistant', label: t('personal.settings'), icon: IconSparkle, render: () => <AssistantSettingsPage api={api} agents={agents} setupNeeded={setupNeeded} onExplore={openExplore} path={settingsPath || 'assistant'} onNavigate={openSettings} onSave={setPersonal} /> },
         { id: 'handover', label: t('auto.title'), icon: IconAgents, render: () => <HandoverSettingsDialog api={api} agents={agents} onClose={closeSettings} /> },
       ] : []),
@@ -3397,7 +3399,6 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
         <div key="thread" className="scroller" ref={scrollerRef} onScroll={onScroll} {...gestureProps}>
           {selected && <TurnRuler key={selected.id} threadId={selected.id} scrollerRef={scrollerRef} previews={turnPreviewMap} turnIds={rulerTurnIds} onJump={turnId => setJump({ threadId: selected.id, turnId })} />}
           {onRouterThread && petStatus?.installed && <PetPortrait api={api} status={petStatus} onAway={setPortraitAway} />}
-          {selected && <AutoHandoverNotice api={api} thread={selected} agents={agents} />}
           {selected && eventsLoading && <div className="loading-note">{t('common.loading')}</div>}
           {showcase && selected && !eventsLoading && !timeline.items.length && showcase.intro(selected.id)}
           {selected ? (
@@ -3499,6 +3500,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
               <h2>{draftScratch ? t('app.emptyScratch') : t('app.emptyIn', folderName(draftCwd))}</h2>
             </div>
           )}
+          {selected && <AutoHandoverNotice api={api} thread={selected} agents={agents} />}
         </div>
         )}
 

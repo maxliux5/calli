@@ -12351,7 +12351,9 @@ button.trace-step-head:hover { background: var(--hover); }
 .auto-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
 /* One line across the thread: rule — fork icon — what is about to happen — rule. Sticky, so the
    countdown stays visible; the bar carries the page background, not a card. */
-.auto-notice { position: sticky; top: 8px; z-index: 2; display: flex; align-items: center; gap: 10px; max-width: 800px; margin: 12px auto; padding: 4px 12px; background: var(--bg); color: var(--muted); font-size: 12.5px; }
+/* In the flow at the end of the thread, where the move will land; it does not float over what is read. */
+.auto-notice { display: flex; align-items: center; gap: 10px; max-width: 800px; margin: 12px auto; padding: 4px 12px; color: var(--muted); font-size: 12.5px; }
+.auto-notice > .spinner { flex-shrink: 0; width: 14px; height: 14px; border-width: 1.5px; }
 .auto-notice .rule { flex: 1 0 24px; height: 1px; background: var(--border-strong); }
 .auto-notice > span { min-width: 0; }
 .auto-notice > svg { flex-shrink: 0; color: var(--positive); }
@@ -12652,7 +12654,7 @@ button.trace-step-head:hover { background: var(--hover); }
 .pop-panel.general-startup-menu { z-index: 72; min-width: 180px; }
 .general-hint { margin: 0; line-height: 1.6; }
 .personal-settings .dialog-actions { margin-top: 8px; }
-.personal-settings, .push-settings { width: min(520px, calc(100vw - 32px)); }
+.personal-settings, .push-settings, .feishu-settings { width: min(520px, calc(100vw - 32px)); }
 .personal-fork-hint { margin: 10px 0 0; font-size: 12.5px; line-height: 1.6; }
 /* Settings grow with what is turned on: the form scrolls, and Save stays in reach. */
 .dialog.personal-settings { max-height: calc(100dvh - 48px); overflow-y: auto; padding-bottom: 0; }
@@ -12673,6 +12675,19 @@ button.trace-step-head:hover { background: var(--hover); }
 .push-test-result { color: var(--muted); font-size: 12px; }
 .push-records { max-height: 220px; overflow-y: auto; font-size: 12px; margin-top: 12px; color: var(--muted); }
 .push-records > div { display: flex; flex-wrap: wrap; gap: 6px 12px; padding: 8px 0; border-top: 1px solid var(--border); }
+/* Pairing the machine with a bot: a plain explanation, the link out, and its two actions. */
+.feishu-setup { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; padding: 6px 0 10px; }
+.feishu-note { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
+.feishu-setup-waiting { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; width: 100%; }
+.feishu-setup-actions { display: flex; align-items: center; gap: 10px; }
+.feishu-link { color: var(--accent); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; overflow-wrap: anywhere; font-size: 13px; }
+.feishu-setup > .personal-warning, .feishu-setup-waiting .personal-warning { margin: 0; font-size: 13px; }
+.feishu-records .feishu-dir { min-width: 2em; }
+/* The owner's open_id, usually filled by the scan; the bind button only appears as a fallback. */
+.feishu-owner { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.feishu-owner input { width: min(220px, 40vw); }
+.feishu-owner .ghost { flex-shrink: 0; }
+.feishu-bottom .ghost { white-space: nowrap; flex-shrink: 0; }
 .agent-notice { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--muted); margin: 0; line-height: 1.6; }
 .agent-notice > svg { align-self: center; flex-shrink: 0; }
 .agent-notice a { color: var(--muted); text-underline-offset: 3px; }
@@ -12694,18 +12709,19 @@ button.trace-step-head:hover { background: var(--hover); }
   .todo-proposal-actions { width: 100%; flex-direction: row-reverse; justify-content: flex-start; }
   .todo-note-section { display: block; }
   .todo-note-section strong { margin-right: 8px; }
-  .general-settings, .personal-settings, .push-settings { width: 100%; max-height: calc(100dvh - 24px); overflow-y: auto; border-radius: var(--radius-lg) var(--radius-lg) 0 0; margin-top: auto; margin-bottom: 0; }
-  .dialog-scrim:has(> .general-settings), .dialog-scrim:has(> .personal-settings), .dialog-scrim:has(> .push-settings) { padding: 0; align-items: flex-end; }
+  .general-settings, .personal-settings, .push-settings, .feishu-settings { width: 100%; max-height: calc(100dvh - 24px); overflow-y: auto; border-radius: var(--radius-lg) var(--radius-lg) 0 0; margin-top: auto; margin-bottom: 0; }
+  .dialog-scrim:has(> .general-settings), .dialog-scrim:has(> .personal-settings), .dialog-scrim:has(> .push-settings), .dialog-scrim:has(> .feishu-settings) { padding: 0; align-items: flex-end; }
   .personal-setting-line { gap: 12px; }
 }
 .personal-settings .agent-btn.has-mark > span { display: inline; }
+.feishu-settings .agent-btn.has-mark > span { display: inline; }
 .personal-switch[aria-checked='false'] span { background: var(--muted); }
 .personal-switch[aria-checked='mixed'] { justify-content: center; }
 .personal-switch[aria-checked='mixed'] span { display: flex; align-items: center; justify-content: center; color: var(--muted); }
 .lark-meeting-events .personal-switch:disabled { opacity: .55; cursor: default; }
 @media (max-width: 640px) {
-  .push-settings .personal-setting-line { padding: 10px 0; }
-  .push-settings .push-bottom { margin-top: 12px; }
+  .push-settings .personal-setting-line, .feishu-settings .personal-setting-line { padding: 10px 0; }
+  .push-settings .push-bottom, .feishu-settings .push-bottom { margin-top: 12px; }
 }
 
 .files-menu-path { padding: 8px 12px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }

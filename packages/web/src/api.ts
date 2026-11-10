@@ -240,6 +240,8 @@ export interface AutoHandoverView {
   enabled: boolean; source: 'thread' | 'collaboration' | 'global'; override: boolean | null;
   state?: 'checking' | 'preparing' | 'countdown' | 'stopped' | 'failed';
   target?: HandoverTarget; deadline?: string; reason?: 'near' | 'exhausted'; error?: string;
+  /** Where a preparing handover is; all but `summary` are past the point of calling it off. */
+  step?: 'summary' | 'switch' | 'copy' | 'handover';
   /** Present when this thread waits for its quota to come back; absent on older daemons. */
   resume?: ResumeView | null;
 }
@@ -562,6 +564,26 @@ export interface Wish { id: string; threadId: string; text: string; createdAt: s
 export interface PushSettings { enabled: boolean; recipient: string; baseUrl: string; waiting: boolean; failure: boolean; notice: boolean; scheduled: boolean }
 export interface PushRecord { key: string; at: string; kind: string; title: string; result: 'queued' | 'sent' | 'failed' | 'dropped'; reason: string | null }
 export interface PushStatus { cli: boolean; botReady: boolean; recipient: string; reason: string | null; records: PushRecord[]; dropped: number }
+export interface FeishuSettings { enabled: boolean; agent: string; cwd: string; owner: string; echoWeb: boolean }
+export type FeishuRealtime = 'off' | 'connecting' | 'live' | 'console-off' | 'busy-elsewhere' | 'unavailable' | 'error';
+export interface FeishuRecord { key: string; at: string; direction: 'in' | 'out'; threadId: string | null; title: string; result: 'received' | 'sent' | 'failed' | 'dropped'; reason: string | null }
+export interface FeishuSetup { state: 'idle' | 'waiting' | 'done' | 'failed'; url: string | null; reason: string | null }
+export interface FeishuStatus {
+  /** Whether lark-cli is on the machine at all. */
+  cli: boolean;
+  /** Whether the dedicated bot (profile) exists; until then the page only offers to create it. */
+  configured: boolean;
+  botReady: boolean;
+  realtime: FeishuRealtime;
+  /** Why the channel is not ready, when it is not: `cli_missing` or `bot_not_ready`. */
+  reason: string | null;
+  /** The open_id of whoever messaged the bot while no owner was bound: offered as the owner to confirm. */
+  pendingOwner: string | null;
+  setup: FeishuSetup;
+  /** The latest only, unless the full status is asked for. */
+  records: FeishuRecord[];
+  dropped: number;
+}
 export interface TodoSource { type: 'lark-task' | 'lark-message' | 'lark-flag' | 'lark-calendar' | 'manual'; ref: string; url?: string; from?: string; at?: string }
 export interface TodoUrgency { urgent: boolean; reason: 'overdue' | 'due-soon' | 'pinned' | 'meeting-today' | null }
 /** Whether the assistant may act on its own, and in which repositories she may work in a sandbox. */
@@ -1252,6 +1274,14 @@ export class Api {
   savePushSettings(value: PushSettings): Promise<PushSettings> { return this.request('PUT', '/api/push/settings', value); }
   pushStatus(full = false): Promise<PushStatus> { return this.request('GET', `/api/push/status${full ? '' : '?summary=true'}`); }
   testPush(): Promise<PushRecord> { return this.request('POST', '/api/push/test', {}); }
+  feishuSettings(): Promise<FeishuSettings> { return this.request('GET', '/api/feishu/settings'); }
+  saveFeishuSettings(value: FeishuSettings): Promise<FeishuSettings> { return this.request('PUT', '/api/feishu/settings', value); }
+  feishuStatus(full = false): Promise<FeishuStatus> { return this.request('GET', `/api/feishu/status${full ? '' : '?summary=true'}`); }
+  /** Starts creating the dedicated bot; the status that returns carries the authorization URL to open in Feishu. */
+  startFeishuSetup(): Promise<FeishuStatus> { return this.request('POST', '/api/feishu/setup', {}); }
+  cancelFeishuSetup(): Promise<FeishuStatus> { return this.request('DELETE', '/api/feishu/setup'); }
+  /** Sends the owner one test message; the record that returns says how it went. */
+  testFeishu(): Promise<FeishuRecord> { return this.request('POST', '/api/feishu/test', {}); }
 
   todos(): Promise<Todo[]> {
     return this.request('GET', '/api/todos');
