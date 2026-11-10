@@ -10,6 +10,7 @@ import { AgyAdapter } from '../src/adapters/agy.js';
 import { Workdirs } from '../src/workdirs.js';
 import type { AgentAdapter } from '../src/adapters/types.js';
 import { chunkText, transcript } from '../src/auto-compact.js';
+import { compressPrompt, mergePrompt, SUMMARY_SECTIONS } from '../src/compress-prompts.js';
 import { HttpError } from '../src/errors.js';
 import type { StoredEvent } from '../src/events.js';
 
@@ -54,9 +55,10 @@ async function setup() {
     writeFileSync(join(dir, id + '.json'), JSON.stringify({ 'Gemini Models': 10 }));
     adapters.set(id, new AgyAdapter([process.execPath, join(fixtures, 'fake-agy.mjs')], { FAKE_HANDOVER_QUOTA: join(dir, id + '.json') }));
   }
+  adapters.set('offline', new AgyAdapter(['nonexistent-compression-fixture']));
   const manager = new ThreadManager(store, adapters, new Workdirs([dir], join(dir, 'dirs.json'), join(dir, 'scratch')), new AttachmentStore(dir), () => [...adapters.keys()].map(id => ({ id, adapter: 'agy' })));
   const thread = await manager.createThread({ agent: 'agy', cwd: dir, model: 'gemini-pro' });
-  const compact = (over: Record<string, unknown> = {}) => manager.autoCompact.configure({ enabled: true, threshold: 85, agent: 'agy2', minChars: 100, ...over });
+  const compact = (over: Record<string, unknown> = {}) => manager.autoCompact.configure({ enabled: true, threshold: 85, agents: [{ agent: 'agy2' }], minChars: 100, ...over });
   return { dir, store, manager, thread, compact,
     async close() { await manager.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
@@ -66,12 +68,15 @@ test('configure validates and orders the compaction before the handover', async 
   try {
     assert.equal(h.manager.autoCompact.settings().enabled, false);
     assert.throws(() => h.manager.autoCompact.configure({ enabled: true, threshold: 'x' }), HttpError);
-    assert.throws(() => h.manager.autoCompact.configure({ enabled: true, threshold: 85, agent: 'nope' }), HttpError);
-    assert.equal(h.compact().agent, 'agy2');
+    assert.throws(() => h.manager.autoCompact.configure({ enabled: true, threshold: 85, agents: [{ agent: 'nope' }] }), HttpError);
+    assert.throws(() => h.compact({ agents: [{ agent: 'agy2' }, { agent: 'agy2' }] }), HttpError, 'a repeat is refused');
+    assert.throws(() => h.compact({ agents: [{ agent: 'agy2', model: '' }] }), HttpError);
+    assert.deepEqual(h.compact().agents, [{ agent: 'agy2' }]);
+    assert.deepEqual(h.compact({ agents: [{ agent: 'agy2', model: 'fast' }, { agent: 'agy' }] }).agents, [{ agent: 'agy2', model: 'fast' }, { agent: 'agy' }]);
     h.manager.autoHandover.configure({ enabled: true, threshold: 90, orders: {} });
     assert.throws(() => h.compact({ threshold: 90 }), /before the handover/);
     // Native mode: no compression agent, the thread itself runs /compact.
-    assert.equal(h.compact({ agent: null, threshold: 85 }).agent, null);
+    assert.deepEqual(h.compact({ agents: [], threshold: 85 }).agents, []);
   } finally { await h.close(); }
 });
 
@@ -157,4 +162,62 @@ test('a failing quota probe still compacts on the last good reading', async () =
     const last = h.manager.autoCompact.status().last!;
     assert.ok(last.successorId, 'the cached reading alone moved the compaction');
   } finally { await h.close(); }
+});
+
+test('a handover the source cannot summarize is summarized by the compression agent, then falls back to the log', async () => {
+  const h = await setup();
+  try {
+    await h.manager.startTurn(h.thread.id, { text: '把视频渲染出来，然后用飞书发给我，注意音画同步' });
+    await wait(() => h.manager.threadView(h.thread.id).status !== 'running');
+    // No compression agent: the brief is the one assembled from the log, as before.
+    h.compact({ agents: [] });
+    const plain = await h.manager.handoverSummary(h.thread.id, null, { compress: true });
+    assert.ok('summary' in plain && !plain.summary.includes('## 进度（由 '));
+    // The summary a view asks for is never held up by the compression agent.
+    h.compact();
+    const view = await h.manager.handoverSummary(h.thread.id, null);
+    assert.ok('summary' in view && !view.summary.includes('## 进度（由 '));
+    // With one, its notes (the fake echoes its prompt) sit between the pointer to the source and the log facts.
+    const rich = await h.manager.handoverSummary(h.thread.id, null, { compress: true });
+    assert.ok('summary' in rich);
+    const text = rich.summary;
+    assert.ok(text.includes('## 进度（由 '));
+    assert.ok(text.includes('echo:') && text.includes('把视频渲染出来'), 'the compressor read the record');
+    assert.ok(text.indexOf('# 接手') < text.indexOf('## 进度（由 ') && text.indexOf('## 进度（由 ') < text.indexOf('hub 从记录整理，可能不全'));
+  } finally { await h.close(); }
+});
+
+test('settings saved with one agent and its model read as a list of one', async () => {
+  const h = await setup();
+  try {
+    h.store.saveHubSetting('autocompact.settings', { enabled: true, threshold: 85, agent: 'agy2', model: 'fast' });
+    const settings = h.manager.autoCompact.settings();
+    assert.deepEqual(settings.agents, [{ agent: 'agy2', model: 'fast' }]);
+    assert.ok(!('agent' in settings) && !('model' in settings));
+    // An older client still saving the single agent lands on the same list.
+    const saved = h.manager.autoCompact.configure({ enabled: true, threshold: 85, agent: 'agy2' });
+    assert.deepEqual(saved.agents, [{ agent: 'agy2' }]);
+    assert.ok(!('agent' in h.store.hubSetting<Record<string, unknown>>('autocompact.settings', {})));
+  } finally { await h.close(); }
+});
+
+test('the next compression agent takes over when one is unavailable, and none left means the log brief', async () => {
+  const h = await setup();
+  try {
+    await h.manager.startTurn(h.thread.id, { text: '把视频渲染出来，然后用飞书发给我，注意音画同步' });
+    await wait(() => h.manager.threadView(h.thread.id).status !== 'running');
+    h.compact({ agents: [{ agent: 'offline' }, { agent: 'agy2' }] });
+    const second = await h.manager.autoCompact.summarizeForHandover(h.thread.id);
+    assert.ok(second?.includes('## 进度（由 ') && second.includes('echo:'), 'the second agent wrote it');
+    h.compact({ agents: [{ agent: 'offline' }] });
+    assert.equal(await h.manager.autoCompact.summarizeForHandover(h.thread.id), null);
+  } finally { await h.close(); }
+});
+
+test('the prompts name every section and carry the record', () => {
+  const one = compressPrompt(1, 2, '<<record>>');
+  const merged = mergePrompt(['a-note', 'b-note']);
+  for (const section of SUMMARY_SECTIONS) assert.ok(one.includes(`## ${section}`) && merged.includes(`## ${section}`), section);
+  assert.ok(one.includes('第 1/2 段') && one.includes('<<record>>'));
+  assert.ok(merged.includes('a-note') && merged.includes('b-note'));
 });

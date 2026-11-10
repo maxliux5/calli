@@ -37,3 +37,17 @@ test('legacy handovers recover only from explicit local first-turn coordinates a
     assert.equal(store.getThread('valid')?.handover?.title, 'Same title');
   } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test('lastContextUsed reads the newest reported context, and null when none was reported', () => {
+  const root = mkdtempSync(join(tmpdir(), 'calli-context-used-'));
+  const store = new Store(root);
+  try {
+    store.createThread({ id: 't', cwd: '/project', agent: 'test', title: 't', permissionMode: 'auto_edit', model: null, effort: null });
+    assert.equal(store.lastContextUsed('t'), null);
+    store.appendEvent('t', 'one', 'usage.updated', { used: 126_000, size: 200_000 });
+    store.appendEvent('t', 'one', 'usage.updated', { used: null, size: 200_000 });
+    assert.equal(store.lastContextUsed('t'), null);
+    store.appendEvent('t', 'two', 'usage.updated', { used: 30_000, size: 200_000 });
+    assert.equal(store.lastContextUsed('t'), 30_000);
+  } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});

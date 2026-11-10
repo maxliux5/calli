@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { StoredEvent } from '../src/events.js';
-import { handoverBrief, handoverPrompt, synthesizeBrief } from '../src/handover.js';
+import { handoverBrief, handoverPreview, handoverPrompt, synthesizeBrief } from '../src/handover.js';
 
 let seq = 0;
 const ev = (turnId: string | null, type: StoredEvent['type'], data: Record<string, unknown> = {}): StoredEvent => ({
@@ -92,4 +92,16 @@ test('the brief handover points at the source and keeps progress to a few lines'
   assert.match(text, /f7\.ts 等 12 个/);
   assert.match(text, /中断原因：plan_exhausted：limit/);
   assert.equal(synthesizeBrief([]), '');
+});
+
+test('a folded handover previews the task, not the lead-in every brief opens with', () => {
+  const brief = handoverBrief({ threadId: 'abc', from: 'Claude Code', cwd: '/work', lead: true });
+  const written = '## 进度（由 agy2 从记录整理）\n\n## 任务\n梳理企微 **Agent** 现状，产出一份文章。\n\n## 已完成\n1. 画了图';
+  assert.equal(handoverPreview(`${brief}\n\n${written}`), '梳理企微 Agent 现状，产出一份文章。 画了图');
+  const assembled = '## 进度（hub 从记录整理，可能不全）\n- 最近的要求：把图调暗\n- 中断原因：plan_exhausted';
+  assert.equal(handoverPreview(`${brief}\n\n${assembled}`), '最近的要求：把图调暗 中断原因：plan_exhausted');
+  // Text that is not a brief (a resent message) is previewed as it is, and cut at the limit.
+  assert.equal(handoverPreview('请继续\n看看评论'), '请继续 看看评论');
+  assert.equal(handoverPreview('字'.repeat(300), 10), `${'字'.repeat(10)}…`);
+  assert.equal(handoverPreview(''), '');
 });

@@ -228,8 +228,9 @@ export type HandoverMethod = 'resume' | 'summary';
 export interface HandoverSettings { enabled: boolean; threshold: number; orders: Record<string, HandoverTarget[]>; resume?: boolean; method?: HandoverMethod }
 /** Quota-aware context compression ahead of the handover: another agent (a third-party bridge,
  *  say) reads the hub's transcript and writes the brief, so official-account quota buys no summarizing.
- *  `agent: null` means a native /compact in place. Absent on older daemons. */
-export interface AutoCompactSettings { enabled: boolean; threshold: number; agent: string | null; model: string | null; minChars: number; chunkChars: number; maxChars: number }
+ *  `agents` are asked in order, the next when one is unavailable or fails; none means a native
+ *  /compact in place. Absent on older daemons. */
+export interface AutoCompactSettings { enabled: boolean; threshold: number; agents: HandoverTarget[]; minChars: number; chunkChars: number; maxChars: number }
 export interface AutoCompactStatus { last?: { threadId: string; successorId?: string; native: boolean; chars: number; chunks: number; at: string }; error?: { threadId: string; message: string; at: string }; skipped?: { threadId: string; reason: string; chars: number; at: string } }
 /** A watch waiting for the thread's agent quota to reset; the daemon then resends the failed turn. */
 export interface ResumeView { origin: 'user' | 'global'; resetsAt: string | null; nextCheckAt: string; lastError?: string }
@@ -272,7 +273,7 @@ export interface Thread {
   sectionId: string | null;
   /** The thread this one was forked from, if it is a fork. */
   forkedFrom: string | null;
-  handover?: { sourceId: string; title: string; agent: string; mode?: 'continue' | 'branch'; automatic?: boolean; detached?: boolean } | null;
+  handover?: { sourceId: string; title: string; agent: string; mode?: 'continue' | 'branch'; automatic?: boolean; detached?: boolean; method?: 'resume' | 'summary' } | null;
   /**
    * The git worktree the thread runs in, when a fork was given one. `of` is the directory it would
    * be in otherwise, which is the project it is listed under; `ofReal` is that with symlinks
@@ -1327,15 +1328,17 @@ export class Api {
     return this.request('GET', `/api/threads/${id}/events?after=${after}`);
   }
 
-  historyPage(id: string, before?: number, after?: number, chain = false, signal?: AbortSignal): Promise<HistoryPage> {
+  /** `forward` reads the eight turns after `after`, from the conversation's beginning on; otherwise the newest eight before `before`. */
+  historyPage(id: string, before?: number, after?: number, chain = false, signal?: AbortSignal, forward = false): Promise<HistoryPage> {
     const params = new URLSearchParams();
     if (before) params.set('before', String(before));
     if (after) params.set('after', String(after));
     if (chain) params.set('chain', '1');
+    if (forward) params.set('forward', '1');
     return this.request('GET', `/api/threads/${id}/history${params.size ? `?${params}` : ''}`, undefined, { signal });
   }
 
-  historyHandover(id: string, full = false): Promise<{ source: { sourceId: string; agent: string; title: string }; turnId: string | null; reason: string | null; text?: string }> {
+  historyHandover(id: string, full = false): Promise<{ source: { sourceId: string; agent: string; title: string }; method: 'resume' | 'summary' | null; turnId: string | null; reason: string | null; size: number; preview: string; text?: string }> {
     return this.request('GET', `/api/threads/${id}/history/handover${full ? '?text=1' : ''}`);
   }
 

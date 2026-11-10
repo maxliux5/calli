@@ -7,6 +7,7 @@ import { HttpError } from './errors.js';
 import { diffStats } from './history-diff.js';
 import { realpath } from 'node:fs/promises';
 import { outputPath } from './outputs.js';
+import { handoverPreview } from './handover.js';
 
 /** Read-model events are explicitly distinct from the complete event log. */
 export interface HistoryEvent extends Omit<StoredEvent, 'type'> { type: string }
@@ -15,6 +16,8 @@ export interface HistoryPage {
   snapshotSeq: number;
   nextCursor: number | null;
   hasOlder: boolean;
+  /** Only for a forward read: more turns follow, and `nextCursor` is the `after` to read them with. */
+  hasNewer?: boolean;
   turnIds?: string[];
 }
 interface Row { thread_id: string; turn_id: string | null; seq: number; type: string; ts: string; data: string }
@@ -342,19 +345,32 @@ export class HistoryStore {
     for (const e of view) if (e.type === 'history.work') e.data.version = end - 1;
     return view;
   }
-  async page(thread: string, before?: number, after = 0, chain = false): Promise<HistoryPage> {
-    const hiddenStart = chain ? this.handoverStart(thread) : 0;
-    const snapshotSeq = this.latest(thread);
-    const end = Math.min(before ?? snapshotSeq + 1, snapshotSeq + 1);
-    // Voice-only conversations have no task turns. Each committed utterance is also a page
-    // boundary, so opening a long call does not eagerly load its entire transcript.
-    const starts = this.db.prepare(`SELECT e.seq, e.turn_id FROM events e
+  /** Page boundaries: voice-only conversations have no task turns, so each committed utterance is one too. */
+  private starts(thread: string, end: number, after: number, order: 'ASC' | 'DESC'): { seq: number; turn_id: string | null }[] {
+    return this.db.prepare(`SELECT e.seq, e.turn_id FROM events e
       WHERE e.thread_id=? AND e.seq<? AND e.seq>? AND e.type IN ('turn.started', 'voice.message', 'voice.closed') AND ${visibleVoice('e')} AND (
         e.type IN ('turn.started', 'voice.closed') OR e.type='voice.message' AND COALESCE((
           SELECT b.type FROM events b WHERE b.thread_id=e.thread_id AND b.seq<e.seq
           AND b.type IN ('turn.started', 'turn.done', 'turn.error') ORDER BY b.seq DESC LIMIT 1
         ), '')<>'turn.started')
-      ORDER BY e.seq DESC LIMIT 9`).all(thread, end, after) as { seq: number; turn_id: string | null }[];
+      ORDER BY e.seq ${order} LIMIT 9`).all(thread, end, after) as { seq: number; turn_id: string | null }[];
+  }
+  /**
+   * The newest eight turns before `before`, or with `forward` the eight right after `after`, so a
+   * conversation read from its beginning (the next segment of a handover chain) is paged the way it
+   * happened. A forward page that is not the last gives the `after` of the next one as `nextCursor`.
+   */
+  async page(thread: string, before?: number, after = 0, chain = false, forward = false): Promise<HistoryPage> {
+    const hiddenStart = chain ? this.handoverStart(thread) : 0;
+    const snapshotSeq = this.latest(thread);
+    let end = Math.min(before ?? snapshotSeq + 1, snapshotSeq + 1);
+    // Each committed utterance is a page boundary, so opening a long call does not eagerly load its entire transcript.
+    let hasNewer = false;
+    if (forward) {
+      const ahead = this.starts(thread, end, after, 'ASC');
+      if (ahead.length > 8) { end = ahead[8].seq; hasNewer = true; }
+    }
+    const starts = this.starts(thread, end, after, 'DESC');
     const selected = starts.slice(0, 8).reverse();
     const hasOlder = starts.length > 8;
     const start = hasOlder ? selected[0].seq : after + 1;
@@ -371,6 +387,7 @@ export class HistoryStore {
     // the initial index; live turn.started events extend it in the client.
     const turnIds = before === undefined ? (this.db.prepare("SELECT turn_id FROM events WHERE thread_id=? AND type='turn.started' AND seq<=? ORDER BY seq")
       .all(thread, snapshotSeq) as { turn_id: string }[]).map(row => row.turn_id) : undefined;
+    if (forward) return { events, snapshotSeq, nextCursor: hasNewer ? end - 1 : null, hasOlder: false, hasNewer, turnIds };
     return { events, snapshotSeq, nextCursor: hasOlder ? start : null, hasOlder, turnIds };
   }
   voiceStats(thread: string, start: number) {
@@ -430,15 +447,19 @@ export class HistoryStore {
   handoverInfo(thread: string, full = false) {
     const link = this.db.prepare('SELECT handover FROM threads WHERE id=?').get(thread)?.handover;
     if (!link) throw new HttpError(404, 'no handover source');
-    const source = JSON.parse(String(link)) as { sourceId: string; agent: string; title: string };
+    const source = JSON.parse(String(link)) as { sourceId: string; agent: string; title: string; method?: 'resume' | 'summary' };
     const first = Number(this.db.prepare("SELECT seq FROM events WHERE thread_id=? AND type='turn.started' ORDER BY seq LIMIT 1").get(thread)?.seq ?? 0);
-    const row = this.db.prepare(`SELECT turn_id, ${full ? "COALESCE(json_extract(data, '$.displayText'), json_extract(data, '$.text'))" : 'NULL'} AS text
+    // Folded, only the start of the text is read: enough for a preview and its size, not the whole brief.
+    const row = this.db.prepare(`SELECT turn_id, ${full ? "COALESCE(json_extract(data, '$.displayText'), json_extract(data, '$.text'))" : "substr(COALESCE(json_extract(data, '$.displayText'), json_extract(data, '$.text')), 1, 1200)"} AS text,
+      length(COALESCE(json_extract(data, '$.displayText'), json_extract(data, '$.text'))) AS size
       FROM events WHERE thread_id=? AND seq=?`).get(thread, first);
     const error = this.db.prepare(`SELECT json_extract(data, '$.code') AS code FROM events WHERE thread_id=? AND type='turn.error'
       AND turn_id=(SELECT turn_id FROM events WHERE thread_id=? AND type='turn.started' ORDER BY seq DESC LIMIT 1) ORDER BY seq DESC LIMIT 1`)
       .get(source.sourceId, source.sourceId);
-    return { source, turnId: row?.turn_id ?? null, reason: typeof error?.code === 'string' ? error.code : null,
-      ...(full ? { text: typeof row?.text === 'string' ? row.text : '' } : {}) };
+    const text = typeof row?.text === 'string' ? row.text : '';
+    return { source, method: source.method ?? null, turnId: row?.turn_id ?? null, reason: typeof error?.code === 'string' ? error.code : null,
+      size: Number(row?.size ?? 0), preview: handoverPreview(text),
+      ...(full ? { text } : {}) };
   }
 
   /** Merge only answer text, without loading tool payloads or building write-side projections. */

@@ -1635,6 +1635,14 @@ export class Store {
     for (const row of rows) yield toEvent(row as unknown as EventRow);
   }
 
+  /** The context the agent last reported holding, in tokens; null when it never reported one. */
+  lastContextUsed(threadId: string): number | null {
+    const row = this.db
+      .prepare("SELECT json_extract(data, '$.used') AS used FROM events WHERE thread_id = ? AND type = 'usage.updated' ORDER BY seq DESC LIMIT 1")
+      .get(threadId) as { used: number | null } | undefined;
+    return typeof row?.used === 'number' ? row.used : null;
+  }
+
   /**
    * How the thread's latest turn failed, when it did: the newest lifecycle event, read through the
    * lifecycle index so a thread list can afford it. Null when the latest turn did not fail.

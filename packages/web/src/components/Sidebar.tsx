@@ -426,7 +426,7 @@ export function Sidebar({
     </div>;
   };
 
-  const groupedRows = (list: Thread[]) => handoverGroups(list).map(({ key, latest, members }) => {
+  const groupedRows = (list: Thread[], keepOrder = false) => handoverGroups(list, keepOrder).map(({ key, latest, members }) => {
     if (members.length === 1) return entry(latest);
     const storageKey = `${hostId ?? 'local'}:${key}`;
     const expanded = Boolean(search.trim()) || expandedHandovers.has(storageKey);
@@ -530,7 +530,7 @@ export function Sidebar({
       {activity.groups.map((g) => (
         <section key={g.key} className="thread-group" aria-label={g.label}>
           <div className="group-label">{g.label}</div>
-          {g.threads.map((t) => entry(t))}
+          {groupedRows(g.threads, true)}
         </section>
       ))}
     </nav>

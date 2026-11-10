@@ -2184,7 +2184,7 @@ html.list-open body {
 .exhausted-note { display: flex; flex-direction: column; align-items: center; margin: 6px 0; }
 .exhausted-line {
   display: flex; align-items: center; gap: 14px; align-self: stretch;
-  color: var(--danger); font-size: 13.5px; font-weight: 550;
+  color: color-mix(in srgb, var(--warn) 70%, var(--muted)); font-size: 13.5px; font-weight: 550;
 }
 .exhausted-line::before,
 .exhausted-line::after { content: ''; flex: 1; height: 1px; background: var(--border); }
@@ -12131,9 +12131,19 @@ button.trace-step-head:hover { background: var(--hover); }
 .handover-divider { border: 0; background: none; font-family: inherit; text-align: left; cursor: pointer; width: 100%; }
 .handover-divider:hover { color: var(--text); }
 .handover-divider[aria-expanded="true"] svg:last-child { transform: rotate(90deg); }
-/* The segment boundary reads like the fork mark: a quiet green word between two hairlines. */
-.handover-boundary .handover-divider { display: flex; padding: 0; }
-.handover-boundary .handover-summary { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); font-size: 13px; line-height: 1.65; padding: 12px 0 12px 24px; border-left: 1px solid var(--border); }
+/* The segment boundary reads like the fork mark, a quiet word between two hairlines; under it what the
+   successor was given, folded like the plan in the conversation: one line, the whole text hung under a hairline. */
+.handover-card { margin: 2px 0 6px; }
+.handover-card-head { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: 13px; text-align: left; cursor: pointer; transition: color 0.12s; }
+.handover-card-head.placeholder { cursor: default; }
+@media (hover: hover) { .handover-card-head:hover { color: var(--text); } }
+.handover-card-head > svg { flex: none; margin-left: auto; }
+.handover-card-kind { flex: none; font-variant-numeric: tabular-nums; }
+.handover-card-preview { min-width: 0; flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); }
+.handover-card-body { max-height: min(420px, 55dvh); overflow: auto; margin: 4px 0 6px 6px; padding: 2px 0 2px 13px; border-left: 1px solid var(--border); color: var(--muted); font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+.handover-card-body .markdown { font-size: 13px; line-height: 1.65; }
+.handover-card-empty { padding: 2px 0 6px; color: var(--faint); font-size: 12.5px; text-align: center; }
+.chain-later { min-height: 28px; padding: 6px 0; color: var(--muted); font-size: 12px; text-align: center; }
 .chain-beginning { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 0; }
 .handover-readonly { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; max-width: var(--content-w); margin: 0 auto; padding: 8px 16px; color: var(--muted); font-size: 12px; }
 .handover-readonly-actions { display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-shrink: 0; }
@@ -12157,6 +12167,9 @@ button.trace-step-head:hover { background: var(--hover); }
 .auto-order-head strong { flex-shrink: 0; }
 .auto-order-head span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-size: 12px; }
 .auto-order-edit { padding: 0 0 16px; }
+.auto-order-edit .hint { margin: 0 0 12px; color: var(--muted); font-size: 12.5px; line-height: 1.65; }
+.auto-orders.single { margin-top: 0; max-height: none; overflow: visible; }
+.auto-orders.single section { border-top: 0; border-bottom: 1px solid var(--border); }
 .auto-order-edit ol { margin: 0 0 12px; padding: 0; list-style: none; }
 .auto-order-edit li { display: flex; align-items: center; gap: 8px; padding: 4px 0; color: var(--muted); }
 .auto-order-name { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

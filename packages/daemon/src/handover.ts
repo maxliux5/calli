@@ -103,6 +103,23 @@ export function handoverBrief(info: {
   ].join('\n');
 }
 
+/**
+ * What a folded handover shows of its text. The brief opens with the same lead-in every time
+ * (the heading, where to look, the working directory), which says nothing about this task, so the
+ * preview starts after it and skips the headings of the sections.
+ */
+export function handoverPreview(text: string, limit = 160): string {
+  const lines = text.split('\n');
+  const lead = text.startsWith('# 接手') ? lines.findIndex((line) => line.startsWith('工作目录')) : -1;
+  const body = lines.slice(lead + 1)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#') && !line.startsWith('你现在是本次协作的主控'))
+    .map((line) => line.replace(/^(?:[-*]|\d+\.)\s+/, ''))
+    .join(' ')
+    .replace(/\*\*/g, '');
+  return trunc(body, limit);
+}
+
 /** A few lines of where the thread stood, for the brief handover. The rest is in `calli history`. */
 export function synthesizeBrief(events: StoredEvent[]): string {
   const { asks, lastFailed, lastAnswer, why, plan, files } = logFacts(events);

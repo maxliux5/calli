@@ -35,6 +35,9 @@ async function setup(summaryFail = false, hidden?: string) {
   // only the same-adapter default can keep an automatic handover from crossing products.
   writeFileSync(join(dir, 'other.json'), JSON.stringify({ 'Gemini Models': 10 }));
   adapters.set('other', new AgyAdapter([process.execPath, join(fixtures, 'fake-agy.mjs')], { FAKE_HANDOVER_QUOTA: join(dir, 'other.json') }));
+  // A bridge to a third-party model: the same adapter, healthy, but with no plan to read usage from.
+  writeFileSync(join(dir, 'bridge.json'), '{}');
+  adapters.set('bridge', new AgyAdapter([process.execPath, join(fixtures, 'fake-agy.mjs')], { FAKE_HANDOVER_QUOTA: join(dir, 'bridge.json') }));
   const kinds: Record<string, string> = { other: 'traex' };
   const manager = new ThreadManager(store, adapters, [dir], new AttachmentStore(dir), () => [...adapters.keys()].map(id => ({ id, adapter: kinds[id] ?? 'agy', ...(id === hidden ? { hidden: true } : {}) })));
   Object.defineProperty(manager.autoHandover, 'delayMs', { value: 80 });
@@ -258,6 +261,33 @@ test('no successor stops queued work, and a previously exhausted source is not s
     const other = await h.manager.createThread({ agent: 'agy2', cwd: h.dir, model: 'gemini-pro' });
     h.manager.autoHandover.configure({ enabled: true, threshold: 90, orders: { agy2: [{ agent: 'agy' }, { agent: 'agy', model: 'gemini-pro' }] } });
     assert.deepEqual(await h.manager.autoHandover.targets(other.id), []);
+  } finally { await h.close(); }
+});
+
+test('the default order skips a bridge without a plan; an order that names it still uses it', async () => {
+  const h = await setup();
+  try {
+    h.manager.autoHandover.configure({ enabled: true, threshold: 90, orders: {} });
+    // Every subscription account is used up, so only the bridge is left.
+    for (const id of ['agy2', 'agy3']) writeFileSync(join(h.dir, id + '.json'), JSON.stringify({ 'Gemini Models': 95 }));
+    assert.deepEqual(await h.manager.autoHandover.targets(h.thread.id), []);
+    // A healthy subscription account is found as before.
+    writeFileSync(join(h.dir, 'agy3.json'), JSON.stringify({ 'Gemini Models': 10 }));
+    assert.deepEqual((await h.manager.autoHandover.targets(h.thread.id)).map(t => t.agent), ['agy3']);
+    h.manager.autoHandover.configure({ enabled: true, threshold: 90, orders: { agy: [{ agent: 'bridge' }] } });
+    assert.deepEqual((await h.manager.autoHandover.targets(h.thread.id)).map(t => t.agent), ['bridge']);
+  } finally { await h.close(); }
+});
+
+test('a hub that never saved the setting starts with it on, and a choice made later stays', async () => {
+  const h = await setup();
+  try {
+    assert.equal(h.manager.autoHandover.settings().enabled, false);
+    h.manager.autoHandover.seedDefault();
+    assert.equal(h.manager.autoHandover.settings().enabled, true);
+    h.manager.autoHandover.configure({ enabled: false, threshold: 90, orders: {} });
+    h.manager.autoHandover.seedDefault();
+    assert.equal(h.manager.autoHandover.settings().enabled, false);
   } finally { await h.close(); }
 });
 
