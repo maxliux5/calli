@@ -8,6 +8,8 @@ export interface TalkReply {
   /** When it was said. Null for an answer recovered from the message itself, which carries no time. */
   at: string | null;
   failed: boolean;
+  /** A file the member left on its machine, which the hub kept for this result. */
+  resultFile?: { name: string; size: number; truncated?: boolean };
 }
 
 /** A message of the team with everything said in answer to it, oldest first. */
@@ -48,13 +50,13 @@ export function buildTalks(messages: CoordinationMessage[]): Talk[] {
       continue;
     }
     const said = resultText(m.text);
-    talks.get(root.id)?.replies.push({ id: m.id, from: m.from, text: said.text, at: m.createdAt, failed: said.failed });
+    talks.get(root.id)?.replies.push({ id: m.id, from: m.from, text: said.text, at: m.createdAt, failed: said.failed, ...(m.resultFile ? { resultFile: m.resultFile } : {}) });
   }
   for (const talk of talks.values()) {
     const { root } = talk;
     // An answer that never became a message of its own (the team was paused) is still an answer.
     if (root.kind === 'message' && root.result && !messages.some((m) => m.replyTo === root.id)) {
-      talk.replies.unshift({ id: `${root.id}:result`, from: root.to, text: root.result, at: null, failed: root.state === 'failed' });
+      talk.replies.unshift({ id: `${root.id}:result`, from: root.to, text: root.result, at: null, failed: root.state === 'failed', ...(root.resultFile ? { resultFile: root.resultFile } : {}) });
     }
   }
   return [...talks.values()];

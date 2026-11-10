@@ -37,6 +37,12 @@ async function shot(page, name) {
   await page.screenshot({ path: join(process.env.CALLI_E2E_SHOTS_DIR, `${name}.png`) });
 }
 
+/** An address in the one input is submitted with Enter. */
+async function gotoPath(dialog, value) {
+  await dialog.locator('.project-browser-input').fill(value);
+  await dialog.locator('.project-browser-input').press('Enter');
+}
+
 /** A mention row for an agent on the other machine, however this screen starts collaboration. */
 async function remoteMention(page, mobile, title) {
   await api(hub, '/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'pi', cwd: hub.workdir, title }) });
@@ -92,6 +98,18 @@ for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark'])
       const row = await remoteMention(page, mobile, `远程目录 ${tag}`);
       let dialog = await openPicker(page, row);
       assert.ok(await dialog.locator('.project-browser-machine', { hasText: '开发机' }).count(), 'the picker names the machine');
+      await shot(page, `rootsview-${tag}`);
+      // The roots view is not a dead start: a chevron steps into a root, and from there the picker
+      // browses that machine freely. (Up appears only within the machine's home and its roots —
+      // this fixture's workdir sits in /tmp, so the up button shows one level deeper, in home.)
+      const rootName = await dialog.locator('.project-browser-folder').first().evaluate((el) => el.querySelector('span')?.textContent ?? '');
+      await dialog.getByRole('button', { name: `进入 ${rootName}`, exact: true }).click();
+      await dialog.getByText('这里没有可浏览的子目录').waitFor();
+      await gotoPath(dialog, '~');
+      await dialog.getByRole('button', { name: '进入 手动添加的项目', exact: true }).click();
+      await dialog.getByRole('button', { name: '上一级', exact: true }).waitFor();
+      await dialog.getByRole('button', { name: '可用目录', exact: true }).click();
+      await dialog.getByText('已添加的项目位置').waitFor();
 
       // Manual add is that machine's own roots dialog, not a dead end.
       await dialog.getByRole('button', { name: '手动添加目录…' }).click();
@@ -107,9 +125,10 @@ for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark'])
 
       // Closing it comes back to the picker, with the new folder in the added locations.
       await roots.getByRole('button', { name: '关闭', exact: true }).click();
-      await dialog.getByRole('button', { name: /手动添加的项目/ }).waitFor();
+      const addedRow = dialog.locator('.project-browser-folder', { hasText: '手动添加的项目' });
+      await addedRow.waitFor();
       await shot(page, `picker-${tag}`);
-      await dialog.getByRole('button', { name: /手动添加的项目/ }).click();
+      await addedRow.click();
       await dialog.getByRole('button', { name: '选择 手动添加的项目', exact: true }).click();
       await page.getByRole('dialog', { name: '在哪个目录里工作？' }).waitFor({ state: 'detached' });
       if (await row.locator('.coord-row-name').isHidden()) await page.getByRole('textbox', { name: '消息', exact: true }).click();
@@ -120,7 +139,7 @@ for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark'])
       // behind the "可用目录" step list the new folder.
       dialog = await openPickerStanding(page, row);
       await dialog.getByRole('button', { name: '可用目录', exact: true }).click();
-      await dialog.getByRole('button', { name: /手动添加的项目/ }).waitFor();
+      await dialog.locator('.project-browser-folder', { hasText: '手动添加的项目' }).waitFor();
       await dialog.getByRole('button', { name: '取消', exact: true }).click();
     } finally { await context.close(); }
   });

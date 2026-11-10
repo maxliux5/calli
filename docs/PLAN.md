@@ -61,6 +61,7 @@ Plan 交互参考了 [Cline 的 Plan / Act](https://docs.cline.bot/core-workflow
 
 - **启动页面：**「配置 → 常规」放在配置菜单首位，配置项左侧显示名称、右侧下拉选择默认打开「新会话页面」或「最近会话」，默认前者。选中后自动保存，保存失败恢复原值并显示错误，不设保存或取消按钮。通过 `GET/PUT /api/general-settings` 保存到服务端 `hub_settings` 的 `general.settings`，连接同一台机器的设备共用。最近会话取当前机器未归档主会话中 `updatedAt` 最新的一条，不受置顶排序影响；没有会话时显示新会话页面。只在没有指定页面或会话的首次打开时应用，深链、机器切换的明确目标和加载期间的手动导航优先。
 - **多机管理：** 每台机器运行同一个 daemon，主 hub 通过 SSH 隧道接入目标的私有 Unix socket；agent、线程、图片和计划留在目标机器。浏览器一次查看一台机器，切换时整体替换 API 前缀，草稿按机器隔离。目标 daemon 需先安装并启动，不做级联。详见 `multi-host-design.md`。
+- **远程协作交接文件：** 跨机器的协作成员，任务写成那台机器上的 `handoff.md`，消息只给路径和摘要；成员把完整结果写成 `result.md`，hub 经 SSH 读回并在结果下提供文件下载。`calli remote ls/read/write` 直接经 SSH 读写成员工作目录，主控可写、其他成员只读，按真实路径收口。详见 `remote-collaboration-design.md`。
 
 - **事件日志是唯一真相。** 每个事件有递增的 `seq`，SSE 断线后用 `after=<seq>` 续传。
 - **上下文占用和累计用量分开。** Codex 取 `tokenUsage.last.totalTokens`，不能取会话累计的 `total`；pi 取 `contextUsage`，压缩后返回 `tokens: null` 时隐藏旧占用，等下一次响应更新；Claude 和 TRAE 取 ACP 的 `usage_update.used / size`。agy 尚未提供占用数据。前端只消费统一事件，不按 agent 分支；80% 提示只是界面阈值，不表示 agent 已触发自动压缩。

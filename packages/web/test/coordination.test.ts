@@ -33,3 +33,12 @@ test('an answer kept only on its message, and a result whose message is gone, ar
   assert.deepEqual(talks[0], { root: orphan, text: '更早的结果', replies: [] });
   assert.deepEqual(talks[1].replies, [{ id: 'paused:result', from: 'a', text: '写好了。', at: null, failed: false }]);
 });
+
+test('a result file stays with the answer it came back with', () => {
+  const task = msg({ id: 'task', text: '生成报告' });
+  const back = msg({ id: 'back', kind: 'result', text: '状态：本轮已返回，仍需验收\n做好了', replyTo: 'task', resultFile: { name: 'result.md', size: 1234 } });
+  const talks = buildTalks([task, back]);
+  assert.deepEqual(talks[0].replies[0].resultFile, { name: 'result.md', size: 1234 });
+  const paused = msg({ id: 'paused', text: '写', result: '好了', resultFile: { name: 'result.md', size: 3, truncated: true } });
+  assert.deepEqual(buildTalks([paused])[0].replies[0].resultFile, { name: 'result.md', size: 3, truncated: true });
+});
