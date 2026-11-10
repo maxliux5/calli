@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="zh" data-theme="light" data-variant="b" data-device="desktop">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>上下文用量面板 · Playground</title>
+<style>
+/* Colours copied from packages/web/src/styles.css (paper palette, light and dark). */
+:root {
+  --bg: #f8f6f1; --surface: #ffffff; --text: #1f1e1c; --muted: #827f77; --faint: #a9a69e;
+  --border: #e5e2da; --border-strong: #d6d2c8; --hover: rgba(31, 30, 28, 0.045);
+  --accent: #1f1e1c; --accent-fg: #fff; --user-bg: #eceae4; --code-bg: #efede7; --warn: #c2410c;
+  --chart-1: #2a78d6; --chart-2: #eb6834; --chart-3: #4a3aa7; --chart-4: #e34948;
+  --shadow-pop: 0 1px 2px rgba(31, 30, 28, .05), 0 12px 32px rgba(31, 30, 28, .12);
+  --radius: 12px; --radius-lg: 18px; --radius-pill: 999px;
+  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', 'Noto Sans CJK SC', sans-serif;
+  --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+}
+[data-theme='dark'] {
+  --bg: #1b1a18; --surface: #252422; --text: #ecebe7; --muted: #9a978f; --faint: #6f6c65;
+  --border: #32302c; --border-strong: #423f3a; --hover: rgba(236, 235, 231, 0.06);
+  --accent: #ecebe7; --accent-fg: #1b1a18; --user-bg: #2c2b28; --code-bg: #262522; --warn: #f0935a;
+  --chart-1: #3987e5; --chart-2: #d95926; --chart-3: #7d6de0; --chart-4: #e0605d;
+  --shadow-pop: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 32px rgba(0, 0, 0, .4);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- Playground controls ---------- */
+.panel { max-width: 980px; margin: 0 auto; padding: 16px 16px 4px; display: grid; gap: 10px; }
+.panel h1 { margin: 0; font-size: 16px; }
+.panel p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+.row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.seg { display: inline-flex; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface); }
+.seg button { border: 0; background: none; padding: 6px 12px; border-radius: var(--radius-pill); font-size: 12.5px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.seg button[aria-pressed='true'] { background: var(--accent); color: var(--accent-fg); }
+.legend { font-size: 12px; color: var(--faint); }
+.legend b { color: var(--muted); font-weight: 600; }
+
+/* ---------- Frame: a fake app window / phone ---------- */
+.stage { display: flex; justify-content: center; padding: 12px 0 44px; }
+.frame { position: relative; width: 1080px; height: 700px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 18px; overflow: hidden; isolation: isolate; }
+[data-device='phone'] .frame { width: 390px; height: 780px; border-radius: 40px; }
+.convo { position: absolute; inset: 0 0 132px; padding: 26px 32px; overflow: hidden; }
+[data-device='phone'] .convo { padding: 54px 16px 0; inset: 0 0 120px; }
+.msg { max-width: 640px; margin: 0 0 12px; font-size: 14.5px; line-height: 1.65; }
+.msg.user { margin: 4px 0 16px auto; width: fit-content; max-width: 80%; padding: 10px 15px; border-radius: 20px; background: var(--user-bg); }
+.msg.dim { color: var(--faint); font-size: 12.5px; }
+
+/* ---------- Composer ---------- */
+.composer { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 22px 22px; }
+[data-device='phone'] .composer { padding: 0 12px 18px; }
+.box { display: flex; flex-direction: column; gap: 8px; padding: 14px 14px 8px; border: 1px solid var(--border); border-radius: 24px; background: var(--surface); box-shadow: 0 1px 2px rgba(31,30,28,.04); }
+[data-theme='dark'] .box { box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+.box .hint { color: var(--faint); font-size: 15px; padding-left: 4px; }
+.bar { display: flex; align-items: center; gap: 6px; }
+.bar .grow { flex: 1; }
+.icon { width: 34px; height: 34px; display: grid; place-items: center; border: 0; background: none; border-radius: var(--radius-pill); color: var(--muted); cursor: pointer; }
+.icon:hover { background: var(--hover); }
+.model { display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius-pill); font-size: 13px; color: var(--muted); }
+.send { width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: var(--accent-fg); display: grid; place-items: center; }
+
+/* The ring, 80% used: the same mark the composer shows today. */
+.ring { width: 22px; height: 22px; }
+.ring circle { fill: none; stroke-width: 2.6; }
+.ring .track { stroke: var(--border-strong); }
+.ring .fill { stroke: var(--warn); stroke-dasharray: 80 100; transform: rotate(-90deg); transform-origin: center; }
+
+/* =========================================================
+   Shared panel pieces
+   ========================================================= */
+.pane { position: absolute; z-index: 5; right: 22px; bottom: 132px; width: 340px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-pop); }
+[data-device='phone'] .pane { left: 12px; right: 12px; bottom: 128px; width: auto; }
+.pane .head { display: flex; align-items: baseline; gap: 8px; padding: 14px 14px 0; }
+.pane .pct { font-size: 20px; font-weight: 650; letter-spacing: -.01em; }
+.pane .pct.high { color: var(--warn); }
+.pane .used { margin-left: auto; color: var(--muted); font-size: 12.5px; }
+.pane .bar-wrap { padding: 8px 14px 0; }
+.pane .bar { display: flex; height: 6px; border-radius: var(--radius-pill); background: var(--border-strong); overflow: hidden; }
+.pane .bar i { display: block; height: 100%; }
+.pane .foot { display: flex; align-items: center; gap: 4px; padding: 8px 8px 8px; }
+.pane .foot .rule { flex: 1; }
+.pane .act { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 0; background: none; border-radius: var(--radius-sm, 8px); color: var(--muted); font-size: 12.5px; cursor: pointer; }
+.pane .act:hover { background: var(--hover); color: var(--text); }
+.pane .act .chev { color: var(--faint); }
+.pane .sep { height: 1px; margin: 2px 12px; background: var(--border); }
+
+/* A ---------- what ships today (the screenshot) ---------- */
+.pane.v-a { width: 340px; max-height: 480px; overflow-y: auto; padding-bottom: 4px; }
+.v-a .title { display: flex; padding: 12px 14px 0; font-size: 13px; }
+.v-a .title .pct { margin-left: auto; font-size: 13px; font-weight: 400; color: var(--muted); }
+.v-a.high .title .pct { color: var(--warn); }
+.v-a .note { padding: 4px 14px 10px; color: var(--muted); font-size: 13px; }
+.v-a .bar-wrap { padding: 0 14px 10px; }
+.v-a .bar i.fill { background: var(--warn); }
+.v-a .sep-label { padding: 4px 14px 6px; color: var(--faint); font-size: 11.5px; }
+.v-a .compose { display: flex; gap: 1px; height: 5px; margin: 0 14px 8px; border-radius: var(--radius-pill); overflow: hidden; }
+.v-a .rowlet { display: flex; align-items: baseline; gap: 7px; padding: 3px 14px; font-size: 13px; }
+.v-a .rowlet .sw { width: 8px; height: 8px; border-radius: 3px; align-self: center; flex: none; }
+.v-a .rowlet .lbl { color: var(--muted); }
+.v-a .rowlet .val { margin-left: auto; }
+.v-a .rowlet .share { margin-left: 6px; color: var(--faint); font-size: 12px; }
+.v-a .cum { display: flex; padding: 0 14px; font-size: 13px; font-weight: 600; }
+.v-a .cum .val { margin-left: auto; }
+.v-a .kv { display: flex; padding: 3px 14px; font-size: 13px; }
+.v-a .kv dt { margin: 0; color: var(--muted); }
+.v-a .kv dd { margin: 0 0 0 auto; }
+.v-a .foot-note { padding: 4px 14px; color: var(--faint); font-size: 12px; }
+.v-a .act-row { display: flex; align-items: center; gap: 8px; padding: 8px 14px 10px; }
+.v-a .act-row .txt { display: grid; gap: 1px; }
+.v-a .act-row .txt small { color: var(--faint); font-size: 12px; }
+
+/* B ---------- compact panel: summary first, details on demand ---------- */
+.v-b .three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 10px 10px 4px; }
+.v-b .cell { padding: 7px 8px; border-radius: 10px; background: var(--bg); }
+.v-b .cell .v { display: flex; align-items: baseline; gap: 5px; font-size: 12.5px; }
+.v-b .cell .sw { width: 7px; height: 7px; border-radius: 2.5px; align-self: center; flex: none; }
+.v-b .cell .k { display: block; margin-top: 2px; color: var(--faint); font-size: 11px; }
+.v-b .cell .share { margin-left: auto; color: var(--faint); font-size: 11px; }
+.v-b .more { display: grid; gap: 2px; padding: 2px 10px 4px; }
+.v-b .more .kv { display: flex; padding: 4px 4px; font-size: 12.5px; }
+.v-b .more .kv dt { margin: 0; color: var(--muted); }
+.v-b .more .kv dd { margin: 0 0 0 auto; }
+.v-b .more .head2 { display: flex; padding: 6px 4px 2px; font-size: 12.5px; font-weight: 600; }
+.v-b .more .head2 .val { margin-left: auto; }
+.v-b .more .note { padding: 2px 4px; color: var(--faint); font-size: 11.5px; }
+.v-b .more .cmd { display: flex; align-items: center; gap: 7px; margin: 6px 0 2px; padding: 7px 8px; border-radius: 9px; background: var(--bg); font-size: 12.5px; color: var(--text); }
+.v-b .more .cmd small { color: var(--faint); }
+.v-b .more .cmd .chev { margin-left: auto; color: var(--faint); }
+.v-b .toggle { display: inline-flex; align-items: center; gap: 4px; }
+.v-b .caret { transition: transform .15s ease; }
+.v-b .caret.open { transform: rotate(180deg); }
+
+/* C ---------- one line, details in a full page ---------- */
+.pane.v-c { width: 320px; padding: 12px 14px 6px; }
+.v-c .line1 { display: flex; align-items: baseline; gap: 8px; }
+.v-c .line1 .pct { font-size: 15px; font-weight: 650; }
+.v-c .line1 .used { margin-left: auto; }
+.v-c .line2 { display: flex; align-items: center; gap: 10px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+.v-c .line2 .dots { display: flex; gap: 10px; min-width: 0; }
+.v-c .line2 .dot { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.v-c .line2 .sw { width: 7px; height: 7px; border-radius: 2.5px; }
+.v-c .line2 .more { margin-left: auto; color: var(--faint); white-space: nowrap; display: inline-flex; align-items: center; gap: 2px; }
+
+/* C's full page, shown over the frame when picked */
+.sheet { position: absolute; inset: 0; z-index: 8; display: none; flex-direction: column; background: var(--bg); }
+[data-variant='c'][data-csheet='open'] .sheet { display: flex; }
+[data-device='desktop'] .sheet { left: auto; width: 460px; border-left: 1px solid var(--border); box-shadow: -12px 0 32px rgba(31,30,28,.08); }
+.sheet .shead { display: flex; align-items: center; gap: 10px; padding: 18px 20px 10px; }
+.sheet .shead h2 { margin: 0; font-size: 15px; }
+.sheet .close { margin-left: auto; }
+.sheet .body { flex: 1; overflow-y: auto; padding: 4px 20px 24px; }
+.sheet .big { display: flex; align-items: baseline; gap: 10px; padding: 6px 0 10px; }
+.sheet .big .pct { font-size: 28px; font-weight: 650; letter-spacing: -.02em; }
+.sheet .big .pct.high { color: var(--warn); }
+.sheet .big .used { margin-left: auto; color: var(--muted); font-size: 13px; }
+.sheet .bar { display: flex; height: 8px; border-radius: var(--radius-pill); background: var(--border-strong); overflow: hidden; }
+.sheet .bar i { background: var(--muted); }
+.sheet h3 { margin: 22px 0 8px; font-size: 12px; font-weight: 600; color: var(--faint); letter-spacing: .02em; }
+.sheet .compose { display: flex; gap: 1px; height: 10px; border-radius: 6px; overflow: hidden; margin-bottom: 12px; }
+.sheet .rowlet { display: flex; align-items: baseline; gap: 9px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+.sheet .rowlet:last-of-type { border-bottom: 0; }
+.sheet .rowlet .sw { width: 9px; height: 9px; border-radius: 3px; align-self: center; flex: none; }
+.sheet .rowlet .lbl { color: var(--muted); }
+.sheet .rowlet .val { margin-left: auto; }
+.sheet .rowlet .share { width: 52px; text-align: right; color: var(--faint); font-size: 12.5px; }
+.sheet .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0 26px; }
+.sheet .grid .rowlet { padding: 6px 0; font-size: 13px; }
+.sheet .meta { margin-top: 18px; color: var(--faint); font-size: 12px; line-height: 1.6; }
+.sheet .actions { display: flex; gap: 8px; padding: 12px 20px 22px; border-top: 1px solid var(--border); }
+.sheet .actions button { display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 13px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface); font-size: 13px; cursor: pointer; }
+.sheet .actions .primary { margin-left: auto; }
+
+/* D ---------- inline card above the composer ---------- */
+.inline { position: absolute; z-index: 5; left: 22px; right: 22px; bottom: 132px; width: auto; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-pop); }
+[data-device='phone'] .inline { left: 12px; right: 12px; bottom: 128px; }
+.inline .head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 0 16px; }
+.inline .head .label { color: var(--faint); font-size: 12px; }
+.inline .head .close { margin-left: auto; width: 28px; height: 28px; }
+.inline .body { display: flex; align-items: center; gap: 16px; padding: 0 16px 10px; flex-wrap: wrap; }
+.inline .body .pct { font-size: 22px; font-weight: 650; }
+.inline .body .pct.high { color: var(--warn); }
+.inline .body .used { color: var(--muted); font-size: 12.5px; }
+.inline .body .bar { flex: 1 1 160px; min-width: 120px; display: flex; height: 6px; border-radius: var(--radius-pill); background: var(--border-strong); overflow: hidden; }
+.inline .body .bar i { background: var(--muted); }
+.inline .body .dots { display: flex; gap: 12px; color: var(--muted); font-size: 12px; }
+.inline .body .dot { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.inline .body .dot .sw { width: 7px; height: 7px; border-radius: 2.5px; }
+.inline .foot { display: flex; align-items: center; gap: 4px; padding: 2px 10px 8px; }
+.inline .foot .rule { flex: 1; }
+.inline .act { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px; border: 0; background: none; border-radius: 8px; color: var(--muted); font-size: 12.5px; cursor: pointer; }
+.inline .act:hover { background: var(--hover); color: var(--text); }
+
+/* Variant visibility */
+.pane, .inline, .sheet { display: none; }
+[data-variant='a'] .v-a { display: block; }
+[data-variant='b'] .v-b { display: block; }
+[data-variant='c'] .v-c { display: block; }
+[data-variant='d'] .inline { display: block; }
+[data-variant='c'] .pane.v-c { display: block; }
+[data-variant='b'] .v-b .more { display: none; }
+[data-variant='b'][data-details='open'] .v-b .more { display: grid; }
+[data-variant='b'][data-details='open'] .v-b .caret { transform: rotate(180deg); }
+
+/* Footnotes under the stage */
+.notes { max-width: 980px; margin: 0 auto; padding: 0 16px 40px; display: grid; gap: 6px; font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+.notes b { color: var(--text); }
+@media (max-width: 1120px) { .frame { width: calc(100vw - 24px); } }
+</style>
+</head>
+<body>
+
+<section class="panel">
+  <h1>上下文用量面板 · 四个方向</h1>
+  <p>真实数据取自一个 80% 的线程（321k / 400k）。A 是现在上线的样子；B/C/D 是想试的方向。</p>
+  <div class="row">
+    <div class="seg" id="variants">
+      <button data-v="a" aria-pressed="false">A 现状</button>
+      <button data-v="b" aria-pressed="true">B 紧凑弹层</button>
+      <button data-v="c" aria-pressed="false">C 一行 + 详情页</button>
+      <button data-v="d" aria-pressed="false">D 输入框上方卡</button>
+    </div>
+    <div class="seg" id="themes">
+      <button data-t="light" aria-pressed="true">亮</button>
+      <button data-t="dark" aria-pressed="false">暗</button>
+    </div>
+    <div class="seg" id="devices">
+      <button data-d="desktop" aria-pressed="true">桌面</button>
+      <button data-d="phone" aria-pressed="false">手机</button>
+    </div>
+    <span class="legend" id="hint"><b>B</b> 默认只留概要，点「明细」展开</span>
+  </div>
+</section>
+
+<div class="stage">
+  <div class="frame">
+    <div class="convo">
+      <div class="msg user">合入 master 了吗？没有看见</div>
+      <div class="msg">已经合进去了：<code>7a35101</code> 提交到 <code>calli/ade58c51</code>，再合并进 master，没有冲突。重启脚本也安排好了，会在所有线程结束后自己重启。</div>
+      <div class="msg dim">用时 3 分 35 秒 · 5 步 ›</div>
+    </div>
+
+    <!-- A: what ships today -->
+    <div class="pane v-a high">
+      <div class="title">上下文<span class="pct">80%</span></div>
+      <div class="note">上下文已用 321k / 400k · $43.23。快满了，agent 可能很快会自动压缩前面的内容。</div>
+      <div class="bar-wrap"><div class="bar"><i class="fill" style="width:80%"></i></div></div>
+      <div class="sep-label">最近一次请求 · GLM-5.3</div>
+      <div class="compose">
+        <i style="background:var(--chart-1);width:99.8%"></i>
+        <i style="background:var(--chart-4);width:0.1%"></i>
+      </div>
+      <div class="rowlet"><span class="sw" style="background:var(--chart-1)"></span><span class="lbl">缓存读取</span><span class="val">320K<span class="share">99.8%</span></span></div>
+      <div class="rowlet"><span class="sw" style="background:var(--chart-3)"></span><span class="lbl">未缓存输入</span><span class="val">209<span class="share">0.0%</span></span></div>
+      <div class="rowlet"><span class="sw" style="background:var(--chart-4)"></span><span class="lbl">输出</span><span class="val">362<span class="share">0.1%</span></span></div>
+      <div class="sep"></div>
+      <div class="cum" style="padding-top:10px"><span>会话累计</span><span class="val">45,153,110</span></div>
+      <div class="kv"><dt>缓存命中</dt><dd>96.0%</dd></div>
+      <div class="kv"><dt>未缓存输入</dt><dd>1,797,791</dd></div>
+      <div class="kv"><dt>缓存读取</dt><dd>43,155,648</dd></div>
+      <div class="kv"><dt>缓存写入</dt><dd>0</dd></div>
+      <div class="kv"><dt>输出</dt><dd>199,671</dd></div>
+      <div class="foot-note">3 轮没有用量数据</div>
+      <div class="foot-note">本会话已压缩 2 次 · 上次 14:32（自动）</div>
+      <div class="sep"></div>
+      <div class="act-row"><span>≡</span><span class="txt">/context 查看精确明细<small>让 agent 在回复里给出它自己计算的类目明细</small></span></div>
+      <div class="act-row"><span>⊟</span><span class="txt">压缩<small>精简较早的对话，释放上下文</small></span></div>
+    </div>
+
+    <!-- B: compact panel, details behind one toggle -->
+    <div class="pane v-b" id="paneB">
+      <div class="head"><span class="pct high">80%</span><span class="used num">321k / 400k · $43.23</span></div>
+      <div class="bar-wrap"><div class="bar"><i style="width:80%;background:var(--muted)"></i></div></div>
+      <div style="padding:6px 14px 0;color:var(--muted);font-size:12px">快满了，agent 可能很快会自动压缩。</div>
+      <div class="usage-request-label" style="padding:12px 14px 0;color:var(--faint);font-size:11.5px">最近一次请求 · GLM-5.3</div>
+      <div class="three">
+        <div class="cell"><div class="v"><span class="sw" style="background:var(--chart-1)"></span>320K<span class="share">99.8%</span></div><span class="k">缓存读取</span></div>
+        <div class="cell"><div class="v"><span class="sw" style="background:var(--chart-3)"></span>209<span class="share">0.0%</span></div><span class="k">未缓存输入</span></div>
+        <div class="cell"><div class="v"><span class="sw" style="background:var(--chart-4)"></span>362<span class="share">0.1%</span></div><span class="k">输出</span></div>
+      </div>
+      <div class="more">
+        <div class="head2">会话累计<span class="val num">45,153,110</span></div>
+        <div class="kv"><dt>缓存命中</dt><dd>96.0%</dd></div>
+        <div class="kv"><dt>未缓存输入</dt><dd class="num">1,797,791</dd></div>
+        <div class="kv"><dt>缓存读取</dt><dd class="num">43,155,648</dd></div>
+        <div class="kv"><dt>缓存写入</dt><dd class="num">0</dd></div>
+        <div class="kv"><dt>输出</dt><dd class="num">199,671</dd></div>
+        <div class="note">3 轮没有用量数据</div>
+        <div class="note">本会话已压缩 2 次 · 上次 14:32（自动）</div>
+        <div class="cmd"><span>≡</span><span>/context 查看精确明细</span><span class="chev">›</span></div>
+      </div>
+      <div class="sep"></div>
+      <div class="foot">
+        <button class="act">⊟ 压缩</button>
+        <span class="rule"></span>
+        <button class="act toggle" id="toggleB">明细 <span class="caret">⌄</span></button>
+      </div>
+    </div>
+
+    <!-- C: one line, everything else on a full page -->
+    <div class="pane v-c">
+      <div class="line1"><span class="pct high">80%</span><span class="used num">321k / 400k</span></div>
+      <div class="bar-wrap" style="padding:8px 0 0"><div class="bar"><i style="width:80%;background:var(--muted)"></i></div></div>
+      <div class="line2">
+        <span class="dots">
+          <span class="dot"><span class="sw" style="background:var(--chart-1)"></span>缓存 320K</span>
+          <span class="dot"><span class="sw" style="background:var(--chart-4)"></span>输出 362</span>
+        </span>
+        <button class="more" id="openC" style="border:0;background:none;cursor:pointer;padding:0">明细 ›</button>
+      </div>
+    </div>
+
+    <!-- C's detail page -->
+    <div class="sheet">
+      <div class="shead">
+        <button class="icon">‹</button><h2>上下文用量</h2><button class="icon close">×</button>
+      </div>
+      <div class="body">
+        <div class="big"><span class="pct high">80%</span><span class="used num">321k / 400k 已用</span></div>
+        <div class="bar"><i style="width:80%"></i></div>
+        <h3>最近一次请求 · GLM-5.3</h3>
+        <div class="compose">
+          <i style="background:var(--chart-1);width:99.8%"></i>
+          <i style="background:var(--chart-3);width:0.05%"></i>
+          <i style="background:var(--chart-4);width:0.1%"></i>
+        </div>
+        <div class="rowlet"><span class="sw" style="background:var(--chart-1)"></span><span class="lbl">缓存读取</span><span class="val num">320K</span><span class="share num">99.8%</span></div>
+        <div class="rowlet"><span class="sw" style="background:var(--chart-3)"></span><span class="lbl">未缓存输入</span><span class="val num">209</span><span class="share num">0.0%</span></div>
+        <div class="rowlet"><span class="sw" style="background:var(--chart-4)"></span><span class="lbl">输出</span><span class="val num">362</span><span class="share num">0.1%</span></div>
+        <h3>会话累计</h3>
+        <div class="grid">
+          <div class="rowlet"><span class="lbl">总用量</span><span class="val num">45.2M</span></div>
+          <div class="rowlet"><span class="lbl">缓存命中</span><span class="val num">96.0%</span></div>
+          <div class="rowlet"><span class="lbl">缓存读取</span><span class="val num">43.2M</span></div>
+          <div class="rowlet"><span class="lbl">缓存写入</span><span class="val num">0</span></div>
+          <div class="rowlet"><span class="lbl">未缓存输入</span><span class="val num">1.8M</span></div>
+          <div class="rowlet"><span class="lbl">输出</span><span class="val num">200K</span></div>
+        </div>
+        <p class="meta">3 轮没有用量数据（导入或终端里的轮次）。本会话已压缩 2 次，上次 14:32（自动）。</p>
+      </div>
+      <div class="actions">
+        <button>⊟ 压缩</button>
+        <button class="primary">≡ /context 精确明细</button>
+      </div>
+    </div>
+
+    <!-- D: inline card above the composer -->
+    <div class="inline">
+      <div class="head"><span class="label">上下文</span><button class="icon close">×</button></div>
+      <div class="body">
+        <span class="pct high">80%</span><span class="used num">321k / 400k</span>
+        <span class="bar"><i style="width:80%"></i></span>
+        <span class="dots">
+          <span class="dot"><span class="sw" style="background:var(--chart-1)"></span>缓存 320K</span>
+          <span class="dot"><span class="sw" style="background:var(--chart-3)"></span>未缓存 209</span>
+          <span class="dot"><span class="sw" style="background:var(--chart-4)"></span>输出 362</span>
+        </span>
+      </div>
+      <div class="foot">
+        <button class="act">⊟ 压缩</button>
+        <span class="rule"></span>
+        <button class="act">明细 ›</button>
+      </div>
+    </div>
+
+    <!-- Composer -->
+    <div class="composer">
+      <div class="box">
+        <div class="hint">继续这个线程</div>
+        <div class="bar">
+          <button class="icon">＋</button>
+          <button class="icon">◌</button>
+          <span class="grow"></span>
+          <button class="icon" aria-label="上下文 80%">
+            <svg class="ring" viewBox="0 0 24 24"><circle class="track" cx="12" cy="12" r="9" pathLength="100"/><circle class="fill" cx="12" cy="12" r="9" pathLength="100"/></svg>
+          </button>
+          <span class="model">zcode/GLM-5.3 <span style="color:var(--faint)">▾</span></span>
+          <span style="color:var(--faint)">◍</span>
+          <button class="send">↑</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="notes">
+  <div><b>A 现状</b>：信息最全，但高高一张卡、出现滚动条；两条进度条 + 四个色块 + 六行累计数字，重要度全一样。</div>
+  <div><b>B 紧凑弹层</b>：默认约 150px（A 的三分之一）：百分比与用量一行，一条横条，三列构成；「明细」主动展开才看会话累计与 /context。浮层锚点不变，手机也够矮。</div>
+  <div><b>C 一行 + 详情页</b>：常驻指示只有一行（约 90px），像 Codex 的 footer；明细进右侧/整页，和轨迹、文件面板同一套导航，手机上不遮对话。</div>
+  <div><b>D 输入框上方卡</b>：完全不用浮层，点圆环从输入框上方长出一张卡，再点收起。手机不挡正文，但会占一行对话高度。</div>
+</div>
+
+<script>
+  const html = document.documentElement;
+  const hint = document.getElementById('hint');
+  const hints = {
+    a: '<b>A</b> 现状：全部信息挤在一张可滚动的卡里',
+    b: '<b>B</b> 默认只留概要，点「明细」展开',
+    c: '<b>C</b> 常驻一行；明细在右侧（桌面）/ 整页（手机）',
+    d: '<b>D</b> 不用浮层，输入框上方一张卡',
+  };
+  function press(group, attr, value) {
+    for (const b of group.querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset[attr] === value));
+  }
+  document.getElementById('variants').addEventListener('click', (e) => {
+    const v = e.target.dataset.v; if (!v) return;
+    html.dataset.variant = v; press(e.currentTarget, 'v', v); hint.innerHTML = hints[v];
+    html.dataset.details = 'closed'; html.dataset.csheet = 'closed';
+  });
+  document.getElementById('themes').addEventListener('click', (e) => {
+    const t = e.target.dataset.t; if (!t) return;
+    html.dataset.theme = t; press(e.currentTarget, 't', t);
+  });
+  document.getElementById('devices').addEventListener('click', (e) => {
+    const d = e.target.dataset.d; if (!d) return;
+    html.dataset.device = d; press(e.currentTarget, 'd', d);
+  });
+  document.getElementById('openC')?.addEventListener('click', () => {
+    html.dataset.csheet = 'open';
+  });
+  document.getElementById('toggleB').addEventListener('click', () => {
+    html.dataset.details = html.dataset.details === 'open' ? 'closed' : 'open';
+  });
+</script>
+</body>
+</html>

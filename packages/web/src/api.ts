@@ -221,6 +221,8 @@ export interface CoordinationMessage {
   id: string; from: string; to: string; text: string; kind: string; state: string; result: string; createdAt: string; turnId: string | null;
   /** For a result: the message it answers. Absent from older daemons. */
   replyTo?: string | null;
+  /** For a result from another machine: the file the member left there, kept by the hub. Absent from older daemons. */
+  resultFile?: { name: string; size: number; truncated?: boolean };
 }
 export interface HandoverTarget { agent: string; model?: string }
 /** How another account of the same agent takes over: a copy of the conversation, or a brief. Absent on older daemons. */
@@ -1576,6 +1578,14 @@ export class Api {
   /** An image attached to a turn. Fetched with the token, since an <img> tag cannot send it. */
   async attachment(threadId: string, attachmentId: string): Promise<Blob> {
     const res = await fetch(this.url(`/api/threads/${threadId}/attachments/${attachmentId}`), { headers: this.headers() });
+    if (res.status === 401) throw new AuthError('unauthorized');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.blob();
+  }
+
+  /** A remote member's result file, kept by the hub; fetched with the token and then saved by the page. */
+  async coordinationResult(threadId: string, deliveryId: string): Promise<Blob> {
+    const res = await fetch(this.url(`/api/threads/${threadId}/coordination/result/${encodeURIComponent(deliveryId)}`), { headers: this.headers() });
     if (res.status === 401) throw new AuthError('unauthorized');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.blob();

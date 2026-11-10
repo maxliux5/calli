@@ -1046,6 +1046,24 @@ export function createHttpServer(deps: HttpDeps): Server {
       const threadId = parts[2];
       const sub = parts[3];
 
+      // GET /api/threads/:id/coordination/result/:deliveryId: the hub's copy of a remote member's
+      // result file. It is text the member wrote, so it downloads instead of rendering as a page.
+      if (method === 'GET' && sub === 'coordination' && parts[4] === 'result' && parts[5]) {
+        manager.threadView(threadId);
+        const collaboration = manager.coordination;
+        if (!collaboration) throw new HttpError(501, '此 daemon 尚未启用协作');
+        const file = collaboration.resultFile(threadId, parts[5]);
+        res.writeHead(200, {
+          'Content-Type': 'text/markdown; charset=utf-8',
+          'Content-Length': file.size,
+          'Content-Disposition': `attachment; filename="${file.name.replace(/[^\x20-\x7e]/g, '_')}"`,
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+        });
+        createReadStream(file.path).pipe(res);
+        return;
+      }
+
       if (sub === 'coordination') {
         manager.threadView(threadId);
         const collaboration = manager.coordination;

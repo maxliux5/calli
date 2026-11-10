@@ -2506,16 +2506,50 @@ html.list-open body {
 .composer-bar .composer-permission { width: 40px; height: 40px; flex: none; }
 .composer-voice { flex: none; }
 .composer-bar > .pop:has(> .usage) { flex: none; }
-.pop-panel.anchored-pop.context-usage-panel { width: min(340px, calc(100vw - 24px)); }
+.pop-panel.anchored-pop.context-usage-panel { width: min(332px, calc(100vw - 24px)); }
 .context-usage-panel.high .context-percent { color: var(--warn); }
-.context-percent { float: right; font-variant-numeric: tabular-nums; color: var(--muted); }
 
-/* The window bar under the headline, in the ring's own colours: the fill is the theme's quiet
-   foreground, the track is what is left; a nearly full window turns the fill warning-coloured. */
+/* The summary first: one big reading, the window bar, then what the latest request was made of.
+   The bar stays the theme's quiet foreground even when nearly full — the number and the ring
+   already say so, and a third orange mark would only compete. */
+.context-usage-panel .usage-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 14px 14px 0;
+}
+
+.context-usage-panel .usage-head .context-percent {
+  float: none;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.context-usage-panel.high .usage-head .context-percent { color: var(--warn); }
+
+.context-usage-panel .usage-head .usage-used {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.context-usage-panel .usage-head.unknown { align-items: center; }
+.context-usage-panel .usage-head.unknown .context-percent { color: var(--faint); }
+.context-usage-panel .usage-head.unknown .usage-used {
+  margin-left: 2px;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.context-usage-panel .usage-panel-bar { padding: 8px 14px 0; }
+
 .context-usage-panel .usage-bar {
   display: flex;
   height: 6px;
-  margin: 0 10px 8px;
   border-radius: var(--radius-pill);
   background: var(--border-strong);
   overflow: hidden;
@@ -2527,70 +2561,170 @@ html.list-open body {
   transition: width 0.2s ease;
 }
 
-.context-usage-panel.high .usage-bar-fill { background: var(--warn); }
-
-/* What the latest model request was made of, one hue per part. The colours come from the chart
-   set, so every palette keeps a set that was validated together. */
-.context-usage-panel .usage-compose {
-  display: flex;
-  gap: 1px;
-  height: 5px;
-  margin: 0 10px 6px;
-  border-radius: var(--radius-pill);
-  overflow: hidden;
+.context-usage-panel .usage-high-note {
+  padding: 6px 14px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
-.context-usage-panel .usage-compose > div { min-width: 2px; }
-.usage-compose .s-read, .usage-swatch.s-read { background: var(--chart-1); }
-.usage-compose .s-write, .usage-swatch.s-write { background: var(--chart-2); }
-.usage-compose .s-uncached, .usage-swatch.s-uncached { background: var(--chart-3); }
-.usage-compose .s-output, .usage-swatch.s-output { background: var(--chart-4); }
-
-/* A legend row: colour chip, quiet label, the count with its share of the request on the right. */
-.context-usage-panel .usage-legend {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  padding: 0 10px 8px;
-  font-size: 13px;
+/* What the latest model request was made of, one hue per part; the colours come from the chart
+   set, so every palette keeps a set that was validated together. Cells, not rows: three quiet
+   tiles read at a glance and leave the panel short. */
+.context-usage-panel .usage-request-label {
+  padding: 12px 14px 0;
+  color: var(--faint);
+  font-size: 11.5px;
 }
 
-.context-usage-panel .usage-legend-row {
+.context-usage-panel .usage-cells {
+  display: grid;
+  gap: 4px;
+  padding: 6px 10px 2px;
+}
+
+.context-usage-panel .usage-cell {
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.context-usage-panel .usage-cell-value {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-
-.usage-swatch {
-  width: 8px;
-  height: 8px;
-  border-radius: 3px;
-  flex: none;
-  align-self: center;
-}
-
-.usage-legend-label { color: var(--muted); }
-.usage-legend-value {
-  margin-left: auto;
-  color: var(--text);
+  gap: 5px;
+  font-size: 12.5px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.usage-legend-share,
-.usage-legend-note {
-  margin-left: 6px;
+.context-usage-panel .usage-cell-share {
+  margin-left: auto;
   color: var(--faint);
-  font-size: 12px;
+  font-size: 11px;
 }
 
-/* The session totals arrive a moment after the panel opens; placeholders hold the rows' room. */
+.context-usage-panel .usage-cell-label {
+  margin-top: 2px;
+  color: var(--faint);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usage-swatch {
+  width: 7px;
+  height: 7px;
+  border-radius: 2.5px;
+  flex: none;
+  align-self: center;
+}
+
+.usage-swatch.s-read { background: var(--chart-1); }
+.usage-swatch.s-write { background: var(--chart-2); }
+.usage-swatch.s-uncached { background: var(--chart-3); }
+.usage-swatch.s-output { background: var(--chart-4); }
+
+/* Behind "Details": the session totals, the compaction history and the agent's own breakdown,
+   all one deliberate step away. */
+.context-usage-panel .usage-more { display: grid; gap: 2px; padding: 8px 10px 2px; }
+
+.context-usage-panel .usage-more-head {
+  display: flex;
+  align-items: baseline;
+  padding: 2px 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.context-usage-panel .usage-more-total {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+}
+
+.context-usage-panel .usage-rows { margin: 0; padding: 0; }
+
+.context-usage-panel .usage-rows > div {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  padding: 4px;
+  font-size: 12.5px;
+}
+
+.context-usage-panel .usage-rows dt { margin: 0; color: var(--muted); }
+.context-usage-panel .usage-rows dd {
+  margin: 0 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.context-usage-panel .usage-more-note {
+  padding: 2px 4px;
+  color: var(--faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.context-usage-panel .usage-cmd {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  margin: 6px 0 2px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-usage-panel .usage-cmd:hover { background: var(--hover); }
+.context-usage-panel .usage-cmd > svg:last-child { margin-left: auto; color: var(--faint); }
+
+.context-usage-panel .usage-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px 8px;
+}
+
+.context-usage-panel .usage-rule {
+  flex: 1;
+  height: 1px;
+  margin: 0 4px;
+  background: var(--border);
+}
+
+.context-usage-panel .usage-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.context-usage-panel .usage-act:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.context-usage-panel .usage-act:disabled { color: var(--faint); cursor: default; }
+
+/* The session totals arrive a moment after "Details" is opened; placeholders hold the rows' room. */
 .context-usage-panel .usage-skeleton {
   display: flex;
   flex-direction: column;
   gap: 9px;
-  padding: 8px 10px 10px;
+  padding: 6px 4px 4px;
   animation: pulse 1.6s ease-in-out infinite;
 }
 
@@ -9997,6 +10131,29 @@ div.file-card:hover { background: var(--surface); }
 }
 .project-browser-row:hover .project-browser-enter, .project-browser-enter:focus-visible { opacity: 1; }
 .project-browser-enter:hover { background: var(--surface); color: var(--text); }
+/* The tree: a folder's triangle (or a gap where a leaf has none), then its name, then a check
+   when it is the chosen one. Indentation comes from the row's own padding, one step per level. */
+.dir-tree-row { display: flex; align-items: center; gap: 2px; min-height: 32px; border-radius: 6px; }
+.dir-tree-row .project-browser-folder { padding-right: 4px; }
+.dir-tree-caret {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.dir-tree-caret:hover { background: var(--hover); color: var(--text); }
+.dir-tree-caret svg { transition: transform 0.13s ease; }
+.dir-tree-caret.open svg { transform: rotate(90deg); }
+.dir-tree-gap { flex: none; width: 26px; }
+.dir-tree-check { flex: none; display: inline-flex; padding-right: 8px; color: var(--accent); }
+.dir-tree-note { margin: 2px 2px 6px; }
 .project-browser-folder.up { color: var(--muted); }
 .project-browser-tw { display: inline-flex; width: 15px; flex: none; }
 .project-browser-up { font-family: var(--mono); font-size: 12.5px; width: 20px; text-align: center; flex: none; }
@@ -10193,6 +10350,9 @@ div.file-card:hover { background: var(--surface); }
 .overview-foot { display: flex; align-items: center; gap: 6px; margin-top: 3px; padding: 6px 7px 0; color: var(--faint); font-size: 11px; }
 .overview-group + .overview-foot { border-top: 1px solid var(--border); }
 .overview-readings { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* The readings open the trace; they read as text and only say so when touched. */
+.overview-readings-link { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 2px; margin: -1px -2px; border: 0; border-radius: var(--radius-sm); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.overview-readings-link:hover { background: var(--hover); color: var(--text); }
 .overview-trace { flex: none; display: inline-flex; align-items: center; gap: 1px; margin-left: auto; padding: 2px 3px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
 .overview-trace:hover { background: var(--hover); color: var(--text); }
 /* One file's whole history, turned by turn: the path and its numbers stay on top while the diff
@@ -10278,6 +10438,8 @@ div.file-card:hover { background: var(--surface); }
 .talk-text { margin-top: 3px; font-size: 13.5px; line-height: 1.6; }
 .talk-foot { display: flex; align-items: center; gap: 10px; margin-top: 4px; font-size: 12px; color: var(--muted); }
 .talk-foot .text-btn { min-height: 0; padding: 0; font-size: 12px; color: var(--muted); }
+.talk-file { display: inline-flex; align-items: center; gap: 4px; }
+.talk-file:hover { color: var(--text); }
 .talk-failed { padding: 0 7px; border-radius: var(--radius-pill); background: var(--danger-bg); color: var(--danger); }
 .talk-replies { display: inline-flex; align-items: center; gap: 5px; margin: 8px 0 0 42px; padding: 3px 8px 3px 4px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); font: inherit; font-size: 12.5px; cursor: pointer; }
 .talk-replies:hover { background: var(--hover); color: var(--text); }
@@ -10319,7 +10481,7 @@ button.coord-row-name { cursor: pointer; }
 .delivered-foot .text-btn:hover { background: none; color: var(--text); }
 /* A finger needs more line than a cursor, and expanding the row must stay a different tap from the button below. */
 @media (max-width: 640px) { .delivered-line { min-height: 44px; } .delivered-foot .text-btn { min-height: 44px; padding: 0 8px; } }
-.coord-mention-menu { position: absolute; bottom: 100%; left: 12px; width: min(340px, calc(100% - 24px)); max-height: 300px; overflow-y: auto; padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-pop); z-index: 15; }
+.coord-mention-menu { position: absolute; bottom: 100%; left: 12px; width: min(340px, calc(100% - 24px)); max-height: 300px; overflow-y: auto; padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-pop); z-index: 15; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 .coord-mention-menu .coord-caption { display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 0 4px 0 10px; }
 .coord-mention-menu .coord-caption .icon-btn { width: 28px; height: 28px; color: var(--muted); }
 .coord-mention-menu .pop-item-icon { margin-top: 0; align-self: center; }
@@ -10333,7 +10495,12 @@ button.coord-row-name { cursor: pointer; }
 .coord-picker-head strong { flex: 1; font-size: 14px; }
 .coord-picker-head .tool-btn { gap: 6px; font-size: 12px; }
 .coord-picker-hint { margin: 4px 10px 12px; color: var(--muted); font-size: 12px; line-height: 1.6; }
-.coord-picker-list { max-height: 45dvh; overflow-y: auto; overscroll-behavior: contain; }
+.coord-picker-list { max-height: 45dvh; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+/* The member list takes the height the popover measured out for it, so the panel itself never
+   scrolls: one scrollbar on one edge, not two nested ones, and on a phone the swipe scrolls the
+   list instead of being caught by the panel around it. */
+.pop-panel.coord-picker-panel .coord-picker.choosing { display: flex; flex-direction: column; max-height: calc(var(--pop-height, 520px) - 18px); }
+.coord-picker.choosing .coord-picker-list { flex: 1 1 auto; min-height: 0; max-height: none; }
 .coord-pick .pop-item-icon { align-self: center; margin-top: 0; }
 .coord-pick.chosen { background: var(--active); }
 .coord-row:focus-within { background: var(--active); box-shadow: 0 0 0 1px var(--border-strong); }
@@ -12940,6 +13107,10 @@ button.proactive-row-title:hover { color: var(--muted); }
 .pet > * { pointer-events: auto; }
 /* The thread list slides in over the desk on a phone; she stays with the desk. */
 body:has(.app.drawer-open) .pet { visibility: hidden; }
+/* A modal dialog has the screen: she would stand on it — .app's transform keeps the dialog's own
+   z-index inside .app's stacking context, below her in the page's root context — so she steps
+   away instead. A desk spread pile is modal too, but portaled out and below her on purpose. */
+body:has(.app .dialog-scrim) .pet { visibility: hidden; }
 .pet-back { --pet-w: 68px; }
 /* Where she stands, as her own left edge and how high her feet ride above the visual viewport bottom:
    outside .app, so with a phone keyboard up she rides above it too. */
@@ -14298,7 +14469,7 @@ body:has(.settings-page, .action-sheet) .pet { display: none; }
 .overview-panel .overview-plan .plan-entry { height: 30px; }
 .overview-foot { flex: none; height: 46px; box-sizing: border-box; margin-top: 3px; padding: 4px 7px 0; border-top: 1px solid var(--border); }
 .overview-readings { display: flex; flex-direction: column; line-height: 15px; }
-.overview-readings > span { height: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overview-readings > span, .overview-readings > .overview-readings-link { height: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .overview-status.failed { color: var(--warn); }
 .overview-refresh { flex: none; width: 30px; height: 30px; color: var(--muted); }
 /* A full list is a page in the main column; the conversation stays mounted underneath it. */

@@ -132,7 +132,12 @@ export function ThreadOverview(props: OverviewProps) {
   }, [detail]);
 
   useLayoutEffect(() => {
-    if (detail || !ready || layout || !root.current) return;
+    if (detail || !ready || !root.current) return;
+    // The sections are pinned per opening so refreshes keep their slots — but a section that
+    // appears later (the team often lands after the outputs) must not stay hidden until the
+    // panel is reopened: a changed set of sections re-runs the fit.
+    const key = available.join(' ');
+    if (layout && layout.sections.join(' ') === key) return;
     const el = root.current;
     const panel = el.closest<HTMLElement>('.overview-panel');
     if (!panel) return;
@@ -144,7 +149,14 @@ export function ThreadOverview(props: OverviewProps) {
     const composer = document.querySelector('.composer-slot, .composer');
     const preferred = composer ? composer.getBoundingClientRect().top - top - 12 : hard;
     const budget = Math.min(hard, Math.max(preferred, Math.min(360, hard)));
+    // A re-fit must measure the panel's natural height: once a layout is in place the element
+    // carries that height as a fixed style, and measuring it again would only read the old pin.
+    // `layout` is applied by React from the style prop, so the temporary clearing is undone by
+    // the render that follows this effect, before paint.
+    const pinned = el.style.height;
+    if (layout) el.style.height = 'auto';
     const height = el.offsetHeight;
+    el.style.height = pinned;
     if (height + 18 > budget && limit > 0) { setLimit(limit === 3 ? 1 : 0); return; }
     if (height + 18 > hard && limit === 0) { action(() => onViewAll('all', false))(); return; }
     setLayout({ height, sections: available, counts });
@@ -200,7 +212,8 @@ export function ThreadOverview(props: OverviewProps) {
   const newSections = available.some(id => layout && !layout.sections.includes(id));
   const status = failed && outputs ? t('overview.cachedFailed') : loading && outputs ? t('overview.refreshing') : !sections.includes('agents') && attention ? attention : newSections && sections.length > 0 ? t('overview.newContent') : '';
   const footer = <div className="overview-foot">
-    <div className="overview-readings"><span>{readings(stats)}</span><span className={`overview-status${failed || (!sections.includes('agents') && attention) ? ' failed' : ''}`} role="status">{status}</span></div>
+    {/* The readings themselves are the way to the trace: one faint line, one tap. */}
+    <div className="overview-readings"><button type="button" className="overview-readings-link" title={t('trace.openTrace')} onClick={detail ? onOpenTrace : action(() => onOpenTrace())}>{readings(stats)}</button><span className={`overview-status${failed || (!sections.includes('agents') && attention) ? ' failed' : ''}`} role="status">{status}</span></div>
     <button type="button" className="icon-btn overview-refresh" aria-label={t(failed ? 'common.retry' : 'overview.refresh')} aria-busy={loading} aria-disabled={loading} onClick={() => { if (!loading) { if (!outputs) { setLimit(3); setLayout(null); } void reading.refresh(); } }}><IconRefresh size={14} /></button>
     <button type="button" className="overview-trace" onClick={detail ? onOpenTrace : viewAll('all')}>{t(detail ? 'overview.trace' : 'overview.viewAll')}<IconChevronRight size={12} /></button>
   </div>;
