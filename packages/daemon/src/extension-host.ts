@@ -21,7 +21,7 @@ import type {
 } from '@calli/extension-api';
 import type { StoredEvent } from './events.js';
 import { HttpError } from './errors.js';
-import { exactGrant, type ExtensionRecord, type ExtensionStore } from './extensions.js';
+import { activeBuiltinGrant, exactGrant, type ExtensionRecord, type ExtensionStore } from './extensions.js';
 import { attentionOf, turnOrigin, turnOutcome } from './lifecycle.js';
 import type { ThreadView } from './threads.js';
 
@@ -77,7 +77,8 @@ export function threadSummary(view: ThreadView): ThreadSummary {
     id: view.id,
     title: view.title,
     agent: view.agent,
-    project: view.worktree ? view.worktree.of : view.cwd,
+    project: view.scratch ? '' : view.worktree ? view.worktree.ofReal : view.cwdReal,
+    projectGone: view.projectGone,
     status: view.status,
     attention: attentionOf(view),
     runningSince: view.status === 'running' ? (view.runningSince ?? null) : null,
@@ -213,7 +214,7 @@ export class ExtensionHost {
     if (typeof enabled !== 'boolean') throw new HttpError(400, 'enabled 须为布尔值');
     const record = this.store.get(id);
     if (!record) throw new HttpError(409, '扩展尚未安装');
-    if (enabled && !exactGrant(manifest, record.granted)) throw new HttpError(409, '扩展需要的权限有变化，请重新安装以确认');
+    if (enabled && !activeBuiltinGrant(manifest, record.granted)) throw new HttpError(409, '扩展需要的权限有变化，请重新安装以确认');
     if (enabled) {
       const req = this.dependencyResolver.resolve(manifest);
       if (req.state !== 'satisfied') {
@@ -260,7 +261,7 @@ export class ExtensionHost {
     const manifest = this.manifest(extensionId);
     const record = this.store.get(extensionId);
     if (!record) throw new HttpError(404, `扩展 ${extensionId} 尚未安装`);
-    if (!record.enabled || !exactGrant(manifest, record.granted)) {
+    if (!record.enabled || !activeBuiltinGrant(manifest, record.granted)) {
       throw new HttpError(403, `扩展 ${extensionId} 未启用或权限不符`);
     }
     const req = this.dependencyResolver.resolve(manifest);
@@ -353,12 +354,12 @@ export class ExtensionHost {
   private state(manifest: ExtensionManifest, record: ExtensionRecord | null): ExtensionState {
     const req = this.dependencyResolver.resolve(manifest);
     const installed = record !== null;
-    const grantedOk = record !== null && Boolean(exactGrant(manifest, record.granted));
+    const grantedOk = record !== null && activeBuiltinGrant(manifest, record.granted);
     return {
       manifest,
       source: 'builtin',
       installed,
-      // A grant made for an older version that asked for less does not switch the new one on.
+      // Changed grants stay disabled, except the board can defer assistant consent until its first handoff.
       // Requirements must also be satisfied for the extension to be effectively enabled.
       enabled: installed && record.enabled && grantedOk && req.state === 'satisfied',
       granted: record?.granted ?? [],

@@ -20,6 +20,8 @@
  * - `voice.control`    — own a bounded voice session on a selected thread. No approval answers.
  *                        Runtime guard implemented; browser API not yet exposed.
  * - `threads.rename`   — change a thread's title in Calli, never the agent's own session. (built-in)
+ * - `assistant.ask`    — hand a text the person asked for to their personal assistant as their own
+ *                        message, and open the assistant page. Content leaves the view. (built-in)
  * - `agents.ask`       — ask an agent instance the person chose a one-off question in an archived
  *                        thread of its own, and read the plain-text answer. (built-in)
  *
@@ -41,4 +43,5 @@ export type Permission =
   | 'task.control'
   | 'voice.control'
   | 'threads.rename'
-  | 'agents.ask';
+  | 'agents.ask'
+  | 'assistant.ask';

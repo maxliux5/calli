@@ -7,8 +7,10 @@ import { WorkSummary } from './work';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useEffect, useState, type ComponentProps } from 'react';
-import type { PopoverOptionProps, PopoverProps, WebHostUi } from '@calli/extension-api/web';
+import type { ConfirmProps, PopoverOptionProps, PopoverProps, WebHostUi } from '@calli/extension-api/web';
 import type { AgentInfo } from '../api';
+import { createPortal } from 'react-dom';
+import { Dialog } from '../components/Dialog';
 import { Popover } from '../components/Popover';
 import {
   AgentMark as Mark,
@@ -27,6 +29,7 @@ import {
   IconList,
   IconMic,
   IconPin,
+  IconPlus,
   IconServer,
   IconSparkle,
   IconTarget,
@@ -52,6 +55,7 @@ const ICONS: Record<HostIconKey, (p: { size?: number }) => JSX.Element> = {
   server: IconServer,
   bolt: IconBolt,
   pin: IconPin,
+  plus: IconPlus,
   worktree: IconWorktree,
   fork: IconFork,
   // The core's collaboration mark, as on the team button and in the agent panel.
@@ -128,6 +132,11 @@ function Markdown({ text }: { text: string }) {
 }
 
 /** The components handed to extension views. `agents` is read at render, so it is always current. */
+/** Over the whole page, whatever the view's own overflow. */
+function Confirm({ title, message, confirmLabel, danger, onConfirm, onCancel }: ConfirmProps) {
+  return createPortal(<Dialog title={title} message={message} confirmLabel={confirmLabel} danger={danger} onConfirm={() => onConfirm()} onCancel={onCancel} />, document.body);
+}
+
 export function hostUi(agents: () => AgentInfo[]): WebHostUi {
   function AgentMark({ agentId, size = 14, label = false }: { agentId: string; size?: number; label?: boolean }) {
     const agent = agents().find((a) => a.id === agentId);
@@ -144,5 +153,5 @@ export function hostUi(agents: () => AgentInfo[]): WebHostUi {
       </span>
     );
   }
-  return { WorkSummary, Markdown, Icon: HostIcon, AgentMark, RelativeTime, Popover: HostPopover, PopoverOption, EmptyState };
+  return { WorkSummary, Markdown, Icon: HostIcon, AgentMark, RelativeTime, Popover: HostPopover, PopoverOption, EmptyState, Confirm };
 }

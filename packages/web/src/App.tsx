@@ -6,7 +6,7 @@ import { GeneralSettingsDialog } from './components/GeneralSettingsDialog';
 import { AutoHandoverNotice, HandoverSettingsDialog } from './components/AutoHandover';
 import { useWorkSources, WorkSummary } from './extensions/work';
 import { HostIcon } from './extensions/ui';
-import { historyPage, mergeHistory, mergeHistoryPage, refreshHistoryPage, watchHistory } from './history';
+import { historyPage, mergeHistory, mergeHistoryPage, prependHistory, refreshHistoryPage, watchHistory } from './history';
 import type { WorkMode, WritingStage } from './api';
 import { forkBlocked, useThreadActions } from './components/ThreadActions';import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ComponentProps, type ReactNode } from 'react';
 import type { Theme } from './appearance';
@@ -65,8 +65,8 @@ import { OnboardingDialog } from './components/OnboardingDialog';
 import { ObservabilityPage } from './components/ObservabilityPage';
 import { MachineUsagePage } from './components/MachineUsagePage';
 import { QuotaBoard } from './components/QuotaBoard';
-import { QuotaNavigation } from './quota-reading';
-import { SelectionMenu } from './components/SelectionMenu';
+import { QuotaNavigation, quotaPushed } from './quota-reading';
+import { noteSource, SelectionMenu } from './components/SelectionMenu';
 import { AgentPanel } from './components/AgentPanel';
 import { memberProgress, ThreadOverview, type OverviewSection } from './components/ThreadOverview';
 import { prepareOverview } from './overview-reading';
@@ -78,7 +78,7 @@ import { SideChat } from './components/SideChat';
 import { McpPage } from './components/McpPage';
 import { TeamsPage } from './components/TeamsPage';
 import { teamRecipient } from './teams';
-import type { PetStatus, TeamSummary } from './api';
+import type { PetStatus, PlanQuota, TeamSummary } from './api';
 import { ExploreDialog } from './components/ExploreDialog';
 import { needsExplore, exploreSummary } from './personal-explore';
 import { Pet, PetBustImage, PetPortrait, usePetBust } from './components/Pet';
@@ -94,9 +94,11 @@ import { VoiceOrb, VoiceControls } from './components/VoiceOrb';
 import { useVoiceSession } from './voice-session';
 import type { ExtensionNavEntry } from './components/Sidebar';
 import type { ExtensionState } from '@calli/extension-api';
-import type { ConnectionState } from '@calli/extension-api/web';
+import type { ConnectionState, MachineState } from '@calli/extension-api/web';
+import { ThreadPeek } from './components/ThreadPeek';
+import { RemoteThreadMenu } from './extensions/RemoteThreadMenu';
 import { ExtensionView } from './extensions/ExtensionView';
-import { threadSummaries } from './extensions/project';
+import { machineSummaries, threadMachine, parseThreadLink } from './extensions/project';
 import { createThreadFeed } from './extensions/thread-feed';
 import { cachedAgentMarks, cachedThreads, rememberAgentMarks, rememberThreads } from './thread-cache';
 import { cachedAgents, cachedDraft, cachedModels, cachedPet, rememberAgents, rememberDraft, rememberModels, rememberPetBust, rememberPetStatus } from './host-cache';
@@ -115,7 +117,8 @@ import { NoteMarks, type NoteMark } from './components/NoteMarks';
 import { ConnectDialog, DemoBar } from './components/ConnectDialog';
 import { DemoApi, DemoError } from './demo/DemoApi';
 import { type DraftModelPreference, switchDraftModelPreference } from './draft-preferences';
-import { IconCheck, IconBell, AgentMark, IconActivity, IconAgents, IconArchive, IconArrowDown, IconBack, IconClose, IconEdit, IconFolder, IconGauge, IconGlobe, IconImport, IconList, IconMenu, IconSettings, IconMore, IconOverview, IconPalette, IconPlus, IconPuzzle, IconServer, IconSidebar, IconSignIn, IconSignOut, IconSparkle, IconTerminal, IconTrace, IconLanguage, IconWaveform } from './components/icons';
+import { QUICK_SWITCH_HIDDEN_KEY, clampQuickSwitchBottom, savedQuickSwitchBottom, saveQuickSwitchBottom } from './quick-switch';
+import { IconCheck, IconBell, AgentMark, IconActivity, IconAgents, IconArchive, IconArrowLeft, IconArrowDown, IconBack, IconClose, IconEdit, IconFolder, IconGauge, IconGlobe, IconImport, IconList, IconMenu, IconSettings, IconMore, IconOverview, IconPalette, IconPlus, IconPuzzle, IconServer, IconSidebar, IconSignIn, IconSignOut, IconSparkle, IconTerminal, IconTrace, IconLanguage, IconWaveform } from './components/icons';
 import { StatReadings } from './components/SessionStats';
 import { ThreadTracePanel } from './components/TracePanel';
 import { chooseLocale, locale, LOCALES, localeChoice, t } from './i18n';
@@ -244,8 +247,6 @@ const rememberAgentChoice = (agent: string, choice: Partial<Record<'model' | 'ef
 const PLAN_SKIP_KEY = 'calli:plan-skipped';
 
 const QUICK_SWITCH_SIDE = 10;
-const QUICK_SWITCH_HOLD_MS = 360;
-
 function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
   threads: Thread[];
   selectedId: string;
@@ -255,59 +256,26 @@ function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
   const selectedIndex = threads.findIndex((thread) => thread.id === selectedId);
   const items = useMemo(() => selectedIndex < 0 ? [] : threads.slice(Math.max(0, selectedIndex - QUICK_SWITCH_SIDE), Math.min(threads.length, selectedIndex + QUICK_SWITCH_SIDE + 1)), [threads, selectedIndex]);
   const root = useRef<HTMLDivElement>(null);
-  const rows = useRef(new Map<string, HTMLButtonElement>());
-  const panel = useRef<HTMLDivElement>(null);
-  const timer = useRef<number | null>(null);
-  const lastY = useRef(0);
-  const startX = useRef(0);
-  const startY = useRef(0);
-  const [tapOpen, setTapOpen] = useState(false);
-  const [press, setPress] = useState<{ pointerId: number; open: boolean; targetId: string } | null>(null);
+  const current = useRef<HTMLButtonElement | null>(null);
+  const start = useRef<{ pointerId: number; x: number; y: number; bottom: number; moved: boolean } | null>(null);
+  const [open, setOpen] = useState(false);
+  const [hidden, setHidden] = useStoredFlag(QUICK_SWITCH_HIDDEN_KEY);
+  const [bottom, setBottom] = useState(savedQuickSwitchBottom);
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
-  const open = tapOpen || (press?.open ?? false);
-  const clearTimer = () => {
-    if (timer.current !== null) window.clearTimeout(timer.current);
-    timer.current = null;
-  };
-  const targetAt = (y: number) => {
-    const panelRect = panel.current?.getBoundingClientRect();
-    // The floating trigger sits below the list. A hold-and-release without sliding should not
-    // jump to the nearest row above the finger.
-    if (!panelRect || y < panelRect.top || y > panelRect.bottom) return selectedId;
-    const visible = items
-      .map((thread) => ({ thread, el: rows.current.get(thread.id) }))
-      .filter((row): row is { thread: Thread; el: HTMLButtonElement } => Boolean(row.el));
-    if (!visible.length) return selectedId;
-    let best = visible[0];
-    let bestDistance = Infinity;
-    for (const row of visible) {
-      const rect = row.el.getBoundingClientRect();
-      if (y >= rect.top && y <= rect.bottom) return row.thread.id;
-      const distance = Math.abs(y - (rect.top + rect.bottom) / 2);
-      if (distance < bestDistance) {
-        best = row;
-        bestDistance = distance;
-      }
-    }
-    return best.thread.id;
-  };
-  const updateTarget = (y: number) => {
-    if (!panel.current) return;
-    setPress((current) => current && current.open ? { ...current, targetId: targetAt(y) } : current);
-  };
-  const reset = (el?: HTMLElement, pointerId?: number) => {
-    clearTimer();
-    if (el && pointerId !== undefined && el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
-    setPress(null);
-  };
-  useEffect(() => () => clearTimer(), []);
+  // The panel is short: it opens on the current session, with its neighbours above and below.
+  useLayoutEffect(() => { if (open) current.current?.scrollIntoView({ block: 'center' }); }, [open]);
   useEffect(() => {
-    if (!tapOpen) return;
+    if (!open) return;
+    // Dismissing is all a tap outside does: what lies under it is not pressed as well.
     const onPointerDown = (e: PointerEvent) => {
-      if (root.current && !root.current.contains(e.target as Node)) setTapOpen(false);
+      if (!root.current || root.current.contains(e.target as Node)) return;
+      setOpen(false);
+      const swallow = (click: MouseEvent) => { click.stopPropagation(); click.preventDefault(); };
+      document.addEventListener('click', swallow, { capture: true, once: true });
+      window.setTimeout(() => document.removeEventListener('click', swallow, { capture: true }), 500);
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setTapOpen(false);
+      if (e.key === 'Escape') setOpen(false);
     };
     document.addEventListener('pointerdown', onPointerDown, true);
     document.addEventListener('keydown', onKeyDown);
@@ -315,94 +283,74 @@ function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
       document.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [tapOpen]);
-  if (selectedIndex < 0 || items.length <= 1) return null;
-  /** A plain tap on the strip is not ours: hand the click to whatever interactive piece sits under it. */
-  const forwardTap = (x: number, y: number) => {
-    const strip = root.current;
-    if (!strip) return;
-    strip.style.visibility = 'hidden';
-    const hit = document.elementFromPoint(x, y);
-    strip.style.visibility = '';
-    hit?.closest('button, a, input, textarea, label, [role="option"], [role="menuitem"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  }, [open]);
+  if (hidden || selectedIndex < 0 || items.length <= 1) return null;
+  const release = (el: HTMLElement, pointerId: number) => {
+    if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
+    start.current = null;
   };
   return (
     <div className="quick-switch" ref={root}>
-      {/* An invisible strip along the right edge, mirroring the left edge's list gesture: swipe it
-          left to summon the panel, hold to scrub through the sessions, and a plain tap falls
-          through to the interface underneath. */}
-      <div
-        className="quick-switch-edge"
-        aria-hidden="true"
+      {/* A small visible handle near the right edge, inset from iOS's own edge gestures. Tap it or
+          pull it left to open the panel; drag it up or down to move it out of the way of text. It
+          covers only its own few pixels, so selecting text elsewhere is never intercepted. */}
+      <button
+        type="button"
+        className={`quick-switch-handle${open ? ' open' : ''}`}
+        style={{ bottom: `calc(${bottom}px + var(--safe-bottom))` }}
+        aria-label={t('quickSwitch.sessions')}
+        aria-expanded={open}
         onPointerDown={(e) => {
           if (e.pointerType === 'mouse' && e.button !== 0) return;
-          e.preventDefault();
           e.currentTarget.setPointerCapture(e.pointerId);
-          startX.current = e.clientX;
-          startY.current = e.clientY;
-          lastY.current = e.clientY;
-          setPress({ pointerId: e.pointerId, open: false, targetId: selectedId });
-          clearTimer();
-          timer.current = window.setTimeout(() => {
-            timer.current = null;
-            setPress((current) => current?.pointerId === e.pointerId ? { ...current, open: true } : current);
-            requestAnimationFrame(() => updateTarget(lastY.current));
-          }, QUICK_SWITCH_HOLD_MS);
+          start.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, bottom, moved: false };
         }}
         onPointerMove={(e) => {
-          if (press?.pointerId !== e.pointerId) return;
-          lastY.current = e.clientY;
-          const dx = startX.current - e.clientX;
-          const dy = Math.abs(e.clientY - startY.current);
-          // A vertical drag is a scroll, not a summon: give up before the hold timer fires.
-          if (!press.open && !tapOpen && dy > 10 && dx <= 24) {
-            clearTimer();
-            reset(e.currentTarget, e.pointerId);
-            return;
-          }
-          // A pull past the threshold summons the panel for tapping; holding keeps its scrub.
-          if (!press.open && !tapOpen && dx > 24 && dx > dy) {
-            clearTimer();
-            reset(e.currentTarget, e.pointerId);
-            setTapOpen(true);
-            return;
-          }
-          if (press.open) { e.preventDefault(); updateTarget(e.clientY); }
+          const from = start.current;
+          if (from?.pointerId !== e.pointerId) return;
+          const dx = from.x - e.clientX;
+          const dy = e.clientY - from.y;
+          if (!from.moved && dx > 24 && dx > Math.abs(dy)) { release(e.currentTarget, e.pointerId); setOpen(true); return; }
+          if (!from.moved && Math.abs(dy) > 8) from.moved = true;
+          if (from.moved) setBottom(clampQuickSwitchBottom(from.bottom - dy));
         }}
         onPointerUp={(e) => {
-          if (press?.pointerId !== e.pointerId) return;
-          const targetId = press.open ? press.targetId : null;
-          const tap = Math.abs(e.clientX - startX.current) < 6 && Math.abs(e.clientY - startY.current) < 6;
-          reset(e.currentTarget, e.pointerId);
-          if (targetId) {
-            setTapOpen(false);
-            if (targetId !== selectedId) onSelect(targetId);
-            return;
-          }
-          if (tap) forwardTap(e.clientX, e.clientY);
+          const from = start.current;
+          if (from?.pointerId !== e.pointerId) return;
+          release(e.currentTarget, e.pointerId);
+          if (from.moved) saveQuickSwitchBottom(bottom);
+          else setOpen((was) => !was);
         }}
         onPointerCancel={(e) => {
-          if (press?.pointerId === e.pointerId) reset(e.currentTarget, e.pointerId);
+          if (start.current?.pointerId === e.pointerId) release(e.currentTarget, e.pointerId);
         }}
-      />
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.preventDefault();
+            const next = clampQuickSwitchBottom(bottom + (e.key === 'ArrowUp' ? 24 : -24));
+            setBottom(next);
+            saveQuickSwitchBottom(next);
+          }
+        }}
+        onClick={(e) => { if (e.detail === 0) setOpen((was) => !was); }}
+      ><IconArrowLeft size={12} /></button>
       {open && (
-        <div className="quick-switch-panel" ref={panel} role="listbox" aria-label={t('quickSwitch.sessions')}>
+        <div className="quick-switch-panel" role="listbox" aria-label={t('quickSwitch.sessions')}>
           {items.map((thread) => {
             const agent = agentById.get(thread.agent);
-            const target = press?.open ? press.targetId === thread.id : thread.id === selectedId;
-            const current = thread.id === selectedId;
+            const isCurrent = thread.id === selectedId;
             const place = thread.scratch ? t('projects.none') : folderName(projectDir(thread).cwd);
             return (
               <button
                 type="button"
                 key={thread.id}
-                ref={(el) => { if (el) rows.current.set(thread.id, el); else rows.current.delete(thread.id); }}
-                className={`quick-switch-card${current ? ' current' : ''}${target ? ' target' : ''}`}
+                ref={isCurrent ? current : undefined}
+                className={`quick-switch-card${isCurrent ? ' current' : ''}`}
                 role="option"
-                aria-selected={target}
+                aria-selected={isCurrent}
                 onClick={() => {
-                  setTapOpen(false);
-                  if (thread.id !== selectedId) onSelect(thread.id);
+                  setOpen(false);
+                  if (!isCurrent) onSelect(thread.id);
                 }}
               >
                 <span className="quick-switch-title">{thread.title}</span>
@@ -412,11 +360,12 @@ function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
                   <span>{place}</span>
                   {thread.status === 'running' && <span className="dot running" aria-label={t('status.running')} />}
                   {thread.waiting && <span className="dot waiting" aria-label={t('notices.unknown.label')} />}
-                  {thread.unread && !current && <span className="dot unread" aria-label={t('sidebar.unread')} />}
+                  {thread.unread && !isCurrent && <span className="dot unread" aria-label={t('sidebar.unread')} />}
                 </span>
               </button>
             );
           })}
+          <button type="button" className="quick-switch-hide" onClick={() => { setOpen(false); setHidden(true); }}>{t('quickSwitch.hide')}</button>
         </div>
       )}
     </div>
@@ -443,7 +392,7 @@ function fitDraftModelPreference(value: DraftModelPreference, models: ModelOptio
 
 /** The model and thinking effort for one instance's members: a quiet mark until something is chosen. */
 function MemberModel({ agent, models, value, permission, onNeed, onChange, onPermission }: {
-  agent: AgentInfo; models: ModelOption[]; value: MemberDefault; onNeed: (agent: string) => void; onChange: (value: MemberDefault) => void;
+  agent: AgentInfo; models: ModelOption[]; value: MemberDefault; onNeed: (agent: string, refresh?: boolean) => void; onChange: (value: MemberDefault) => void;
   /** The level in force, and how to change it; left out where the agent has no levels. */
   permission?: string; onPermission?: (mode: string) => void;
 }) {
@@ -458,6 +407,7 @@ function MemberModel({ agent, models, value, permission, onNeed, onChange, onPer
       model={value.model}
       efforts={efforts}
       effort={value.effort}
+      onOpen={() => onNeed(agent.id, true)}
       // An effort the newly picked model does not take goes back to the default with it.
       onModel={(model) => onChange({ ...value, model, effort: value.effort && effortsForModel(models, model, efforts).includes(value.effort) ? value.effort : null })}
       onEffort={(effort) => onChange({ ...value, effort })}
@@ -492,7 +442,7 @@ interface AppProps {
 }
 
 /** What is open when the app starts over on another machine: the phone's thread list, the machines panel, or a thread of that machine. */
-export type AppStart = 'list' | 'machines' | { thread: string };
+export type AppStart = 'list' | 'machines' | { thread: string } | { draft: { project?: string } };
 
 export function App(props: AppProps) { return <PageNavigation><Hub {...props} /></PageNavigation>; }
 
@@ -536,7 +486,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const [scratchAvailable, setScratchAvailable] = useState(false);
   // A new thread in no project: the hub gives it a scratch folder. What this machine was last left
   // in opens there again, rather than snapping to its first choice.
-  const [draftScratch, setDraftScratch] = useState(() => keepThreads && cachedDraft(hostId)?.scratch === true);
+  const [draftScratch, setDraftScratch] = useState(() => !(typeof start === 'object' && 'draft' in start && start.draft.project) && keepThreads && cachedDraft(hostId)?.scratch === true);
   const [projectDialog, setProjectDialog] = useState<'new' | 'roots' | null>(null);
   const applyWorkdirs = useCallback((c: WorkdirsConfig) => {
     setWorkdirs(c.workdirs);
@@ -576,7 +526,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const appBack = useRef<() => boolean>(() => false);
   const appHref = useRef(window.location.pathname + window.location.search + window.location.hash);
   useAppHistory(appBack, appHref);
-  const [view, setView] = useState<MainView>(() => start === 'machines' ? 'settings' : viewForHash(window.location.hash, Boolean(token)) ?? 'thread');
+  const [view, setView] = useState<MainView>(() => start === 'machines' ? 'settings' : (typeof start === 'object' ? 'thread' : viewForHash(window.location.hash, Boolean(token)) ?? 'thread'));
   /** The address of the extension view asked for. Which view that is waits for the list of extensions. */
   const [extTarget, setExtTarget] = useState<string | null>(() => (viewForHash(window.location.hash, Boolean(token)) === 'ext' ? window.location.hash : null));
   /** The extension catalog and what is installed on the machine on screen; null until read. */
@@ -755,7 +705,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   // Explicit navigation wins even when the startup preference or thread list arrives late.
   const startupPending = useRef(!demo && !showcase && start === undefined && !window.location.hash);
   const [startupSettings, setStartupSettings] = useState<GeneralSettings | null>(null);
-  const [selectedId, setSelectedIdState] = useState<string | null>(typeof start === 'object' ? start.thread : showcase?.initialThreadId ?? null);
+  const [selectedId, setSelectedIdState] = useState<string | null>(typeof start === 'object' && 'thread' in start ? start.thread : showcase?.initialThreadId ?? null);
   const setSelectedId = useCallback((id: string | null) => {
     startupPending.current = false;
     setSelectedIdState(id);
@@ -786,7 +736,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   // until the machine's own answer says otherwise.
   const keptDraft = keepThreads ? cachedDraft(hostId) : null;
   const [draftAgent, setDraftAgent] = useState(() => keptDraft?.agent ?? '');
-  const [draftCwd, setDraftCwd] = useState(() => keptDraft?.cwd ?? '');
+  const [draftCwd, setDraftCwd] = useState(() => typeof start === 'object' && 'draft' in start ? start.draft.project ?? keptDraft?.cwd ?? '' : keptDraft?.cwd ?? '');
   // A new thread may start in a git worktree of its directory; offered only when the directory is in a repository.
   const [draftWorktree, setDraftWorktree] = useState(false);
   const [worktreeOffer, setWorktreeOffer] = useState<{ cwd: string; branch: string | null; changes: number } | null>(null);
@@ -1185,9 +1135,16 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   // What an extension view is handed: the summaries of the threads the page holds, and how fresh they are.
   const connectionShown: ConnectionState = api.demo || (host && !hostUp) ? 'offline' : connection;
   const workSources = useWorkSources(api, extensions, Boolean(selectedId) || onExt, onExt ? extOpen?.extensionId : undefined, selectedId ?? undefined);
+  const machineSources = useMemo<HostSource[]>(() => [{
+    hostId, label: host?.label ?? t('hosts.local'), threads, agents: sidebarAgents,
+    state: connectionShown === 'offline' ? 'offline' : connectionShown === 'live' ? 'live' : threadsKnown ? 'cached' : 'loading',
+    at: observedAt ?? (keepThreads ? cachedThreads(hostId)?.at ?? null : null),
+  }, ...(merging ? elsewhere : [])], [hostId, host?.label, threads, sidebarAgents, connectionShown, threadsKnown, observedAt, keepThreads, merging, elsewhere]);
   const extInputs = useMemo(
-    () => (onExt ? { workSources, threads: threadSummaries(threads, selectedId), connection: connectionShown, observedAt: api.demo ? null : observedAt, agents, extension: extensions?.find(e => e.manifest.id === extOpen?.extensionId) ?? null } : null),
-    [workSources, onExt, threads, selectedId, connectionShown, observedAt, agents, api.demo, extensions, extOpen?.extensionId],
+    () => (onExt ? { workSources, threads: machineSummaries(machineSources, selectedId, merging),
+      machines: machineSources.map((source): MachineState => ({ id: source.hostId, label: source.label, state: source.state, observedAt: source.at })),
+      connection: connectionShown, observedAt: api.demo ? null : observedAt, agents, extension: extensions?.find(e => e.manifest.id === extOpen?.extensionId) ?? null } : null),
+    [workSources, onExt, machineSources, merging, selectedId, connectionShown, observedAt, agents, api.demo, extensions, extOpen?.extensionId],
   );
 
   // An extension view that is not there (never installed, removed, switched off, or an address
@@ -1547,7 +1504,10 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
             '/api/stream',
             (ev) => {
               if (ev.type === 'extensions.changed') void reloadExtensions();
-              else if (ev.type === 'agent.modelsChanged') {
+              else if (ev.type === 'quota.updated') {
+                const { agent, quota } = ev.data as { agent: string; quota: PlanQuota };
+                quotaPushed(api, agent, quota);
+              } else if (ev.type === 'agent.modelsChanged') {
                 const { agent, models } = ev.data as { agent: string; models: ModelOption[] };
                 modelVersions.current[agent] = (modelVersions.current[agent] ?? 0) + 1;
                 setModelsByAgent(previous => ({ ...previous, [agent]: models }));
@@ -1640,7 +1600,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       setHasOlder(page.hasOlder); historyCursor.current = page.nextCursor;
       const el = scrollerRef.current;
       const fromBottom = el ? el.scrollHeight - el.scrollTop : 0;
-      setEvents((prev) => mergeHistory(older, prev));
+      setEvents((prev) => prependHistory(older, prev));
       // New content lands above the viewport; stay on the same row while it inserts.
       requestAnimationFrame(() => {
         if (el && !stickToBottom.current && !jump) el.scrollTop = el.scrollHeight - fromBottom;
@@ -1834,13 +1794,13 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
 
   // Models of an agent other than the thread's own, for choosing what its members start with.
   const modelsAsked = useRef(new Set<string>());
-  const needModels = (agent: string) => {
-    if (!api || modelsByAgent[agent] || modelsAsked.current.has(agent)) return;
+  const needModels = (agent: string, refresh = false) => {
+    if (!api || modelsAsked.current.has(agent) || (!refresh && modelsByAgent[agent])) return;
     modelsAsked.current.add(agent);
     const version = modelVersions.current[agent] ?? 0;
-    api.models(agent).then((list) => {
+    api.models(agent, refresh).then((list) => {
       if ((modelVersions.current[agent] ?? 0) === version) setModelsByAgent(prev => ({ ...prev, [agent]: list }));
-    }).catch(() => { modelsAsked.current.delete(agent); });
+    }).catch(error => { if (refresh) handleError(error); }).finally(() => { modelsAsked.current.delete(agent); });
   };
 
   // Models for that agent, loaded once per agent.
@@ -2023,9 +1983,11 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   };
 
   const autotitleExt = extensions?.find((e) => e.manifest.id === 'autotitle');
+  const boardExt = extensions?.find((e) => e.manifest.id === 'board');
   const threadActions = useThreadActions({
     api,
     autotitle: Boolean(autotitleExt?.source === 'builtin' && autotitleExt.installed && autotitleExt.enabled),
+    board: Boolean(boardExt?.source === 'builtin' && boardExt.installed && boardExt.enabled),
     agents,
     sections,
     todos,
@@ -2254,14 +2216,33 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     return false;
   };
 
-  // Marked from an extension view: the stream brings the change back to the list.
-  const setThreadDone = async (id: string, done: boolean) => {
-    try {
-      await api.updateThread(id, { done });
-    } catch (e) {
-      handleError(e);
-      throw e;
-    }
+  const [peek, setPeek] = useState<{ machine: string | null; api: Api; thread: Thread; returnFocus: HTMLElement | null } | null>(null);
+  useEffect(() => { if (!onExt) setPeek(null); }, [onExt]);
+  const [remoteMenu, setRemoteMenu] = useState<{ machine: string | null; api: Api; thread: Thread; x: number; y: number } | null>(null);
+  const openMachineMenu = (id: string, at: { x: number; y: number }) => {
+    const machine = threadMachine(machineSources, id);
+    const thread = machineSources.flatMap(source => source.threads).find(thread => thread.id === id)!;
+    if (machine === hostId) threadActions.openThreadMenu(thread, at.x, at.y);
+    else setRemoteMenu({ machine, api: new Api(token, '', machine), thread, ...at });
+  };
+  const threadApi = (id: string) => {
+    const machine = threadMachine(machineSources, id);
+    return machine === hostId ? api : new Api(token, '', machine);
+  };
+  const updateMachineThread = (machine: string | null, updated: Thread) => {
+    const apply = (list: Thread[]) => updated.archivedAt ? list.filter(t => t.id !== updated.id)
+      : list.some(t => t.id === updated.id) ? list.map(t => t.id === updated.id ? updated : t) : [updated, ...list];
+    if (machine === hostId) setThreads(apply);
+    else setElsewhere(sources => sources.map(source => source.hostId === machine ? { ...source, threads: apply(source.threads) } : source));
+  };
+  const patchBoardThread = async (id: string, patch: { done?: boolean; stage?: 'backlog' | 'doing' | 'blocked' | 'review' }) => {
+    const machine = threadMachine(machineSources, id);
+    updateMachineThread(machine, await threadApi(id).updateThread(id, patch));
+  };
+  const openBoardThread = (id: string) => {
+    const machine = threadMachine(machineSources, id);
+    if (machine === hostId) pick(id);
+    else onHost?.(machine, { thread: id });
   };
 
   // The plan page takes the place of a thread, so no thread is open while it is.
@@ -2411,11 +2392,19 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
 
   useEffect(() => {
     if (!threadLink || !token) return;
-    if (hostId) { onHost?.(null); return; }
+    const link = parseThreadLink(threadLink);
+    if (!link) { setThreadLink(null); return; }
+    if (link.machine !== null) {
+      if (!hostsLoaded) return;
+      if (!hosts.some(host => host.id === link.machine)) {
+        setThreadLink(null); setError(t('app.machineNotFound'));
+        window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+        return;
+      }
+    }
+    if (hostId !== link.machine) { onHost?.(link.machine); return; }
     let active = true;
-    let id: string;
-    try { id = decodeURIComponent(threadLink.slice('#/thread/'.length)); }
-    catch { id = ''; }
+    const { id } = link;
     void api.thread(id).then(async thread => {
       if (!active) return;
       if (thread.archivedAt) {
@@ -2432,7 +2421,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       }
     });
     return () => { active = false; };
-  }, [api, token, hostId, threadLink]);
+  }, [api, token, hostId, threadLink, hostsLoaded, hosts]);
 
   // A session that is already a thread may have been archived since; opening it brings it back.
   const openImported = async (threadId: string) => {
@@ -2694,9 +2683,10 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   );
 
   // The team's own choices once there is a team; until then, what this device remembers. A hidden
-  // instance is not offered to a new team; one already in a running coordination stays.
+  // instance is not offered; one already in a running coordination stays, and instances that joined
+  // the hub after it started are offered alongside them.
   const leading = Boolean(coordination && selected && coordination.rootId === selected.id);
-  const teamAgents = agents.filter((a) => a.available && a.capabilities.coordination && (leading ? coordination!.agents.includes(a.id) : !a.hidden));
+  const teamAgents = agents.filter((a) => a.available && a.capabilities.coordination && (leading ? coordination!.agents.includes(a.id) || !a.hidden : !a.hidden));
   const teamDefaults: Record<string, MemberDefault> = leading ? coordination!.defaults ?? {} : memberDefaults;
   const startingDefaults = Object.fromEntries(Object.entries(memberDefaults).filter(([id]) => teamAgents.some((a) => a.id === id)));
   const setMemberDefault = (agent: string, value: MemberDefault) => {
@@ -2726,8 +2716,9 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
 
   const collaborationOptions: AgentMention[] = (!draftTeam && !selected?.coordination?.team && (selected?.coordination ? selected.coordination.rootId === selected.id : activeCaps?.coordination)) ? [
             ...(coordination?.members.map(m => ({ id: m.id, label: m.name, kind: 'member' as const })) ?? []),
-            // A hidden instance cannot be picked for new work; members of a running coordination stay.
-            ...agents.filter(a => a.available && a.capabilities.coordination && (coordination ? coordination.agents.includes(a.id) : !a.hidden)).map(a => ({ id: a.id, label: a.label, kind: 'agent' as const })),
+            // An instance hidden on purpose stays out; the roster follows the hub's live list, so
+            // instances that joined after the collaboration started are offered here too.
+            ...agents.filter(a => a.available && a.capabilities.coordination && (coordination ? coordination.agents.includes(a.id) || !a.hidden : !a.hidden)).map(a => ({ id: a.id, label: a.label, kind: 'agent' as const })),
             ...remoteAgents.map(a => ({ id: a.id, label: a.label, kind: 'agent' as const, host: a.host, directories: [...new Set([...recentRemoteDirs(a.host), ...a.directories])] })),
           ] : [];
   const collaborationIcon = (m: AgentMention) => [...agents, ...remoteAgents].find((a) => a.id === (m.kind === 'agent' ? m.id : coordination?.members.find((v) => v.id === m.id)?.thread?.agent))?.icon;
@@ -3030,7 +3021,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           moreExternal={externalCursor !== null}
           onLoadMoreExternal={loadMoreExternal}
           onHide={compact ? undefined : toggleSidebar}
-          onThreadMenu={threadActions.openThreadMenu}
+          onThreadMenu={(thread, x, y) => openMachineMenu(thread.id, { x, y })}
           onSectionMenu={threadActions.openSectionMenu}
           onNewSection={threadActions.newSection}
           onOpenTodos={showcase ? undefined : openTodos}
@@ -3230,12 +3221,36 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           </div>
         ) : onExt ? (
           // An extension's view, behind a boundary of its own. Until the list is read, it is on its way.
-          <div key={`ext:${extOpen ? `${extOpen.extensionId}/${extOpen.view.id}` : ''}`} className="scroller">
+          <div key={`ext:${extOpen ? `${extOpen.extensionId}/${extOpen.view.id}` : ''}`} className="extension-stage"><div className="scroller">
             {extOpen && extInputs ? (
-              <ExtensionView api={api} extensionId={extOpen.extensionId} viewId={extOpen.view.id} name={extName} inputs={extInputs} onOpenThread={pick} onSetThreadDone={setThreadDone} />
+              <ExtensionView api={api} extensionId={extOpen.extensionId} viewId={extOpen.view.id} name={extName} inputs={extInputs} onOpenThread={openBoardThread}
+                onSetThreadDone={(id, done) => patchBoardThread(id, { done }).catch(error => { handleError(error); throw error; })}
+                onSetThreadStage={(id, stage) => patchBoardThread(id, { stage })}
+                navigate={{ openThread: openBoardThread, peekThread: id => {
+                  if (window.matchMedia('(max-width: 640px)').matches) { openBoardThread(id); return; }
+                  const machine = threadMachine(machineSources, id);
+                  const thread = machineSources.flatMap(source => source.threads).find(thread => thread.id === id)!;
+                  setPeek({ machine, api: threadApi(id), thread, returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null });
+                }, threadMenu: (id, at) => openMachineMenu(id, at),
+                  newThread: options => {
+                    const machine = options?.machine === undefined ? hostId : options.machine;
+                    if (machine !== hostId) onHost?.(machine, { draft: { project: options?.project } });
+                    else newThread({ cwd: options?.project });
+                  } }}
+                onAskAssistant={async text => {
+                  const assistantApi = hostId === null ? api : new Api(token);
+                  const result = await assistantApi.petSay(text);
+                  if (hostId !== null) onHost?.(null, { thread: result.threadId });
+                  else { setRouterThreadId(result.threadId); openThread(await api.thread(result.threadId)); }
+                }} onExtensionChange={changeExtension} />
             ) : (
               <div className="loading-note">{t('common.loading')}</div>
             )}
+            </div>
+            {peek && <ThreadPeek key={`${peek.machine ?? ''}:${peek.thread.id}`} api={peek.api} initial={peek.thread} returnFocus={peek.returnFocus}
+              draftKey={peek.machine ? `host:${peek.machine}:${peek.thread.id}` : peek.thread.id}
+              onClose={() => setPeek(null)} onOpen={() => openBoardThread(peek.thread.id)}
+              onChange={updated => updateMachineThread(peek.machine, updated)} />}
           </div>
         ) : onMachines ? (
           <div key="machines" className="scroller">
@@ -3718,12 +3733,19 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
         />
       )}
       {threadActions.layer}
+      {remoteMenu && <RemoteThreadMenu key={remoteMenu.machine ?? 'local'} api={remoteMenu.api} target={remoteMenu} board={Boolean(boardExt?.enabled)}
+        onChange={updated => updateMachineThread(remoteMenu.machine, updated)}
+        onOpen={thread => onHost?.(remoteMenu.machine, { thread: thread.id })}
+        onRemove={id => setElsewhere(sources => sources.map(source => source.hostId === remoteMenu.machine ? { ...source, threads: source.threads.filter(t => t.id !== id) } : source))}
+        onError={handleError} />}
       <NoteMarks marks={noteMarks} scrollerRef={scrollerRef} />
       <SelectionMenu
         onNote={(quote, comment, range, file) => {
           const id = `note-${Date.now()}`;
           if (range) noteRanges.current.set(id, range);
-          setNoteSignal({ draftKey: composerDraftKey, note: { id, quote, comment, nonce: Date.now(), ...(file ? { file } : {}) } });
+          // Messages go to the chain's latest conversation; a passage from another one says where it is.
+          const source = noteSource(range, viewingEarlier ? latestSegment?.id : selectedId);
+          setNoteSignal({ draftKey: composerDraftKey, note: { id, quote, comment, nonce: Date.now(), ...(file ? { file } : {}), ...(source ? { source } : {}) } });
           if (file) setFilesNotePulse((v) => v + 1);
         }}
         onSideAsk={(text, threadId) => {

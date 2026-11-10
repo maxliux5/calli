@@ -348,11 +348,18 @@ export interface Note {
   /** The thread-relative path the passage was picked out of, when it is a file's text. Parsed by
    * the agent as the 文件： line, so the note can be found in the file without line numbers. */
   file?: string;
+  /** The earlier conversation of a handover chain the passage was picked out of. The agent cannot
+   * see that one, so the note says where to read it; the person sees the note as any other. */
+  source?: NoteSource;
 }
+
+export interface NoteSource { threadId: string; turnId: string }
 
 const NOTE_HEAD = /^\[注释 (\d+)\]$/;
 const NOTE_FILE = '文件：';
 const NOTE_COMMENT = '评论：';
+const NOTE_SOURCE_LINE = /^来源：交接前的会话，原文和上下文用 calli history (\S+) --turn (\S+) 读$/;
+const sourceLine = (source: NoteSource) => `来源：交接前的会话，原文和上下文用 calli history ${source.threadId} --turn ${source.turnId} 读`;
 
 /**
  * A message with numbered notes in front, in plain text any agent reads and can refer back to
@@ -360,6 +367,7 @@ const NOTE_COMMENT = '评论：';
  *
  *   [注释 1]
  *   文件：writing/题目.md
+ *   来源：交接前的会话，原文和上下文用 calli history THREAD --turn TURN 读
  *   > the passage
  *   评论：what the user says about it
  *
@@ -373,7 +381,7 @@ export function withNotes(notes: Note[], body: string): string {
       .map((line) => `> ${line}`.trimEnd())
       .join('\n');
     const comment = note.comment.trim().replace(/\s*\n\s*/g, ' ');
-    return [`[注释 ${i + 1}]`, ...(note.file ? [NOTE_FILE + note.file] : []), quoted, ...(comment ? [NOTE_COMMENT + comment] : [])].join('\n');
+    return [`[注释 ${i + 1}]`, ...(note.file ? [NOTE_FILE + note.file] : []), ...(note.source ? [sourceLine(note.source)] : []), quoted, ...(comment ? [NOTE_COMMENT + comment] : [])].join('\n');
   });
   const rest = body.trim();
   return [...blocks, ...(rest ? [rest] : [])].join('\n\n');
@@ -391,11 +399,13 @@ export function splitNotes(text: string): { notes: Note[]; body: string } {
     i += 1;
     let file: string | undefined;
     if (i < lines.length && lines[i].startsWith(NOTE_FILE)) file = lines[i++].slice(NOTE_FILE.length).trim() || undefined;
+    const found = i < lines.length ? NOTE_SOURCE_LINE.exec(lines[i]) : null;
+    if (found) i += 1;
     const quoted: string[] = [];
     while (i < lines.length && lines[i].startsWith('>')) quoted.push(lines[i++].replace(/^>\s?/, ''));
     let comment = '';
     if (i < lines.length && lines[i].startsWith(NOTE_COMMENT)) comment = lines[i++].slice(NOTE_COMMENT.length).trim();
-    notes.push({ quote: quoted.join('\n').trim(), comment, ...(file ? { file } : {}) });
+    notes.push({ quote: quoted.join('\n').trim(), comment, ...(file ? { file } : {}), ...(found ? { source: { threadId: found[1], turnId: found[2] } } : {}) });
     end = i;
   }
   if (notes.length === 0) return { notes, body: text };

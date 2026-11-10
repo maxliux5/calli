@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ExternalSession, Section, Thread } from '../src/api.js';
-import { buildActivity, buildMerged, buildSidebar, clampSidebarWidth, externalThreadRow, handoverGroups, markTerms, navOverflow, defaultSidebarWidth, savedSidebarWidth, searchTerms, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, taggedAgents, threadAttention, withExternalSessions, type HostSource } from '../src/sidebar.js';
+import { boardStage, buildActivity, buildMerged, buildSidebar, clampSidebarWidth, externalThreadRow, handoverGroups, markTerms, navOverflow, defaultSidebarWidth, savedSidebarWidth, searchTerms, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, taggedAgents, threadAttention, withExternalSessions, type HostSource } from '../src/sidebar.js';
 import { threadMark } from '../src/notices.js';
 
 let clock = 0;
@@ -330,4 +330,20 @@ test("a machine's sessions mix into the list by their time, as threads of their 
   // Threads alone come through unchanged.
   const alone = [newest];
   assert.equal(withExternalSessions(alone, []), alone);
+});
+
+test('the row menu places a thread in the board column the board would', () => {
+  const at = '2026-11-10T00:00:00.000Z';
+  assert.equal(boardStage(thread('idle')), 'review');
+  assert.equal(boardStage(thread('read', { unread: true })), 'review');
+  assert.equal(boardStage(thread('reported', { report: { stage: 'doing', note: '', at } })), 'doing');
+  assert.equal(boardStage(thread('running', { status: 'running', report: { stage: 'review', note: '', at } })), 'doing');
+  assert.equal(boardStage(thread('waiting', { status: 'running', waiting: true })), 'blocked');
+  assert.equal(boardStage(thread('failed', { status: 'error', unread: true })), 'blocked');
+  assert.equal(boardStage(thread('done', { doneAt: at, waiting: true })), 'done');
+  assert.equal(boardStage(thread('later', { report: { stage: 'backlog', note: '', at, by: 'user' } })), 'backlog');
+  assert.equal(boardStage(thread('later-unread', { unread: true, report: { stage: 'backlog', note: '', at, by: 'user' } })), 'backlog');
+  assert.equal(boardStage(thread('later-run', { status: 'running', report: { stage: 'backlog', note: '', at, by: 'user' } })), 'doing');
+  assert.equal(boardStage(thread('later-wait', { waiting: true, report: { stage: 'backlog', note: '', at, by: 'user' } })), 'blocked');
+  assert.equal(boardStage(thread('later-done', { doneAt: at, report: { stage: 'backlog', note: '', at, by: 'user' } })), 'done');
 });

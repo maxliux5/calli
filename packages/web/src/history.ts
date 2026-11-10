@@ -134,6 +134,15 @@ export function mergeHistory(previous: StoredEvent[], updates: StoredEvent[]): S
   return out;
 }
 
+/**
+ * Puts an earlier page in front of what is loaded. A page lists each turn's answer after its work,
+ * so seqs are not in order; merging it event by event as if they were dropped every answer.
+ */
+export function prependHistory(older: StoredEvent[], loaded: StoredEvent[]): StoredEvent[] {
+  const seen = new Set(loaded.map(event => event.seq));
+  return [...older.filter(event => !seen.has(event.seq)), ...loaded];
+}
+
 export async function historyPage(api: Api, id: string, before?: number, after?: number, chain = false): Promise<HistoryPage> {
   const cached = readCachedPage(api, id, before, after, chain);
   if (cached) return cached;

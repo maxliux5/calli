@@ -7,12 +7,16 @@
 
 import type { InjectionGate } from './injections.js';
 
-export type ProgressStage = 'doing' | 'review' | 'blocked';
+/** `backlog` is the person's alone: agents cannot report it (see STAGES). */
+export type ProgressStage = 'doing' | 'review' | 'blocked' | 'backlog';
+export const PROGRESS_STAGES: readonly ProgressStage[] = ['backlog', 'doing', 'review', 'blocked'];
 
 export interface ProgressReport {
   stage: ProgressStage;
   note: string;
   at: string;
+  /** Set when the person placed the thread from its menu rather than the agent reporting. */
+  by?: 'user';
 }
 
 /** Protocol words agents write; not translated. */

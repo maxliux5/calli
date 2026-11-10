@@ -13,7 +13,8 @@ export function threadSummary(t: Thread, selectedId: string | null): ThreadSumma
     id: t.id,
     title: t.title,
     agent: t.agent,
-    project: projectDir(t).cwd,
+    project: t.scratch ? '' : projectDir(t).real,
+    projectGone: Boolean(t.projectGone),
     status: t.status,
     attention: threadAttention(t, selectedId),
     runningSince: t.status === 'running' ? (t.runningSince ?? null) : null,
@@ -38,4 +39,25 @@ export function threadSummaries(threads: Thread[], selectedId: string | null): T
   return threads
     .filter((t) => !t.archivedAt && (!t.coordination || t.coordination.rootId === t.id || !ids.has(t.coordination.rootId)))
     .map((t) => threadSummary(t, selectedId));
+}
+
+/** Machine metadata appears only in the merged view. */
+export function machineSummaries(sources: Array<{ hostId: string | null; label: string; threads: Thread[] }>, selectedId: string | null, merged: boolean): ThreadSummary[] {
+  return sources.flatMap(source => threadSummaries(source.threads, selectedId).map(thread =>
+    merged ? { ...thread, machine: { id: source.hostId, label: source.label } } : thread));
+}
+
+/** UUIDs are unique across machines; unknown threads must never fall through to the local API. */
+export function threadMachine(sources: Array<{ hostId: string | null; threads: Thread[] }>, id: string): string | null {
+  const source = sources.find(source => source.threads.some(thread => thread.id === id));
+  if (!source) throw new Error('Thread not found');
+  return source.hostId;
+}
+
+export function parseThreadLink(hash: string): { id: string; machine: string | null } | null {
+  if (!hash.startsWith('#/thread/')) return null;
+  try {
+    const [id, query] = hash.slice('#/thread/'.length).split('?');
+    return { id: decodeURIComponent(id), machine: new URLSearchParams(query).get('machine') || null };
+  } catch { return null; }
 }

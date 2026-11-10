@@ -27,6 +27,8 @@
   --glass-scrim: 0.07;
   /* On a wide screen the composer's own soft shadow does the same job, following its round corners. */
   --glass-halo: 0 10px 40px rgba(31, 30, 28, 0.11), 0 2px 8px rgba(31, 30, 28, 0.05);
+  --thread-peek-width: min(560px, 44vw);
+  --z-thread-peek: 40;
   --z-desk-spread: 44;
   --z-pet: 46;
   --z-desk-menu: 72;
@@ -793,23 +795,51 @@ button:disabled {
   }
 
   .quick-switch {
-    /* A fixed pad at the bottom-right, inset from the screen edge: iOS owns the outermost
-       band for its history gestures, and the pad sits clear of it. Tapping falls through. */
+    /* Holds only the panel; the handle positions itself. Nothing here takes touches. */
     position: fixed;
-    right: 16px;
-    bottom: calc(168px + var(--safe-bottom));
-    width: 96px;
-    height: 160px;
+    inset: 0;
     z-index: 62;
     pointer-events: none;
   }
 
-  .quick-switch-edge {
-    position: absolute;
-    inset: 0;
-    border-radius: 20px;
+  /* A small tab on the right edge, inset from iOS's own edge gestures. Quiet until used. */
+  .quick-switch-handle {
+    position: fixed;
+    right: 6px;
+    width: 22px;
+    height: 52px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    color: var(--muted);
+    box-shadow: var(--shadow-pop);
+    opacity: 0.7;
     pointer-events: auto;
-    touch-action: pan-y;
+    touch-action: none;
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+  }
+
+  .quick-switch-handle.open {
+    opacity: 1;
+    color: var(--text);
+  }
+
+  .quick-switch-hide {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    padding: 8px;
+    border-radius: 10px;
+    border: 0;
+    box-shadow: none;
+    background: transparent;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
   }
 
   .quick-switch-panel {
@@ -820,7 +850,8 @@ button:disabled {
     right: calc(10px + env(safe-area-inset-right));
     bottom: calc(var(--qs-anchor) + var(--safe-bottom));
     width: min(286px, calc(100vw - 54px - env(safe-area-inset-left)));
-    max-height: min(480px, max(0px, calc(
+    /* About five sessions, the current one in the middle; the rest scroll. */
+    max-height: min(264px, max(0px, calc(
       var(--vvh, 100dvh) - 72px - var(--qs-anchor) - env(safe-area-inset-top)
     )));
     padding: 7px;
@@ -865,11 +896,6 @@ button:disabled {
     background: var(--hover);
   }
 
-  .quick-switch-card.target {
-    background: var(--accent-soft);
-    color: var(--accent-fg);
-  }
-
   .quick-switch-title {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -887,10 +913,6 @@ button:disabled {
     color: var(--muted);
     font-size: 11.5px;
     line-height: 1.2;
-  }
-
-  .quick-switch-card.target .quick-switch-meta {
-    color: color-mix(in srgb, var(--accent-fg) 78%, var(--muted));
   }
 
   .quick-switch-meta span:not(.dot):not(.agent-mark) {
@@ -14152,6 +14174,9 @@ body:has(.settings-page, .action-sheet) .pet { display: none; }
   .composer-slot::before, .composer-slot::after { display: none; }
   .composer-box { box-shadow: var(--glass-rim), var(--glass-halo); }
 }
+/* The docked selection menu hides the box but not the slot, which stays as tall as the box with its
+   notes: its bands would blur a bare stretch of the thread above the menu. The menu is glass itself. */
+.app:has(.selection-menu.docked) .composer-slot::before, .app:has(.selection-menu.docked) .composer-slot::after { display: none; }
 .in-titlebar .main > .topbar::before, .in-titlebar .main > .topbar::after { display: none; }
 
 @media (max-width: 899px) {
@@ -14502,3 +14527,20 @@ body:has(.settings-page, .action-sheet) .pet { display: none; }
   .pop-panel.overview-panel, .topbar-overview[aria-busy='true'] > svg, .overview-refresh[aria-busy='true'] > svg { animation: none; }
 }
 .overview-panel .overview-empty { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Keep the board's dimensions and scroll position while the selected conversation overlays it. */
+.extension-stage { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.thread-peek { position: absolute; top: 0; right: 0; bottom: 0; width: var(--thread-peek-width); z-index: var(--z-thread-peek); display: flex; flex-direction: column; background: var(--bg); border-left: 1px solid var(--border); box-shadow: var(--shadow-pop); }
+.thread-peek-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); flex: none; }
+.thread-peek-head strong { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.thread-peek-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px; overscroll-behavior: contain; }
+.thread-peek .composer { flex: none; width: auto; margin: 8px 12px 12px; }
+.thread-peek-error, .thread-peek-attention { margin: 8px 16px; }
+@media (max-width: 640px) { .thread-peek { display: none; } }
+
+.assistant-consent-preview { margin: 12px 0; color: var(--muted); }
+.assistant-consent-preview > button { display: flex; align-items: center; gap: 6px; }
+.assistant-consent-content { max-height: 32vh; overflow: auto; overflow-wrap: anywhere; font-size: 13px; }
+
+.thread-peek-status { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.thread-peek .action-sheet { max-height: calc(100% - 76px); overflow-y: auto; }

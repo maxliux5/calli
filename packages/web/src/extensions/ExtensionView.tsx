@@ -1,6 +1,9 @@
 import type { Api } from '../api';
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { WebExtensionModule } from '@calli/extension-api/web';
+import { IconChevron } from '../components/icons';
+import { Dialog } from '../components/Dialog';
+import { hasPermission } from './permissions';
+import type { WebHostNavigate, WebExtensionModule } from '@calli/extension-api/web';
 import { useIsNarrow } from '../hooks';
 import { t } from '../i18n';
 import { BUILTIN_MODULES } from './catalog';
@@ -15,6 +18,10 @@ interface Props {
   name: string;
   inputs: HostInputs;
   onOpenThread: (id: string) => void;
+  navigate: WebHostNavigate;
+  onSetThreadStage: (id: string, stage: 'backlog' | 'doing' | 'blocked' | 'review') => Promise<void>;
+  onAskAssistant: (text: string) => Promise<void>;
+  onExtensionChange: (state: import('@calli/extension-api').ExtensionState) => void;
   onSetThreadDone: (id: string, done: boolean) => Promise<void>;
 }
 
@@ -53,17 +60,45 @@ function Failed({ name, onRetry }: { name: string; onRetry: () => void }) {
 type Loaded = { id: string; module: WebExtensionModule } | { id: string; error: unknown };
 
 /** An extension's view in the main area: its code loaded on first use, handed a `WebHost`, behind a boundary. */
-export function ExtensionView({ api, extensionId, viewId, name, inputs, onOpenThread, onSetThreadDone }: Props) {
+export function ExtensionView({ api, extensionId, viewId, name, inputs, onOpenThread, onSetThreadDone, navigate, onSetThreadStage, onAskAssistant, onExtensionChange }: Props) {
   const narrow = useIsNarrow();
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
   const retry = () => { setFailed(false); setAttempt(n => n + 1); };
-  const openThread = useRef(onOpenThread);
-  openThread.current = onOpenThread;
-  const setDone = useRef(onSetThreadDone);
-  setDone.current = onSetThreadDone;
+  const callbacks = useRef({ onOpenThread, onSetThreadDone, navigate, onSetThreadStage, onAskAssistant, inputs });
+  callbacks.current = { onOpenThread, onSetThreadDone, navigate, onSetThreadStage, onAskAssistant, inputs };
+  const [consent, setConsent] = useState<{ text: string; resolve: () => void; reject: (error: Error) => void } | null>(null);
+  const pending = useRef<typeof consent>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [consentError, setConsentError] = useState('');
+  const [consentBusy, setConsentBusy] = useState(false);
+  useEffect(() => () => { pending.current?.reject(new Error('Assistant request cancelled')); pending.current = null; }, []);
+  const askAssistant = async (text: string) => {
+    const state = callbacks.current.inputs.extension;
+    if (!state?.installed || !state.enabled) throw new Error('Assistant permission required');
+    if (!hasPermission(state, 'assistant.ask')) {
+      if (pending.current) throw new Error('Assistant confirmation already open');
+      await new Promise<void>((resolve, reject) => {
+        pending.current = { text, resolve, reject };
+        setConsent(pending.current);
+        setConsentError(''); setPreviewOpen(false);
+      });
+    }
+    await callbacks.current.onAskAssistant(text);
+  };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const live = useMemo(() => createWebHost(extensionId, inputs, { api, storage: api.demo ? extensionStorage(extensionId, null) : undefined, openThread: (id) => openThread.current(id), setThreadDone: (id, done) => setDone.current(id, done), ui: hostUi, onError: () => setFailed(true) }), [api, extensionId, attempt, inputs.extension]);
+  const live = useMemo(() => createWebHost(extensionId, inputs, {
+    api, storage: api.demo ? extensionStorage(extensionId, null) : undefined,
+    openThread: id => callbacks.current.onOpenThread(id),
+    setThreadDone: (id, done) => callbacks.current.onSetThreadDone(id, done),
+    setThreadStage: (id, stage) => callbacks.current.onSetThreadStage(id, stage),
+    navigate: {
+      peekThread: id => callbacks.current.navigate.peekThread(id),
+      threadMenu: (id, at) => callbacks.current.navigate.threadMenu(id, at),
+      newThread: options => callbacks.current.navigate.newThread(options),
+    },
+    askAssistant, ui: hostUi, onError: () => setFailed(true),
+  }), [api, extensionId, attempt]);
   useEffect(() => live.update(inputs), [live, inputs]);
   const host = useMemo(() => ({ ...live.host, narrow }), [live, narrow]);
 
@@ -101,9 +136,29 @@ export function ExtensionView({ api, extensionId, viewId, name, inputs, onOpenTh
     if ('error' in loaded) console.error(`[extension ${extensionId}]`, loaded.error);
     return <Failed name={name} onRetry={retry} />;
   }
+  const Markdown = host.ui.Markdown;
   return (
     <Boundary key={`${extensionId}/${viewId}/${attempt}`} name={name}>
       <View host={host} />
+      {consent && <Dialog title={t('extensions.assistant.title')} message={t('extensions.assistant.message')}
+        confirmLabel={t('extensions.assistant.send')} confirmDisabled={consentBusy}
+        onCancel={() => { if (consentBusy) return; consent.reject(new Error(t('extensions.assistant.cancelled'))); pending.current = null; setConsent(null); }}
+        onConfirm={() => {
+          const state = callbacks.current.inputs.extension;
+          if (!state?.installed || !state.enabled) return;
+          setConsentBusy(true);
+          void api.installExtension(extensionId, state.manifest.permissions).then(updated => {
+            callbacks.current.inputs = { ...callbacks.current.inputs, extension: updated };
+            onExtensionChange(updated); pending.current = null; setConsent(null); consent.resolve();
+          }).catch(error => setConsentError(error instanceof Error ? error.message : String(error))).finally(() => setConsentBusy(false));
+        }}>
+          <div className="assistant-consent-preview">
+            <button type="button" className="ghost" aria-expanded={previewOpen} onClick={() => setPreviewOpen(open => !open)}><IconChevron size={14} open={previewOpen} />{t('extensions.assistant.preview')}</button>
+            {previewOpen && <div className="assistant-consent-content"><Markdown text={consent.text} /></div>}
+          </div>
+          {consentError && <p role="alert">{consentError}</p>}
+        </Dialog>}
+
     </Boundary>
   );
 }

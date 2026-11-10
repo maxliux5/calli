@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { Api, PlanQuota } from '../src/api.js';
-import { createQuotaReading } from '../src/quota-reading.js';
+import { createQuotaReading, quotaPushed } from '../src/quota-reading.js';
 
 const quota = (usedPercent = 42): PlanQuota => ({ windows: [{ label: '5H', usedPercent }], checkedAt: new Date().toISOString() });
 
@@ -58,4 +58,41 @@ test('account snapshots retain their own data when another machine is read', asy
   const remote = createQuotaReading(api(second), 'same-id');
   await Promise.all([local.refresh(), remote.refresh()]);
   assert.equal(local.getSnapshot().quota, first); assert.equal(remote.getSnapshot().quota, second);
+});
+
+test('a reading the hub pushes reaches the surfaces showing that account without a request', async () => {
+  let requests = 0;
+  const remembered: PlanQuota[] = [];
+  const api = {
+    cachedAgentQuota: () => null,
+    agentQuota: async () => { requests++; return quota(); },
+    rememberAgentQuota: (_agent: string, value: PlanQuota) => remembered.push(value),
+  } as unknown as Api;
+  const store = createQuotaReading(api, 'one');
+  const seen: Array<number | undefined> = [];
+  const stop = store.subscribe(() => seen.push(store.getSnapshot().quota?.windows[0].usedPercent));
+  try {
+    await store.refresh();
+    const asked = requests;
+    store.pushed(quota(63));
+    assert.equal(seen.at(-1), 63);
+    assert.equal(store.getSnapshot().error, null);
+    assert.equal(requests, asked, 'a push is not followed by a request');
+    quotaPushed(api, 'one', quota(70));
+    assert.equal(remembered.at(-1)?.windows[0].usedPercent, 70, 'kept for the next page load too');
+  } finally { stop(); }
+});
+
+test('a request answered after a push does not put an older reading back', async () => {
+  let resolve!: (value: PlanQuota) => void;
+  const api = {
+    cachedAgentQuota: () => null,
+    agentQuota: () => new Promise<PlanQuota>(done => { resolve = done; }),
+  } as unknown as Api;
+  const store = createQuotaReading(api, 'one');
+  const refresh = store.refresh();
+  store.pushed(quota(90));
+  resolve(quota(40)); await refresh;
+  assert.equal(store.getSnapshot().quota?.windows[0].usedPercent, 90);
+  assert.equal(store.getSnapshot().loading, false);
 });

@@ -64,6 +64,7 @@ after(async () => {
 test('progress lines are read leniently and only the last one counts', () => {
   assert.equal(parseProgress('done the work'), null);
   assert.deepEqual(parseProgress('改好了。\n\n[进度] 待验收：等 CI'), { stage: 'review', note: '等 CI' });
+  assert.equal(parseProgress('[进度] 以后再做'), null, 'later is the person\'s word, never the agent\'s');
   assert.deepEqual(parseProgress('**[进度] 需要你 - 缺少密钥**'), { stage: 'blocked', note: '缺少密钥' });
   assert.deepEqual(parseProgress('[进度] 需要你\n...\n[进度] 进行中: 还差测试'), { stage: 'doing', note: '还差测试' });
   assert.equal(parseProgress('[进度] 已完成：全部做完'), null, 'agents cannot declare the work done');
@@ -112,6 +113,17 @@ test('with consent agents are asked, their answers move the thread, and the pers
   const updatedAt = read().updatedAt;
   await api(`/api/threads/${thread.id}`, { method: 'PATCH', body: JSON.stringify({ done: true }) });
   assert.equal(read().updatedAt, updatedAt, 'marking does not reorder recent threads');
+
+  // The person can also place it in another column; that reopens it and says who placed it.
+  const place = (body: unknown) => api(`/api/threads/${thread.id}`, { method: 'PATCH', body: JSON.stringify(body) });
+  assert.equal((await place({ stage: 'done' })).status, 400);
+  assert.equal((await place({ stage: 'review', done: false })).status, 400);
+  assert.equal((await place({ stage: 'blocked' })).status, 200);
+  assert.deepEqual([read().doneAt, read().report?.stage, read().report?.by, read().report?.note], [null, 'blocked', 'user', '']);
+  assert.equal(read().updatedAt, updatedAt, 'placing does not reorder recent threads');
+  assert.equal((await place({ stage: 'backlog' })).status, 200);
+  assert.deepEqual([read().doneAt, read().report?.stage, read().report?.by], [null, 'backlog', 'user']);
+  await place({ done: true });
 
   // New work reopens it.
   await turn('还有一处', '[进度] 进行中：等 CI');

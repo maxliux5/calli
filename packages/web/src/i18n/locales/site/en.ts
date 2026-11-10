@@ -139,7 +139,7 @@ export const en: SiteMessages = {
   copied: "Copied",
   copyFailed: "Select the commands to copy",
   openLocal: "In a browser on this host, open",
-  connect: "Select “Connect to hub” and paste the access token printed by npm run setup.",
+  connect: "Select “Connect to hub” and paste the access token printed at the end of the install.",
   remote: "On a phone or another computer, configure the network and use the host’s reachable address.",
   remoteDocs: "Remote access guide",
   footer: "Simple agent management. More possibilities, together.",
