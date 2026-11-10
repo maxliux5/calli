@@ -55,3 +55,10 @@ test('a draft on its way out says so, and stops saying so once it is saved as a 
   assert.deepEqual(readDrafts(storage).t2.sending, { text: 'x', after: null });
   assert.equal('sending' in readDrafts(storage).t3, false);
 });
+
+test('a noted passage keeps its file and the conversation it came from', () => {
+  const s = memory();
+  const note = { quote: 'q', comment: '', file: 'a.md', source: { threadId: 'th', turnId: 'turn' } };
+  writeDraft(s, 't1', { text: '', notes: [note] }, 1);
+  assert.deepEqual(readDrafts(s).t1.notes, [note]);
+});
