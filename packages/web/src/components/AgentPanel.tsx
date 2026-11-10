@@ -1,4 +1,4 @@
-import { historyPage, mergeHistory, watchHistory } from '../history';
+import { historyPage, mergeHistory, prependHistory, watchHistory } from '../history';
 import { waitingLabel } from '../notices';
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import type { AgentInfo, Api, Coordination, Thread } from '../api';
@@ -177,7 +177,7 @@ export function AgentPanel({ api, memberApi, team, agents, leadAgent, memberMode
     try {
       const page = await historyPage(threadApi, id, historyCursor.current);
       if (latest.current.memberId !== id || olderRequest.current !== request) return;
-      setEvents(prev => mergeHistory(page.events, prev)); setOlder(page.hasOlder); historyCursor.current = page.nextCursor;
+      setEvents(prev => prependHistory(page.events, prev)); setOlder(page.hasOlder); historyCursor.current = page.nextCursor;
       requestAnimationFrame(() => { if (el) el.scrollTop += el.scrollHeight - height; });
     } catch (err) { if (olderRequest.current === request) onError(err); } finally { if (olderRequest.current === request) { olderRequest.current = null; setLoadingOlder(false); } }
   };

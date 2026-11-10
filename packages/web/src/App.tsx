@@ -6,7 +6,7 @@ import { GeneralSettingsDialog } from './components/GeneralSettingsDialog';
 import { AutoHandoverNotice, HandoverSettingsDialog } from './components/AutoHandover';
 import { useWorkSources, WorkSummary } from './extensions/work';
 import { HostIcon } from './extensions/ui';
-import { historyPage, mergeHistory, mergeHistoryPage, refreshHistoryPage, watchHistory } from './history';
+import { historyPage, mergeHistory, mergeHistoryPage, prependHistory, refreshHistoryPage, watchHistory } from './history';
 import type { WorkMode, WritingStage } from './api';
 import { forkBlocked, useThreadActions } from './components/ThreadActions';import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ComponentProps, type ReactNode } from 'react';
 import type { Theme } from './appearance';
@@ -1649,7 +1649,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       setHasOlder(page.hasOlder); historyCursor.current = page.nextCursor;
       const el = scrollerRef.current;
       const fromBottom = el ? el.scrollHeight - el.scrollTop : 0;
-      setEvents((prev) => mergeHistory(older, prev));
+      setEvents((prev) => prependHistory(older, prev));
       // New content lands above the viewport; stay on the same row while it inserts.
       requestAnimationFrame(() => {
         if (el && !stickToBottom.current && !jump) el.scrollTop = el.scrollHeight - fromBottom;

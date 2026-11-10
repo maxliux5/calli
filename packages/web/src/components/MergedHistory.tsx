@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { ApiError, type Api, type Thread } from '../api';
-import { historyPage, mergeHistory, type HistoryPage } from '../history';
+import { historyPage, prependHistory, type HistoryPage } from '../history';
 import { buildTimeline } from '../timeline';
 import { t } from '../i18n';
 import { IconChevron, IconHandover } from './icons';
@@ -68,7 +68,7 @@ export function MergedHistory({ api, thread, merged, ready, agentLabel, laterOf,
       const scroller = root.current?.closest<HTMLElement>('.scroller');
       if (scroller) restore.current = scroller.scrollHeight - scroller.scrollTop;
       setSegments(previous => same
-        ? [{ thread: source, page: { ...page, events: mergeHistory(page.events, previous[0].page.events) } }, ...previous.slice(1)]
+        ? [{ thread: source, page: { ...page, events: prependHistory(page.events, previous[0].page.events) } }, ...previous.slice(1)]
         : [{ thread: source, page }, ...previous]);
     } catch (e) {
       if (generation.current === version) setError(e instanceof ApiError && e.status === 404 ? 'missing' : 'failed');
@@ -92,7 +92,7 @@ export function MergedHistory({ api, thread, merged, ready, agentLabel, laterOf,
       const page = await api.historyPage(target.id, undefined, same ? tail!.page.nextCursor ?? undefined : undefined, true, undefined, true);
       if (generation.current !== version) return;
       setLater(previous => same
-        ? [...previous.slice(0, -1), { thread: target, page: { ...page, events: [...tail!.page.events, ...page.events.filter(event => event.seq > (tail!.page.events.at(-1)?.seq ?? 0))] } }]
+        ? [...previous.slice(0, -1), { thread: target, page: { ...page, events: prependHistory(tail!.page.events, page.events) } }]
         : [...previous, { thread: target, page }]);
     } catch { if (generation.current === version) setLaterFailed(true); }
     finally { if (generation.current === version) { pendingLater.current = false; setLoadingLater(false); } }
