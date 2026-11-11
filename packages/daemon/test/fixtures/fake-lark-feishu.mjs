@@ -7,7 +7,8 @@ const config = () => JSON.parse(readFileSync(process.env.FAKE_LARK_CONFIG, 'utf8
 // Creation names a new profile; selecting that profile before it exists would fail.
 const creating = args.join(' ') === 'config init --new --name calli';
 const command = creating ? args : args.slice(2);
-const streaming = command[0] === 'event' || command[0] === 'config';
+const loggingIn = command.join(' ') === 'auth login --domain im';
+const streaming = command[0] === 'event' || command[0] === 'config' || loggingIn;
 const input = streaming ? '' : readFileSync(0, 'utf8');
 const calls = () => readFileSync(process.env.FAKE_LARK_LOG, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
 appendFileSync(process.env.FAKE_LARK_LOG, JSON.stringify({ args, input, pid: process.pid, credentials: Object.keys(process.env).filter(key => key.startsWith('CALLI_')) }) + '\n');
@@ -23,6 +24,18 @@ if (!creating && (args[0] !== '--profile' || args[1] !== 'calli')) {
     bot: { available: c.ready !== false, verified: c.verified !== false },
     user: { available: c.userAvailable !== false, openId: c.openId ?? 'ou_owner' },
   } });
+} else if (loggingIn) {
+  process.stdout.write('Open https://example.invalid/authorize?fixture=login to confirm your identity.\n');
+  const finish = () => {
+    const latest = config();
+    if (latest.loginExit) { fail(); process.exitCode = latest.loginExit; return; }
+    const user = { userAvailable: latest.loginNoUser !== true, openId: latest.loginOpenId ?? latest.openId ?? 'ou_owner' };
+    writeFileSync(process.env.FAKE_LARK_CONFIG, JSON.stringify({ ...latest, ...user }));
+    output(user);
+  };
+  if (c.loginWait) {
+    const timer = setInterval(() => { if (config().loginFinish) { clearInterval(timer); finish(); } }, 20);
+  } else setTimeout(finish, c.loginDelayMs ?? 250);
 } else if (command.join(' ') === 'config init --new --name calli') {
   process.stdout.write('Open https://example.invalid/authorize?fixture=calli to create the bot.\n');
   const finish = () => {

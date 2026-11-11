@@ -42,3 +42,17 @@ export function feishuReason(value: string | null): string | null {
 export function feishuResult(result: 'received' | 'sent' | 'failed' | 'dropped'): string {
   return t(`feishu.result.${result}`);
 }
+
+export type FeishuSetupKind = 'create' | 'login';
+
+/** The words a pairing panel uses, by what it is pairing: a new bot, or the owner's identity. */
+export function feishuSetupCopy(kind: FeishuSetupKind | null | undefined): { hint: string; waiting: string; failed: string } {
+  return kind === 'login'
+    ? { hint: t('feishu.loginHint'), waiting: t('feishu.loginWaitingHint'), failed: t('feishu.loginFailed') }
+    : { hint: t('feishu.setupHint'), waiting: t('feishu.waitingHint'), failed: t('feishu.setupFailed') };
+}
+
+/** Whether a sign-in panel belongs on the configured page: only while the login is out or failed. */
+export function feishuLoginPending(status: FeishuStatus | null): boolean {
+  return !!status && status.setup.kind === 'login' && (status.setup.state === 'waiting' || status.setup.state === 'failed');
+}

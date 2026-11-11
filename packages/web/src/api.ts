@@ -568,7 +568,7 @@ export interface PushStatus { cli: boolean; botReady: boolean; recipient: string
 export interface FeishuSettings { enabled: boolean; agent: string; cwd: string; owner: string; echoWeb: boolean }
 export type FeishuRealtime = 'off' | 'connecting' | 'live' | 'console-off' | 'busy-elsewhere' | 'unavailable' | 'error';
 export interface FeishuRecord { key: string; at: string; direction: 'in' | 'out'; threadId: string | null; title: string; result: 'received' | 'sent' | 'failed' | 'dropped'; reason: string | null }
-export interface FeishuSetup { state: 'idle' | 'waiting' | 'done' | 'failed'; url: string | null; reason: string | null }
+export interface FeishuSetup { state: 'idle' | 'waiting' | 'done' | 'failed'; /** What the pairing is for: creating the bot, or confirming the owner's identity. */ kind: 'create' | 'login' | null; url: string | null; reason: string | null }
 export interface FeishuStatus {
   /** Whether lark-cli is on the machine at all. */
   cli: boolean;
@@ -1280,6 +1280,8 @@ export class Api {
   feishuStatus(full = false): Promise<FeishuStatus> { return this.request('GET', `/api/feishu/status${full ? '' : '?summary=true'}`); }
   /** Starts creating the dedicated bot; the status that returns carries the authorization URL to open in Feishu. */
   startFeishuSetup(): Promise<FeishuStatus> { return this.request('POST', '/api/feishu/setup', {}); }
+  /** Starts the owner's device-flow sign-in; the scan lands, the daemon fills the owner with that open_id. */
+  startFeishuLogin(): Promise<FeishuStatus> { return this.request('POST', '/api/feishu/login', {}); }
   cancelFeishuSetup(): Promise<FeishuStatus> { return this.request('DELETE', '/api/feishu/setup'); }
   /** Sends the owner one test message; the record that returns says how it went. */
   testFeishu(): Promise<FeishuRecord> { return this.request('POST', '/api/feishu/test', {}); }

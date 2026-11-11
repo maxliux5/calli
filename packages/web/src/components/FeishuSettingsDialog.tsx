@@ -3,7 +3,7 @@ import type { AgentInfo, Api, FeishuRecord, FeishuSettings, FeishuStatus } from 
 import { t } from '../i18n';
 import { copyText } from '../clipboard';
 import { useIsCompact } from '../hooks';
-import { feishuLine, feishuReason, feishuResult } from '../feishu';
+import { feishuLine, feishuLoginPending, feishuReason, feishuResult, feishuSetupCopy, type FeishuSetupKind } from '../feishu';
 import { SettingsSection, usePageDraft } from './PageNavigation';
 import { DirectoryPicker } from './DirectoryPicker';
 import { AgentPicker } from './Pickers';
@@ -17,17 +17,19 @@ function recordSummary(record: FeishuRecord): string {
   return `${t(`feishu.dir.${record.direction}`)} · ${feishuResult(record.result)}`;
 }
 
-/** The pane that pairs the machine with a bot: a link out to Feishu, then a watch until it lands. */
-function SetupPane({ api, status, onStatus }: { api: Api; status: FeishuStatus | null; onStatus: (next: FeishuStatus) => void }) {
+/** The pane that pairs the machine with Feishu — a new bot, or the owner's own identity — via a
+ * link out to the app, then a watch until the scan lands. */
+function SetupPane({ api, status, kind, onStatus }: { api: Api; status: FeishuStatus | null; kind: FeishuSetupKind; onStatus: (next: FeishuStatus) => void }) {
   const compact = useIsCompact();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const copy = feishuSetupCopy(kind);
   const setup = status?.setup;
   const waiting = setup?.state === 'waiting';
   const start = () => {
     if (busy) return;
     setBusy(true); setError('');
-    void api.startFeishuSetup().then(onStatus).catch(e => setError(e instanceof Error ? e.message : String(e))).finally(() => setBusy(false));
+    void (kind === 'login' ? api.startFeishuLogin() : api.startFeishuSetup()).then(onStatus).catch(e => setError(e instanceof Error ? e.message : String(e))).finally(() => setBusy(false));
   };
   const cancel = () => {
     if (busy) return;
@@ -36,21 +38,24 @@ function SetupPane({ api, status, onStatus }: { api: Api; status: FeishuStatus |
   };
   const failed = setup?.state === 'failed';
   const url = setup?.url ?? null;
+  // The sign-in pane only appears while it is out or failed, so its button is always the retry;
+  // the create pane offers the first start too.
+  const showStart = kind === 'create' || failed;
   return <div className="feishu-setup">
-    <p className="settings-hint">{t('feishu.setupHint')}</p>
+    <p className="settings-hint">{copy.hint}</p>
     {status && !status.cli && <p className="personal-warning" role="alert">{t('feishu.cliMissing')}</p>}
-    {failed && <p className="personal-warning" role="alert">{t('feishu.setupFailed')}{setup?.reason && ` · ${feishuReason(setup.reason) ?? setup.reason}`}</p>}
+    {failed && <p className="personal-warning" role="alert">{copy.failed}{setup?.reason && ` · ${feishuReason(setup.reason) ?? setup.reason}`}</p>}
     {waiting && url && <div className="feishu-setup-waiting">
-      <p className="settings-hint">{t('feishu.waitingHint')}</p>
+      <p className="settings-hint">{copy.waiting}</p>
       {compact
         ? <a className="primary feishu-open" href={url} target="_blank" rel="noreferrer">{t('feishu.openInFeishu')}</a>
         : <a className="feishu-link" href={url} target="_blank" rel="noreferrer">{url}</a>}
       <div className="feishu-setup-actions">
         {!compact && <CopyLink url={url} />}
-        <button className="ghost" disabled={busy} onClick={cancel}>{t('feishu.cancelSetup')}</button>
+        <button className="ghost" disabled={busy} onClick={cancel}>{t(kind === 'login' ? 'feishu.cancelLogin' : 'feishu.cancelSetup')}</button>
       </div>
     </div>}
-    {!waiting && <button className="primary" disabled={busy} onClick={start}>{t(busy ? 'feishu.creating' : failed ? 'common.retry' : 'feishu.create')}</button>}
+    {showStart && !waiting && <button className="primary" disabled={busy} onClick={start}>{t(kind === 'login' ? 'common.retry' : busy ? 'feishu.creating' : failed ? 'common.retry' : 'feishu.create')}</button>}
     {error && <p className="panel-error" role="alert">{error}</p>}
   </div>;
 }
@@ -96,6 +101,31 @@ export function FeishuSettingsDialog({ api, agents, onClose }: { api: Api; agent
   // The directory picker reads the same roots the personal settings do; it only ever picks, never edits them.
   useEffect(() => { void api.workdirs().then(v => setRoots(v.workdirs)).catch(() => setRoots([])); }, [api]);
 
+  // Until someone is bound, the first message to the bot is what offers the binding; keep looking for it.
+  const waitingForOwner = Boolean(value && !value.owner && status?.configured);
+  useEffect(() => {
+    if (!waitingForOwner) return;
+    const timer = window.setInterval(() => {
+      void api.feishuStatus(true).then(next => setStatus(current => current && current.pendingOwner === next.pendingOwner ? current : { ...(current ?? next), pendingOwner: next.pendingOwner })).catch(() => undefined);
+    }, SETUP_POLL_MS * 2);
+    return () => window.clearInterval(timer);
+  }, [api, waitingForOwner]);
+
+  // A pairing that just landed: a bot creation may fill any setting, so the draft only gives way
+  // when it holds no unsaved edits; a sign-in wrote exactly one thing — take just the owner.
+  const adoptOwner = useCallback((next: FeishuSettings) => {
+    setValue(current => ({ ...(current ?? next), owner: next.owner }));
+    setSaved(prev => JSON.stringify({ ...(prev ? JSON.parse(prev) : next), owner: next.owner }));
+  }, []);
+  const adoptDone = useCallback((next: FeishuStatus) => {
+    if (next.setup.kind === 'login') void api.feishuSettings().then(adoptOwner).catch(() => undefined);
+    else void loadSettings().then(nextValue => setValue(current => JSON.stringify(current) === saved ? nextValue : current));
+  }, [api, adoptOwner, loadSettings, saved]);
+  const onStatus = useCallback((next: FeishuStatus) => {
+    setStatus(next);
+    if (next.setup.state === 'done') adoptDone(next);
+  }, [adoptDone]);
+
   // While an authorization link is out, watch for the scan landing — here or in a page opened before.
   // The last good status stays on screen across a failed poll, so a hiccup never reads as "gone".
   useEffect(() => {
@@ -103,17 +133,11 @@ export function FeishuSettingsDialog({ api, agents, onClose }: { api: Api; agent
     const timer = window.setInterval(() => {
       void api.feishuStatus().then(next => {
         setStatus(current => !current || current.setup.state === 'waiting' || next.setup.state !== 'waiting' ? next : current);
-        // A bot that just landed brings its own settings (the owner among them); keep any unsaved edits.
-        if (next.setup.state === 'done') void loadSettings().then(nextValue => setValue(current => JSON.stringify(current) === saved ? nextValue : current));
+        if (next.setup.state === 'done') adoptDone(next);
       }).catch(() => undefined);
     }, SETUP_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [api, status?.setup.state, loadSettings, saved]);
-
-  const onStatus = useCallback((next: FeishuStatus) => {
-    setStatus(next);
-    if (next.setup.state === 'done') void loadSettings().then(nextValue => setValue(current => JSON.stringify(current) === saved ? nextValue : current));
-  }, [loadSettings, saved]);
+  }, [api, status?.setup.state, adoptDone]);
 
   const loadRecords = () => {
     setRecords(null); setRecordError('');
@@ -121,6 +145,13 @@ export function FeishuSettingsDialog({ api, agents, onClose }: { api: Api; agent
   };
   const last = status?.records[0];
   const line = feishuLine(status);
+  const loginOut = feishuLoginPending(status);
+  const [loginStarting, setLoginStarting] = useState(false);
+  const startLogin = useCallback(() => {
+    if (loginStarting) return;
+    setLoginStarting(true); setError('');
+    void api.startFeishuLogin().then(onStatus).catch(e => setError(e instanceof Error ? e.message : String(e))).finally(() => setLoginStarting(false));
+  }, [api, loginStarting, onStatus]);
   const save = async (patch?: Partial<FeishuSettings>) => {
     if (!value || busy) return;
     setBusy(true); setError(''); setSavedNotice(false);
@@ -139,19 +170,28 @@ export function FeishuSettingsDialog({ api, agents, onClose }: { api: Api; agent
       <button className="primary" disabled={!value || busy} onClick={() => void save()}>{t(busy ? 'general.saving' : 'personal.save')}</button>
     </> : undefined}>
     {!value && !error && <p>{t('common.loading')}</p>}
-    {value && !configured && <SetupPane api={api} status={status} onStatus={onStatus} />}
+    {value && !configured && <SetupPane api={api} status={status} kind="create" onStatus={onStatus} />}
     {value && configured && <>
       <div className="personal-setting-line">
         <span>{t('feishu.enabled')}<small className={line?.warn ? 'personal-warning' : ''}>{status ? line?.text ?? '' : t('common.loading')}</small></span>
         <button className="personal-switch" role="switch" aria-label={t('feishu.enabled')} aria-checked={value.enabled} disabled={busy} onClick={() => setValue({ ...value, enabled: !value.enabled })}><span /></button>
       </div>
-      <div className="personal-setting-line">
-        <span>{t('feishu.owner')}{!value.owner && status?.pendingOwner && <small>{t('feishu.pendingOwnerHint')}</small>}</span>
+      <div className="personal-setting-line feishu-owner-line">
+        <span>{t('feishu.owner')}</span>
         <div className="feishu-owner">
-          <input value={value.owner} placeholder={t('feishu.ownerPlaceholder')} aria-label={t('feishu.owner')} spellCheck={false} disabled={busy} onChange={e => setValue({ ...value, owner: e.target.value })} />
-          {!value.owner && status?.pendingOwner && <button className="ghost" disabled={busy} onClick={() => void save({ owner: status.pendingOwner! })}>{t('feishu.bindOwner')}</button>}
+          <div className="feishu-owner-main">
+            {value.owner
+              ? <button className="text-btn" disabled={busy || loginStarting || loginOut} onClick={startLogin}>{t('feishu.rescan')}</button>
+              : <button className="primary" disabled={busy || loginStarting || loginOut || !status} onClick={startLogin}>{t('feishu.scanIdentity')}</button>}
+            <input value={value.owner} placeholder={t('feishu.ownerPlaceholder')} aria-label={t('feishu.owner')} spellCheck={false} disabled={busy} onChange={e => setValue({ ...value, owner: e.target.value })} />
+          </div>
+          {!value.owner && status && <div className="feishu-owner-alt">
+            <small>{t(status.pendingOwner ? 'feishu.pendingOwnerHint' : 'feishu.ownerEmptyHint')}</small>
+            {status.pendingOwner && <button className="ghost" disabled={busy} onClick={() => void save({ owner: status.pendingOwner! })}>{t('feishu.bindOwner')}</button>}
+          </div>}
         </div>
       </div>
+      {loginOut && <SetupPane api={api} status={status} kind="login" onStatus={onStatus} />}
       <div className="personal-setting-line"><span>{t('personal.agent')}</span>
         <AgentPicker api={api} agents={agents} value={value.agent} onChange={agent => setValue({ ...value, agent })} />
       </div>

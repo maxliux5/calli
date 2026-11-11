@@ -419,6 +419,7 @@ export function createHttpServer(deps: HttpDeps): Server {
       if (path === '/api/feishu/settings' && method === 'PUT') return sendJson(res, 200, deps.feishu.putSettings(await readJson(req)));
       if (path === '/api/feishu/status' && method === 'GET') return sendJson(res, 200, await deps.feishu.status(url.searchParams.get('summary') === 'true'));
       if (path === '/api/feishu/setup' && method === 'POST') return sendJson(res, 200, await deps.feishu.startSetup());
+      if (path === '/api/feishu/login' && method === 'POST') return sendJson(res, 200, await deps.feishu.startLogin());
       if (path === '/api/feishu/setup' && method === 'DELETE') return sendJson(res, 200, await deps.feishu.cancelSetup());
       if (path === '/api/feishu/test' && method === 'POST') return sendJson(res, 202, await deps.feishu.test());
     }

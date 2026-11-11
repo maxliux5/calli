@@ -28,10 +28,13 @@ const RECORDS = [
   { key: 'r2', at: at(62), direction: 'in', threadId: null, title: '在吗', result: 'dropped', reason: 'not_owner' },
   { key: 'r1', at: at(65), direction: 'out', threadId: null, title: '测试', result: 'failed', reason: 'cli_failed' },
 ];
-const STATUS = { cli: true, configured: true, botReady: true, realtime: 'live', reason: null, pendingOwner: null, setup: { state: 'idle', url: null, reason: null }, records: [RECORDS[0]], dropped: 2 };
-const WAITING = { ...STATUS, configured: false, botReady: false, realtime: 'off', setup: { state: 'waiting', url: 'https://open.feishu.cn/base/auth?code=demo-8c31f2', reason: null } };
-const FAILED = { ...STATUS, configured: false, botReady: false, realtime: 'off', setup: { state: 'failed', url: null, reason: 'timeout' } };
-const UNCONFIGURED = { ...STATUS, configured: false, botReady: false, realtime: 'off', setup: { state: 'idle', url: null, reason: null } };
+const STATUS = { cli: true, configured: true, botReady: true, realtime: 'live', reason: null, pendingOwner: null, setup: { state: 'idle', kind: null, url: null, reason: null }, records: [RECORDS[0]], dropped: 2 };
+const WAITING = { ...STATUS, configured: false, botReady: false, realtime: 'off', setup: { state: 'waiting', kind: 'create', url: 'https://open.feishu.cn/base/auth?code=demo-8c31f2', reason: null } };
+const FAILED = { ...STATUS, configured: false, botReady: false, realtime: 'off', setup: { state: 'failed', kind: 'create', url: null, reason: 'timeout' } };
+const UNCONFIGURED = { ...STATUS, configured: false, botReady: false, realtime: 'off', setup: { state: 'idle', kind: null, url: null, reason: null } };
+const LOGIN_WAITING = { ...STATUS, setup: { state: 'waiting', kind: 'login', url: 'https://open.feishu.cn/base/auth?code=demo-login-4a17', reason: null } };
+const LOGIN_FAILED = { ...STATUS, setup: { state: 'failed', kind: 'login', url: null, reason: 'timeout' } };
+const LOGIN_DONE = { ...STATUS, setup: { state: 'done', kind: 'login', url: null, reason: null } };
 
 /**
  * Stands in for the daemon's /api/feishu routes on one page. `state.status` is read per request,
@@ -52,6 +55,7 @@ async function mockFeishu(page, state, counts = {}) {
       return route.fulfill({ json: body });
     }
     if (path.endsWith('/setup') && method === 'POST') return route.fulfill({ json: WAITING });
+    if (path.endsWith('/login') && method === 'POST') return route.fulfill({ json: typeof state.status === 'function' ? state.status() : state.status });
     if (path.endsWith('/setup') && method === 'DELETE') return route.fulfill({ json: UNCONFIGURED });
     if (path.endsWith('/test')) return route.fulfill({ status: 202, json: { key: 't0', at: new Date().toISOString(), direction: 'out', threadId: null, title: '测试', result: 'sent', reason: null } });
     return route.continue();
@@ -198,6 +202,51 @@ try {
     await page.waitForTimeout(200);
     await page.screenshot({ path: join(out, 'saved-connecting-desktop-light.png') });
     console.log('saved, PUT settings:', counts['PUT settings'] ?? 0, 'status after:', counts['GET status?summary'] ?? 0);
+    await page.close();
+  }
+
+  // Sign-in to confirm identity: the owner is empty, so the scan button leads and the hints sit
+  // below the input; the waiting panel speaks of signing in, never of creating; when the scan
+  // lands, the owner fills in and an unsaved echo edit survives. Desktop and phone, light and dark.
+  for (const [shape, viewport] of [['desktop', { width: 1440, height: 900 }], ['phone', { width: 390, height: 844 }]]) {
+    for (const scheme of ['light', 'dark']) {
+      const state = { settings: { ...SETTINGS, owner: '' }, status: { ...STATUS, setup: { state: 'idle', kind: null, url: null, reason: null } } };
+      const counts = {};
+      const page = await open(`login-${shape}-${scheme}`, viewport, scheme, state, counts);
+      await page.locator('.feishu-owner-main .primary').waitFor({ timeout: 15_000 });
+      await page.waitForTimeout(200);
+      if (scheme === 'light') {
+        await page.screenshot({ path: join(out, `owner-empty-${shape}-light.png`) });
+        // An unsaved edit made before the scan must survive the owner filling in.
+        await page.locator('.feishu-settings .personal-switch').nth(1).click();
+      }
+      state.status = LOGIN_WAITING; // the daemon is asked before the click so the POST itself reads waiting
+      await page.getByRole('button', { name: '扫码确认我的身份' }).click();
+      await page.locator('.feishu-setup-waiting').waitFor({ timeout: 15_000 });
+      await new Promise((r) => setTimeout(r, 3600));
+      await page.screenshot({ path: join(out, `login-waiting-${shape}-${scheme}.png`) });
+      // The scan lands: the daemon wrote the owner; the page picks it up at its next poll.
+      state.settings = { ...SETTINGS, owner: 'ou_scanned5d' };
+      state.status = LOGIN_DONE;
+      await page.waitForFunction(() => document.querySelector('.feishu-owner-main input')?.value === 'ou_scanned5d', null, { timeout: 15_000 });
+      await page.waitForTimeout(300);
+      if (scheme === 'light') {
+        const echo = await page.locator('.feishu-settings .personal-switch').nth(1).getAttribute('aria-checked');
+        console.log(`login landed ${shape}: owner filled, unsaved echo edit kept:`, echo === 'true' ? 'yes' : 'NO');
+        await page.screenshot({ path: join(out, `login-done-${shape}-light.png`) });
+      }
+      await page.close();
+      console.log(`login flow ${shape}-${scheme}, POST login:`, counts['POST login'] ?? 0);
+    }
+  }
+
+  // A failed sign-in reads its reason and retries through the same pane.
+  {
+    const state = { settings: { ...SETTINGS, owner: '' }, status: LOGIN_FAILED };
+    const page = await open('login-failed', { width: 1440, height: 900 }, 'light', state);
+    await page.locator('.feishu-setup .personal-warning').waitFor({ timeout: 15_000 });
+    await page.screenshot({ path: join(out, 'login-failed-desktop-light.png') });
+    console.log('login failed shot');
     await page.close();
   }
 
