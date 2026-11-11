@@ -6426,12 +6426,13 @@ div.file-card:hover { background: var(--surface); }
 
 @media (hover: none) {
   .message-actions .quiet-btn {
-    width: 36px;
+    width: 28px;
     height: 36px;
   }
 
   .row.message-actions {
-    margin-left: -10px;
+    gap: 0;
+    margin-left: -6px;
   }
 }
 
