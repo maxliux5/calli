@@ -126,6 +126,10 @@ Plan 交互参考了 [Cline 的 Plan / Act](https://docs.cline.bot/core-workflow
 
 - **概览（见 `activity-design.md`）：** 每天的提问与工具调用从 hub 自己的日志出（`turn_text` 与 `events` 的 `tool.start`，事件里补存原始工具名，旧记录不回填）；整段系统提示词只读 agent 落盘的会话文件（Claude 的 `prompt_snapshot`、Codex 的 `base_instructions`、pi 的 system 消息），能力 `capabilities.systemPrompt` 控制，agy/zcode 未开。接口 `GET /api/activity` 与 `GET /api/threads/:id/system-prompt`；页面 `#/activity`。已实现。
 
+## Git 管理
+
+线程菜单打开当前机器、当前工作区的 Git 侧栏，手机是独立阅读页。`git.ts` 处理通用 Git 能力，不通过 agent 执行。状态先返回名称与计数，历史、提交文件和单文件差异分接口按需读取；刷新保留上次有效数据。fetch 只获取远端，pull 只快进，并在服务端重新检查未提交文件、当前 Git 操作、上游和同工作区的运行中线程。按 Git common directory 排斥并发操作；拉取期间阻止同工作区新回合开始。实现与验证见 [Git 管理首版](git-management-design.md)。
+
 ## 网络与安全
 
 - TCP HTTP API 验证 token（健康检查除外）；私有 Unix socket 免 token，目录与 socket 权限均为 `0700`。默认位于 `~/.local/state/calli/daemon.sock`，`CALLI_SOCKET=off` 可关闭。

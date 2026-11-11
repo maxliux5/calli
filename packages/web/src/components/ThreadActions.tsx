@@ -32,6 +32,7 @@ interface Deps {
   onOpenTerminal: () => void;
   /** Opens the open thread's files, from its own page menu. */
   onOpenFiles: (thread: Thread) => void;
+  onOpenGit?: () => void;
   /** Opens the thread's trace, where the top bar no longer keeps a button of its own (a phone
    *  reaches it from the overview instead). */
   onOpenTrace?: () => void;
@@ -90,7 +91,7 @@ export function forkBlocked(thread: Thread, turnId?: string): string | null {
  * open thread's own menu serves the conversation being read.
  */
 export function useThreadActions(deps: Deps) {
-  const { api, agents, sections, todos, chain, onTodosChange, onThreadChange, onThreadRemove, onThreadOpen, onMarkedUnread, onSectionsChange, onOpenTerminal, onOpenFiles, onOpenTrace, onError, onBusy, onArchived, markdownOf, autotitle, board } = deps;
+  const { api, agents, sections, todos, chain, onTodosChange, onThreadChange, onThreadRemove, onThreadOpen, onMarkedUnread, onSectionsChange, onOpenTerminal, onOpenFiles, onOpenGit, onOpenTrace, onError, onBusy, onArchived, markdownOf, autotitle, board } = deps;
   /** The chain record when this thread belongs to any handover chain, automatic or manual. */
   const chainOf = (thread: Thread) => chain && (thread.handover
     || chain.threads.some(x => x.handover?.sourceId === thread.id)) ? chain : undefined;
@@ -272,6 +273,7 @@ export function useThreadActions(deps: Deps) {
    *  to the thread itself while reading it, kept at the first level rather than behind a submenu. */
   const pageItems = (thread: Thread): MenuEntry[] => [
     { id: 'files', label: t('files.files'), icon: IconFiles, onSelect: () => onOpenFiles(thread) },
+    ...(onOpenGit && !api?.demo ? [{ id: 'git', label: t('git.label'), icon: IconWorktree, onSelect: onOpenGit }] : []),
     { id: 'terminal', label: t('actions.terminal'), icon: IconTerminal, onSelect: onOpenTerminal },
     { id: 'pin', label: thread.pinned ? t('actions.unpin') : t('actions.pin'), icon: IconPin, onSelect: () => run('pin', thread) },
     {

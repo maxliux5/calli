@@ -1365,6 +1365,16 @@ export function createHttpServer(deps: HttpDeps): Server {
         return sendJson(res, 200, { url: `/api/threads/${threadId}/download?${query}`, name: file.name, size: file.size, mimeType: file.mimeType });
       }
 
+      // Git is scoped to the authenticated thread's current checkout. Heavy details are separate reads.
+      if (sub === 'git' && !parts[5]) {
+        const action = parts[4];
+        if (method === 'GET' && action === 'status') return sendJson(res, 200, await manager.git.status(threadId));
+        if (method === 'GET' && action === 'log') return sendJson(res, 200, await manager.git.log(threadId, url.searchParams.get('head'), Number(url.searchParams.get('skip') ?? 0)));
+        if (method === 'GET' && action === 'commit') return sendJson(res, 200, await manager.git.commitFiles(threadId, url.searchParams.get('commit') ?? ''));
+        if (method === 'GET' && action === 'diff') return sendJson(res, 200, await manager.git.diff(threadId, url.searchParams.get('path'), url.searchParams.get('staged') === '1', url.searchParams.get('commit')));
+        if (method === 'POST' && (action === 'fetch' || action === 'pull')) return sendJson(res, 200, await manager.git.operate(threadId, action));
+      }
+
       // GET /api/threads/:id/roots: the folders the file browser can stand on, for the root switcher
       if (method === 'GET' && sub === 'roots') {
         return sendJson(res, 200, manager.threadRoots(threadId));

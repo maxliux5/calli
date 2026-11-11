@@ -1,3 +1,5 @@
+import type { GitStatus, GitLog, GitCommitFiles, GitDiff, GitOperation } from '../../daemon/src/git';
+export type { GitStatus, GitLog, GitCommitFiles, GitDiff, GitOperation, GitFile, GitCommit } from '../../daemon/src/git';
 import type { ExtensionState, Permission, ExtensionPackagePreview, ExtensionConfiguration, ExtensionDetection, WorkProjection, ProgressReport } from '@calli/extension-api';
 export type WorkMode = 'execute' | 'plan';
 export type AutoArchiveDays = 1 | 3 | 7 | 15 | 30 | null;
@@ -1558,6 +1560,28 @@ export class Api {
     if (res.status === 401) throw new AuthError('unauthorized');
     if (!res.ok) throw new ApiError(`HTTP ${res.status}`, {}, res.status);
     return res.blob();
+  }
+
+  gitStatus(threadId: string, signal?: AbortSignal): Promise<GitStatus> {
+    return this.request('GET', `/api/threads/${threadId}/git/status`, undefined, { signal });
+  }
+
+  gitLog(threadId: string, head?: string | null, skip = 0, signal?: AbortSignal): Promise<GitLog> {
+    const query = new URLSearchParams({ skip: String(skip), ...(head ? { head } : {}) });
+    return this.request('GET', `/api/threads/${threadId}/git/log?${query}`, undefined, { signal });
+  }
+
+  gitCommit(threadId: string, commit: string, signal?: AbortSignal): Promise<GitCommitFiles> {
+    return this.request('GET', `/api/threads/${threadId}/git/commit?${new URLSearchParams({ commit })}`, undefined, { signal });
+  }
+
+  gitDiff(threadId: string, path: string, staged: boolean, commit?: string, signal?: AbortSignal): Promise<GitDiff> {
+    const query = new URLSearchParams({ path, staged: staged ? '1' : '0', ...(commit ? { commit } : {}) });
+    return this.request('GET', `/api/threads/${threadId}/git/diff?${query}`, undefined, { signal });
+  }
+
+  gitOperate(threadId: string, operation: 'fetch' | 'pull'): Promise<GitOperation> {
+    return this.request('POST', `/api/threads/${threadId}/git/${operation}`, {});
   }
 
   /** One folder of the thread's directory, for the file browser. No path: the directory itself. */
