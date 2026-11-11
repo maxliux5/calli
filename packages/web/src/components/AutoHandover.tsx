@@ -36,13 +36,18 @@ export function AutoHandoverNotice({ api, thread, agents }: { api: Api; thread: 
   const target = state.target;
   const label = target ? [agents.find(a => a.id === target.agent)?.label ?? target.agent, target.model].filter(Boolean).join(' · ') : '';
   const danger = state.state === 'failed' || state.state === 'stopped';
+  const busy = state.state === 'preparing' || state.state === 'countdown';
+  // A circle for work under way; once the move has begun it can no longer be called off.
+  const calloff = busy && (state.state === 'countdown' || !state.step || state.step === 'summary');
+  const text = state.state === 'countdown' ? t('auto.countdown', label, Math.max(0, Math.ceil((Date.parse(state.deadline!) - now) / 1000)))
+    : state.state === 'preparing' ? t(state.step ? `auto.step.${state.step}` : 'auto.preparing') : state.state === 'stopped' ? t('auto.stopped') : t('auto.failed');
   return <div className={`auto-notice${danger ? ' is-danger' : ''}`} role={danger ? 'alert' : 'status'}>
     <span className="rule" />
-    <IconFork size={14} />
-    <span>{state.state === 'countdown' ? t('auto.countdown', label, Math.max(0, Math.ceil((Date.parse(state.deadline!) - now) / 1000)))
-      : state.state === 'preparing' ? t('auto.preparing') : state.state === 'stopped' ? t('auto.stopped') : t('auto.failed')}
+    {busy ? <span className="spinner" aria-hidden="true" /> : <IconFork size={14} />}
+    <span>{text}
+      {state.state === 'preparing' && label && <small>{label}</small>}
       {state.error && <small>{state.error}</small>}{error && <small role="alert">{error}</small>}</span>
-    {(state.state === 'preparing' || state.state === 'countdown') && <button onClick={() => { void api.cancelAutoHandover(thread.id).catch(e => setError(String(e))); }}>{t('auto.cancel')}</button>}
+    {calloff && <button onClick={() => { void api.cancelAutoHandover(thread.id).catch(e => setError(String(e))); }}>{t('auto.cancel')}</button>}
     <span className="rule" />
   </div>;
 }

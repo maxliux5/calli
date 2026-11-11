@@ -2,6 +2,7 @@ import { SettingsPage, type SettingsGroup } from './components/SettingsPage';
 import { AssistantSettingsPage, assistantTitle } from './components/AssistantSettingsPage';
 import { PageNavigation, SettingsSection, usePageNavigation } from './components/PageNavigation';
 import { PushSettingsDialog } from './components/PushSettingsDialog';
+import { FeishuSettingsDialog } from './components/FeishuSettingsDialog';
 import { GeneralSettingsDialog } from './components/GeneralSettingsDialog';
 import { AutoHandoverNotice, HandoverSettingsDialog } from './components/AutoHandover';
 import { useWorkSources, WorkSummary } from './extensions/work';
@@ -118,7 +119,7 @@ import { ConnectDialog, DemoBar } from './components/ConnectDialog';
 import { DemoApi, DemoError } from './demo/DemoApi';
 import { type DraftModelPreference, switchDraftModelPreference } from './draft-preferences';
 import { QUICK_SWITCH_HIDDEN_KEY, clampQuickSwitchBottom, savedQuickSwitchBottom, saveQuickSwitchBottom } from './quick-switch';
-import { IconCheck, IconBell, AgentMark, IconActivity, IconAgents, IconArchive, IconArrowLeft, IconArrowDown, IconBack, IconClose, IconEdit, IconFolder, IconGauge, IconGlobe, IconImport, IconList, IconMenu, IconSettings, IconMore, IconOverview, IconPalette, IconPlus, IconPuzzle, IconServer, IconSidebar, IconSignIn, IconSignOut, IconSparkle, IconTerminal, IconTrace, IconLanguage, IconWaveform } from './components/icons';
+import { IconCheck, IconBell, AgentMark, IconActivity, IconAgents, IconArchive, IconArrowLeft, IconArrowDown, IconBack, IconClose, IconEdit, IconFolder, IconGauge, IconGlobe, IconImport, IconList, IconMenu, IconSettings, IconMore, IconOverview, IconPalette, IconPlus, IconPuzzle, IconServer, IconSidebar, IconSignIn, IconSignOut, IconSparkle, IconTerminal, IconTrace, IconLanguage, IconWaveform, IconSideChat } from './components/icons';
 import { StatReadings } from './components/SessionStats';
 import { ThreadTracePanel } from './components/TracePanel';
 import { chooseLocale, locale, LOCALES, localeChoice, t } from './i18n';
@@ -669,14 +670,14 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   /** While set, the roots dialog stands in for the picker: its rows, with each root's own remove flag. */
   const [remotePick, setRemotePick] = useState<{ host: string; api: Api; machine: string; roots: string[]; selected: string; manage: Array<{ path: string; removable: boolean }> | null; choose: (cwd: string) => void } | null>(null);
   // Instances on the other machines, for a collaboration led from this hub: each with that machine's folders.
-  const [remoteAgents, setRemoteAgents] = useState<Array<AgentInfo & { host: string; directories: string[] }>>([]);
+  const [remoteAgents, setRemoteAgents] = useState<Array<AgentInfo & { host: string; directories: string[]; name: string; machine: string }>>([]);
   useEffect(() => {
     if (hostId || !token || api.demo) { setRemoteAgents([]); return; }
     let alive = true;
     void Promise.all(hostsRef.current.filter((h) => h.status === 'online').map(async (h) => {
       const remote = new Api(token, '', h.id);
       const [list, config] = await Promise.all([remote.agents(), remote.workdirs()]).catch((): [AgentInfo[], { workdirs: string[] }] => [[], { workdirs: [] }]);
-      return list.filter((a) => a.available).map((a) => ({ ...a, id: `${a.id}@${h.id}`, label: `${a.label} · ${h.label}`, host: h.id, directories: config.workdirs }));
+      return list.filter((a) => a.available).map((a) => ({ ...a, id: `${a.id}@${h.id}`, name: a.label, machine: h.label, label: `${a.label} · ${h.label}`, host: h.id, directories: config.workdirs }));
     })).then((lists) => { if (alive) setRemoteAgents(lists.flat()); });
     return () => { alive = false; };
   }, [token, hostId, hostsKey, api]);
@@ -1628,7 +1629,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   useEffect(() => {
     const el = scrollerRef.current;
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
-  }, [events]);
+  }, [events, selected?.autoHandover?.state, selected?.autoHandover?.step]);
 
   // Screenshots and slow-rendering blocks grow the thread after the scroll above, which used to
   // leave a reopened thread parked at the top. Watching the thread's height keeps it pinned. The
@@ -1798,7 +1799,9 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     if (!api || modelsAsked.current.has(agent) || (!refresh && modelsByAgent[agent])) return;
     modelsAsked.current.add(agent);
     const version = modelVersions.current[agent] ?? 0;
-    api.models(agent, refresh).then((list) => {
+    // An instance of another machine is asked there, under the id it has on that machine.
+    const remote = remoteAgents.find((a) => a.id === agent);
+    (remote && token ? new Api(token, '', remote.host).models(agent.slice(0, -(remote.host.length + 1)), refresh) : api.models(agent, refresh)).then((list) => {
       if ((modelVersions.current[agent] ?? 0) === version) setModelsByAgent(prev => ({ ...prev, [agent]: list }));
     }).catch(error => { if (refresh) handleError(error); }).finally(() => { modelsAsked.current.delete(agent); });
   };
@@ -2688,7 +2691,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const leading = Boolean(coordination && selected && coordination.rootId === selected.id);
   const teamAgents = agents.filter((a) => a.available && a.capabilities.coordination && (leading ? coordination!.agents.includes(a.id) || !a.hidden : !a.hidden));
   const teamDefaults: Record<string, MemberDefault> = leading ? coordination!.defaults ?? {} : memberDefaults;
-  const startingDefaults = Object.fromEntries(Object.entries(memberDefaults).filter(([id]) => teamAgents.some((a) => a.id === id)));
+  const startingDefaults = Object.fromEntries(Object.entries(memberDefaults).filter(([id]) => teamAgents.some((a) => a.id === id) || remoteAgents.some((a) => a.id === id)));
   const setMemberDefault = (agent: string, value: MemberDefault) => {
     const remembered = { ...memberDefaults, [agent]: value };
     setMemberDefaults(remembered);
@@ -2719,7 +2722,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
             // An instance hidden on purpose stays out; the roster follows the hub's live list, so
             // instances that joined after the collaboration started are offered here too.
             ...agents.filter(a => a.available && a.capabilities.coordination && (coordination ? coordination.agents.includes(a.id) || !a.hidden : !a.hidden)).map(a => ({ id: a.id, label: a.label, kind: 'agent' as const })),
-            ...remoteAgents.map(a => ({ id: a.id, label: a.label, kind: 'agent' as const, host: a.host, directories: [...new Set([...recentRemoteDirs(a.host), ...a.directories])] })),
+            ...remoteAgents.map(a => ({ id: a.id, label: a.label, name: a.name, machine: a.machine, kind: 'agent' as const, host: a.host, directories: [...new Set([...recentRemoteDirs(a.host), ...a.directories])] })),
           ] : [];
   const collaborationIcon = (m: AgentMention) => [...agents, ...remoteAgents].find((a) => a.id === (m.kind === 'agent' ? m.id : coordination?.members.find((v) => v.id === m.id)?.thread?.agent))?.icon;
 
@@ -2870,6 +2873,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       </div></SettingsSection> },
       ...(!demo ? [
         { id: 'push', label: t('push.title'), icon: IconBell, render: () => <PushSettingsDialog api={api} onClose={closeSettings} /> },
+        { id: 'feishu', label: t('feishu.title'), icon: IconSideChat, render: () => <FeishuSettingsDialog api={api} agents={agents} onClose={closeSettings} /> },
         { id: 'assistant', label: t('personal.settings'), icon: IconSparkle, render: () => <AssistantSettingsPage api={api} agents={agents} setupNeeded={setupNeeded} onExplore={openExplore} path={settingsPath || 'assistant'} onNavigate={openSettings} onSave={setPersonal} /> },
         { id: 'handover', label: t('auto.title'), icon: IconAgents, render: () => <HandoverSettingsDialog api={api} agents={agents} onClose={closeSettings} /> },
       ] : []),
@@ -3348,7 +3352,6 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
         <div key="thread" className="scroller" ref={scrollerRef} onScroll={onScroll} {...gestureProps}>
           {selected && <TurnRuler key={selected.id} threadId={selected.id} scrollerRef={scrollerRef} previews={turnPreviewMap} turnIds={rulerTurnIds} onJump={turnId => setJump({ threadId: selected.id, turnId })} />}
           {onRouterThread && petStatus?.installed && <PetPortrait api={api} status={petStatus} onAway={setPortraitAway} />}
-          {selected && <AutoHandoverNotice api={api} thread={selected} agents={agents} />}
           {selected && eventsLoading && <div className="loading-note">{t('common.loading')}</div>}
           {showcase && selected && !eventsLoading && !timeline.items.length && showcase.intro(selected.id)}
           {selected ? (
@@ -3450,6 +3453,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
               <h2>{draftScratch ? t('app.emptyScratch') : t('app.emptyIn', folderName(draftCwd))}</h2>
             </div>
           )}
+          {selected && <AutoHandoverNotice api={api} thread={selected} agents={agents} />}
         </div>
         )}
 
@@ -3494,7 +3498,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           mentionIcon={collaborationIcon}
           collaboration={!draftTeam && !selected?.coordination?.team && (activeCaps?.coordination || selected?.coordination) ? collaborationControl : undefined}
           collaborationActive={Boolean(selected?.coordination || draftCollaboration)}
-          mentionExtra={(m) => { const a = agents.find((v) => v.id === m.id); return a ? memberModel(a) : null; }}
+          mentionExtra={(m) => { const a = agents.find((v) => v.id === m.id) ?? remoteAgents.find((v) => v.id === m.id); return a ? memberModel(a) : null; }}
           onBrowseMentionDir={(m, choose) => {
             const a = remoteAgents.find((v) => v.id === m.id);
             // With no folder chosen yet, the picker opens where that machine was last left, the way

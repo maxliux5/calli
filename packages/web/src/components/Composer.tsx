@@ -22,9 +22,11 @@ import {
   IconClose,
   IconCheck,
   IconChevron,
+  IconComputer,
   IconCopy,
   IconCube,
   IconEdit,
+  IconFolder,
   IconFork,
   IconHand,
   IconHelp,
@@ -1160,16 +1162,22 @@ export function Composer({
             <div className="coord-rows">
               {mentions.map((m, i) => (
                 <div className="coord-row" key={`${m.kind}:${m.id}:${i}`}>
-                  {m.kind === 'member' ? (
-                    <span className="coord-row-name">@{m.label}</span>
-                  ) : (
-                    <Popover label={t('composer.memberDir')} triggerClassName="coord-row-name" triggerTitle={t('composer.pickDir')} trigger={<span>@{m.label}{m.cwd ? ` · ${m.cwd.split('/').pop()}` : m.host ? ` · ${t('composer.pickDir')}` : ''}</span>}>
+                  <span className="coord-row-name" title={m.label}>@{m.name ?? m.label}</span>
+                  {m.kind === 'agent' && (
+                    <Popover label={t('composer.memberDir')} triggerClassName={`coord-row-where${m.cwd ? ' set' : ''}`} triggerTitle={m.cwd ?? t('composer.pickDir')} triggerLabel={t('composer.pickDir')}
+                      trigger={<>
+                        {m.machine ? <IconComputer size={14} /> : <IconFolder size={14} />}
+                        {m.machine && <span className="coord-row-machine">{m.machine}</span>}
+                        {(m.cwd || m.machine) && <span className="coord-row-dir">{m.cwd ? m.cwd.split('/').pop() : t('composer.pickDirShort')}</span>}
+                      </>}>
                       {close => <>
                         {(m.directories ?? mentionDirectories).map(dir => <button className="pop-item compact" role="menuitemradio" aria-checked={m.cwd === dir} key={dir} onClick={() => { setMentions(prev => prev.map(v => v === m ? { ...v, cwd: dir } : v)); close(); }}>{dir}</button>)}
                         {m.host && onBrowseMentionDir && <button className="pop-item compact" onClick={() => { close(); onBrowseMentionDir(m, cwd => setMentions(prev => prev.map(v => v.kind === m.kind && v.id === m.id ? { ...v, cwd } : v))); }}>{t('composer.browseDir')}</button>}
                       </>}
                     </Popover>
                   )}
+                  <span className="coord-row-tools">{m.kind === 'agent' && mentionExtra?.(m)}</span>
+                  <button type="button" className="icon-btn coord-row-close" aria-label={t('composer.remove', m.label)} onClick={() => setMentions(prev => prev.filter(v => v !== m))}><IconClose size={13} /></button>
                   <textarea
                     ref={(el) => { taskRefs.current[i] = el; }}
                     rows={1}
@@ -1183,8 +1191,6 @@ export function Composer({
                       if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) { e.preventDefault(); ref.current?.focus(); }
                     }}
                   />
-                  {m.kind === 'agent' && mentionExtra?.(m)}
-                  <button type="button" className="icon-btn" aria-label={t('composer.remove', m.label)} onClick={() => setMentions(prev => prev.filter(v => v !== m))}><IconClose size={13} /></button>
                 </div>
               ))}
             </div>

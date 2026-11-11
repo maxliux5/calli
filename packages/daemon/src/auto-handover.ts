@@ -15,6 +15,11 @@ export interface AutoHandoverView {
   enabled: boolean; source: 'thread' | 'collaboration' | 'global'; override: boolean | null;
   state?: 'checking' | 'preparing' | 'countdown' | 'stopped' | 'failed';
   target?: HandoverTarget; deadline?: string; reason?: 'near' | 'exhausted'; error?: string;
+  /**
+   * Where a `preparing` handover is: `summary` writes the brief; `switch`, `copy` and `handover`
+   * are the move itself, past the point where it can be called off.
+   */
+  step?: 'summary' | 'switch' | 'copy' | 'handover';
   /** The thread's quota-reset watch, added where the thread view is composed. */
   resume?: ResumeView | null;
 }
@@ -115,6 +120,8 @@ export class AutoHandover {
   }
   cancel(id: string): void {
     const attempt = this.attempts.get(id);
+    // Once the move itself has begun there is nothing left to call off; hiding it would only mislead.
+    if (attempt && attempt.view.step && attempt.view.step !== 'summary' && !this.closed) return;
     if (attempt) {
       attempt.cancelled = true;
       if (attempt.view.state === 'preparing') void this.manager.cancelHandoverSummary(id);
@@ -225,9 +232,10 @@ export class AutoHandover {
       const failedTurn = exhausted ? turnId : null;
       // Another account of the same agent goes on in a copy of the conversation and needs no brief.
       const resume = !switchModel && this.settings().method === 'resume' && await this.manager.canResumeHandover(id, target.agent, failedTurn);
+      if (!switchModel && !resume) { attempt.view = { ...attempt.view, step: 'summary' }; this.manager.notifyHandover(id); }
       let summary = switchModel || resume ? null : await this.manager.autoHandoverSummary(id, target.agent, exhausted);
       if (attempt.cancelled || !this.view(id).enabled || this.closed) return 'parked';
-      attempt.view = { ...attempt.view, state: 'countdown', deadline: new Date(Date.now() + this.delayMs).toISOString() };
+      attempt.view = { state: 'countdown', target, reason: attempt.view.reason, deadline: new Date(Date.now() + this.delayMs).toISOString() };
       this.manager.notifyHandover(id);
       await new Promise<void>(resolve => {
         const timer = setTimeout(resolve, this.delayMs);
@@ -239,6 +247,9 @@ export class AutoHandover {
         this.notices.set(id, { state: 'stopped', reason: attempt.view.reason }); return 'parked';
       }
       if (attempt.cancelled) return 'parked';
+      // From here the move is under way and the person can no longer call it off.
+      attempt.view = { state: 'preparing', target, reason: attempt.view.reason, step: switchModel ? 'switch' : resume ? 'copy' : 'handover' };
+      this.manager.notifyHandover(id);
       if (switchModel) {
         await this.manager.updateThread(id, { model: target.model });
         this.manager.recordHandoverModel(id, target.model!, model, attempt.view.reason!);
