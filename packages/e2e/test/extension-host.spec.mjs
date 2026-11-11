@@ -1,9 +1,9 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { startDaemon, openUi, api, launchBrowser } from '../harness.mjs';
+import { linkDaemon, startDaemon, openUi, api, launchBrowser } from '../harness.mjs';
 
 let root, hub, remote, browser, machine, localThread, remoteThread;
 const shots = process.env.CALLI_E2E_SHOTS_DIR;
@@ -32,12 +32,9 @@ before(async () => {
   root = mkdtempSync(join(tmpdir(), 'calli-extension-host-'));
   const remoteHome = join(root, 'remote-home'); mkdirSync(remoteHome);
   remote = await startDaemon({ CALLI_SOCKET: join(remoteHome, '.local/state/calli/daemon.sock') });
-  const hubHome = join(root, 'hub-home'); mkdirSync(join(hubHome, '.ssh'), { recursive: true });
-  writeFileSync(join(hubHome, '.ssh/config'), 'Host devbox\n  HostName 192.0.2.10\n');
-  const machines = join(root, 'machines.json'); writeFileSync(machines, JSON.stringify({ devbox: { home: remoteHome } }));
-  hub = await startDaemon({ HOME: hubHome, CALLI_SSH_BIN: 'fake-ssh', FAKE_SSH_HOSTS: machines, FAKE_PERSONAL_BOARD_LINKS: '1' });
+  hub = await startDaemon({ FAKE_PERSONAL_BOARD_LINKS: '1' });
   console.log(`Temporary hubs: ${hub.pid}, ${remote.pid}`);
-  machine = await json(hub, '/api/hosts', 'POST', { target: 'devbox' });
+  machine = await linkDaemon(hub, remote);
   const board = (await json(hub, '/api/extensions')).find(e => e.manifest.id === 'board');
   await json(hub, '/api/extensions/board/install', 'POST', { granted: board.manifest.permissions });
   localThread = await json(hub, '/api/threads', 'POST', { agent: 'pi', cwd: hub.workdir, title: '本机预览线程' });

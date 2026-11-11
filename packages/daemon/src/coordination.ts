@@ -23,7 +23,7 @@ export interface CoordinationSetup { directories?: string[]; agents?: string[]; 
 /** `host` is set for a member whose thread runs on another machine; `id` is that machine's thread id. `worktree`: the branch of the temporary git worktree it works in there. */
 type Member = { id: string; name: string; role?: string; host?: string; worktree?: string; voiceTarget?: string };
 
-/** Other machines this hub reaches, as collaboration needs them: which there are, a way to ask each daemon, and a way to run one command over ssh. */
+/** Other machines this hub reaches, as collaboration needs them: which there are, a way to ask each daemon, and a way to run one command on the node. */
 export interface RemoteHosts {
   list(): Array<{ id: string; label: string; status: string }>;
   call<T = unknown>(id: string, method: string, path: string, body?: unknown): Promise<T>;

@@ -1,9 +1,9 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startDaemon, openUi, api, launchBrowser, repoRoot } from '../harness.mjs';
+import { linkDaemon, startDaemon, openUi, api, launchBrowser, repoRoot } from '../harness.mjs';
 
 let root, hub, remote, browser, localCode, remoteCode;
 before(async () => {
@@ -20,10 +20,8 @@ before(async () => {
   }
   const agents = JSON.stringify({ agents: [{ id: 'pi', adapter: 'pi', command: [process.execPath, join(repoRoot, 'daemon/test/fixtures/fake-pi.mjs')] }] });
   remote = await startDaemon({ HOME: remoteHome, CALLI_WORKDIRS: remoteCode, CALLI_SOCKET: join(remoteHome, '.local/state/calli/daemon.sock'), CALLI_AGENTS_JSON: agents });
-  const machines = join(root, 'machines.json');
-  writeFileSync(machines, JSON.stringify({ devbox: { home: remoteHome } }));
-  hub = await startDaemon({ CALLI_WORKDIRS: localCode, CALLI_SSH_BIN: 'fake-ssh', FAKE_SSH_HOSTS: machines, CALLI_AGENTS_JSON: agents });
-  assert.equal((await api(hub, '/api/hosts', { method: 'POST', body: JSON.stringify({ target: 'devbox', label: 'devbox' }) })).status, 201);
+  hub = await startDaemon({ CALLI_WORKDIRS: localCode, CALLI_AGENTS_JSON: agents });
+  await linkDaemon(hub, remote);
   for (const [daemon, code, name] of [[hub, localCode, '本机项目'], [remote, remoteCode, '远端项目']]) {
     mkdirSync(join(code, name));
     for (const cwd of [code, join(code, name)]) assert.equal((await api(daemon, '/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'pi', cwd, title: name }) })).status, 201);

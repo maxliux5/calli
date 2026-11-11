@@ -926,8 +926,8 @@ export interface TerminalInfo {
 /** One SSE frame of a terminal stream. Output is base64: programs may emit non-UTF-8 bytes. */
 export type TerminalFrame = { type: 'backlog'; data: string } | { type: 'out'; data: string } | { type: 'exit'; code: number };
 
-/** Why a machine cannot be reached, as the hub sorts what ssh said. */
-export type HostFailure = 'no_ssh' | 'host_key' | 'auth' | 'unreachable' | 'ssh_failed' | 'daemon_missing' | 'forward_denied';
+/** Connection and operation errors from another machine. */
+export type HostFailure = 'not_joined' | 'relay_lost' | 'unreachable' | 'host_offline' | 'too_large';
 
 /** A folder an agent reads skills from. `agents` are the instances that see it. */
 export interface SkillLocation {
@@ -1023,15 +1023,15 @@ export interface McpEntry {
   updatedAt: string;
 }
 
-/** Another machine this hub shows: the same daemon over there, reached over SSH. */
+/** Another machine this hub shows: a daemon connected through its relay client. */
 export interface HostInfo {
   id: string;
   label: string;
-  /** What ssh calls it. */
+  /** The name reported by the node. */
   target: string;
   status: 'connecting' | 'online' | 'offline';
   code?: HostFailure;
-  /** The failure in ssh's own words. */
+  /** The connection failure reported by the hub. */
   error?: string;
   version?: string;
 }
@@ -1157,21 +1157,16 @@ export class Api {
     return this.send('GET', `${this.base}/api/hosts`);
   }
 
-  /** Aliases in the hub user's ssh config that are not machines yet. */
-  hostCandidates(): Promise<string[]> {
-    return this.send('GET', `${this.base}/api/hosts/candidates`);
-  }
-
-  /** Signs in to the machine once to find its daemon; refused with a `code` when that fails. */
-  addHost(target: string, label?: string): Promise<HostInfo> {
-    return this.send('POST', `${this.base}/api/hosts`, { target, label });
+  /** Adds a machine that will connect out to the hub; the answer's token is shown this once. */
+  addHost(label: string): Promise<HostInfo & { token: string }> {
+    return this.send('POST', `${this.base}/api/hosts`, { label });
   }
 
   removeHost(id: string): Promise<void> {
     return this.send('DELETE', `${this.base}/api/hosts/${encodeURIComponent(id)}`);
   }
 
-  /** Tries the machine again now, and says how that went. */
+  /** Refreshes the connection state; the node reconnects automatically. */
   reconnectHost(id: string): Promise<HostInfo> {
     return this.send('POST', `${this.base}/api/hosts/${encodeURIComponent(id)}/reconnect`);
   }

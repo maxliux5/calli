@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { execFileSync, spawn as spawnProcess } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +17,9 @@ import { CodexAppServerAdapter } from '../src/adapters/codex.js';
 import { AgyAdapter } from '../src/adapters/agy.js';
 import { TraexAcpAdapter } from '../src/adapters/traex.js';
 import type { AgentAdapter } from '../src/adapters/types.js';
-import { CoordinationManager, coordinationServer, turnAnswer, type RemoteHosts } from '../src/coordination.js';
+import { CoordinationManager, coordinationServer, turnAnswer } from '../src/coordination.js';
+import { HostRegistry } from '../src/hosts.js';
+import { RelayClient } from '../src/relay-client.js';
 import { HttpError } from '../src/errors.js';
 import { createHttpServer, listenPrivate } from '../src/http.js';
 
@@ -558,43 +560,38 @@ test('natural completion enables queued collaboration without cancelling the act
   } finally { await h.close(); }
 });
 
-/** Another machine: a daemon of its own, reached the way the hub's tunnels reach one. */
+/** Another daemon connected through a real relay, including collaboration file commands. */
 async function otherMachine() {
   const dir = mkdtempSync(join(tmpdir(), 'calli-remote-'));
   const cwd = join(dir, 'far-project'); mkdirSync(cwd);
   const store = new Store(dir);
   const manager = new ThreadManager(store, new Map<string, AgentAdapter>([['pi', new PiRpcAdapter([process.execPath, join(fixtures, 'fake-pi.mjs')])]]), [cwd], new AttachmentStore(dir));
-  const server = createHttpServer({ manager, token: 'node-token', webDir: null, version: 'node' });
-  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
-  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  let online = true;
-  const hosts: RemoteHosts = {
-    list: () => [{ id: 'devbox', label: 'Devbox', status: online ? 'online' : 'offline' }],
-    exec: (_id, command, opts) => localExec(command, opts),
-    async call<T>(_id: string, method: string, path: string, body?: unknown): Promise<T> {
-      if (!online) throw new HttpError(502, 'this machine is not connected', { code: 'host_offline' });
-      const res = await fetch(base + path, { method, headers: { Authorization: 'Bearer node-token', 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-      const value = await res.json().catch(() => undefined);
-      if (!res.ok) throw new HttpError(res.status, value?.error ?? `HTTP ${res.status}`);
-      return value as T;
-    },
+  const socket = join(dir, 'node.sock');
+  const server = createHttpServer({ manager, trusted: true, token: 'node-token', webDir: null, version: 'node' });
+  await listenPrivate(server, socket);
+  const hosts = new HostRegistry({ file: null });
+  const hubServer = createHttpServer({ manager, hosts, token: 'hub-token', webDir: null, version: 'hub' });
+  await new Promise<void>(r => hubServer.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(hubServer.address() as AddressInfo).port}`;
+  const { token } = hosts.add({ label: 'devbox' });
+  let client: RelayClient;
+  const connect = async () => {
+    client = new RelayClient({ hubUrl: base, token, socket, version: 'node', retryMs: 50 });
+    client.start();
+    await wait(() => hosts.list()[0].status === 'online');
   };
-  return { base, dir, cwd, store, manager, hosts, setOnline(v: boolean) { online = v; },
-    async close() { await manager.shutdown(); await new Promise<void>(r => server.close(() => r())); store.close(); rmSync(dir, { recursive: true, force: true }); } };
-}
-
-/** ssh is a local sh here: the machine's folders are this machine's folders. */
-function localExec(command: string, opts: { input?: string } = {}): Promise<{ stdout: Buffer; stderr: string; code: number }> {
-  return new Promise((resolve, reject) => {
-    const child = spawnProcess('sh', ['-c', command], { stdio: ['pipe', 'pipe', 'pipe'] });
-    const out: Buffer[] = [];
-    let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => out.push(chunk));
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
-    child.on('error', reject);
-    child.on('exit', (code) => resolve({ stdout: Buffer.concat(out), stderr, code: code ?? 255 }));
-    child.stdin.end(opts.input ?? '');
-  });
+  await connect();
+  return { base, dir, cwd, store, manager, hosts, async setOnline(v: boolean) {
+    if (v) await connect();
+    else { client.stop(); await wait(() => hosts.list()[0].status === 'offline'); }
+  }, async close() {
+    client.stop(); hosts.dispose();
+    await manager.shutdown();
+    hubServer.closeAllConnections(); server.closeAllConnections();
+    await new Promise<void>(r => hubServer.close(() => r()));
+    await new Promise<void>(r => server.close(() => r()));
+    store.close(); rmSync(dir, { recursive: true, force: true });
+  } };
 }
 
 test('a member on another machine runs there and its answer comes back to the lead', async () => {
@@ -645,7 +642,7 @@ test('a remote member reads its task from a handoff file, writes a result file, 
     h.team.hosts = far.hosts;
     await h.team.enable(h.root.id);
     // The member leaves its report as soon as it has the handoff, as a real one would while working.
-    const plainExec = far.hosts.exec;
+    const plainExec = far.hosts.exec.bind(far.hosts);
     far.hosts.exec = async (id, command, opts) => {
       const run = await plainExec(id, command, opts);
       if (command.includes('handoff.md') && opts?.input) {
@@ -715,7 +712,7 @@ test('the calli CLI carries a local handoff file to the member machine', async (
   } finally { await h.close(); await far.close(); }
 });
 
-test('the lead reads and writes a remote member folder over ssh; other members only read', async () => {
+test('the lead reads and writes a remote member folder over relay; other members only read', async () => {
   const h = await setup();
   const far = await otherMachine();
   try {
@@ -764,7 +761,7 @@ test('a handoff stays inline when the machine cannot take the file', async () =>
   try {
     h.team.hosts = far.hosts;
     await h.team.enable(h.root.id);
-    far.hosts.exec = async () => { throw new HttpError(502, 'ssh is down'); };
+    far.hosts.exec = async () => { throw new HttpError(502, 'remote execution is unavailable'); };
     await h.team.command(h.root.id, spawn('far', 'pi@devbox', 'INLINE_TASK', { cwd: far.cwd }));
     const member = h.team.view(h.root.id)!.members[0];
     await wait(() => h.team.view(h.root.id)!.members[0].latest?.state === 'returned');
@@ -813,12 +810,12 @@ test('messages for a machine that is away wait for it, and the user can @ an ins
     assert.throws(() => h.team.mentionText(h.root.id, 'x', [{ id: 'pi@devbox', kind: 'agent', cwd: 'rel' }]), /绝对路径/);
     assert.throws(() => h.team.mentionText(h.root.id, 'x', [{ id: 'pi@nowhere', kind: 'agent' }]), /实例不在本次协作中/);
     await h.team.command(h.root.id, spawn('far', 'pi@devbox', 'LATER', { cwd: far.cwd }));
-    far.setOnline(false);
+    await far.setOnline(false);
     // Spawned while online; the first message only goes out once the machine is back.
     await new Promise(r => setTimeout(r, 300));
     const pending = h.team.view(h.root.id)!.messages.find(d => d.text === 'LATER')!;
     assert.ok(['queued', 'running'].includes(pending.state));
-    far.setOnline(true);
+    await far.setOnline(true);
     await wait(() => h.team.view(h.root.id)!.messages.some(d => d.text === 'LATER' && d.state === 'returned'));
   } finally { await h.close(); await far.close(); }
 });

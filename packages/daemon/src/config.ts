@@ -29,10 +29,10 @@ export interface Config {
   termShell: string | null;
   /** Directory of the built web UI, served at `/` when present. */
   webDir: string | null;
-  /** Unix socket a hub on another machine reaches this daemon through, over SSH. Null when turned off. */
+  /** Private Unix socket used by the local relay client. Null when turned off. */
   socket: string | null;
-  /** argv that starts OpenSSH, for reaching the daemons of other machines. */
-  sshCommand: string[];
+  /** A hub this machine connects out to, with the join token it gave (see relay.ts). Null when not joined. */
+  hub: { url: string; token: string } | null;
   /** CALLI_DESKTOP_VNC as given: unset looks for a VNC server here, `off` turns the desktop off. */
   desktopVnc: string | undefined;
   /** Chrome profile of the person's own browser: `CALLI_BROWSER_PROFILE`, else under the data directory. */
@@ -42,9 +42,8 @@ export interface Config {
 }
 
 /**
- * Where a daemon's socket is, under the home directory, unless CALLI_SOCKET says otherwise. A hub
- * looks for it there on a machine it is given, so it is a fixed place and not an XDG one: the
- * environment of an `ssh host command` is not the one the daemon was started in.
+ * The default private socket is fixed under the home directory rather than XDG state: local
+ * clients may run with a different environment. CALLI_SOCKET can override it.
  */
 export const SOCKET_IN_HOME = '.local/state/calli/daemon.sock';
 /** Where the socket was before the rename to Calli. Installations that kept that directory still use it. */
@@ -161,7 +160,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     termShell,
     webDir,
     socket,
-    sshCommand: [env.CALLI_SSH_BIN || 'ssh'],
+    hub: env.CALLI_HUB_URL?.trim() && env.CALLI_HUB_TOKEN?.trim() ? { url: env.CALLI_HUB_URL.trim(), token: env.CALLI_HUB_TOKEN.trim() } : null,
     desktopVnc: env.CALLI_DESKTOP_VNC,
     browserProfile: env.CALLI_BROWSER_PROFILE ? resolve(env.CALLI_BROWSER_PROFILE) : join(dataDir, 'browser', 'profile'),
     browserDisplay: env.CALLI_BROWSER_DISPLAY?.trim() || undefined,

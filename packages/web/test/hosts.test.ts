@@ -12,14 +12,10 @@ test('on another machine, a path of the API goes through the hub to the same pat
   assert.equal(hostPath('devbox', '/'), '/');
 });
 
-test('each way a machine can fail says what to do about it, with the name to type', () => {
-  assert.match(hostProblem('host_key', 'devbox'), /运行一次 ssh devbox/);
-  assert.match(hostProblem('auth', 'me@devbox'), /ssh me@devbox 能直接进去/);
-  assert.match(hostProblem('daemon_missing', 'devbox'), /Calli 没有应答/);
-  assert.match(hostProblem('unreachable', 'devbox'), /连不到/);
-  // Something ssh said that the hub did not recognise still gets a sentence; ssh's own words go next to it.
-  assert.equal(hostProblem('ssh_failed', 'devbox'), 'ssh 没连上。');
-  assert.equal(hostProblem(undefined, 'devbox'), 'ssh 没连上。');
+test('relay connection failures explain the node-side recovery', () => {
+  assert.match(hostProblem('not_joined'), /接入配置/);
+  assert.match(hostProblem('relay_lost'), /自己重连/);
+  assert.match(hostProblem(undefined), /检查节点/);
 });
 
 test('a machine\'s auto-titles and extension memory are asked on that machine, not this hub', async () => {

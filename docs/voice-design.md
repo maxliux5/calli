@@ -147,9 +147,9 @@
 
 浏览器麦克风需要安全上下文，参见 [MDN getUserMedia](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia)。
 
-- 电脑验证：SSH 本地端口转发，浏览器访问本机 localhost。
+- 电脑验证：使用 HTTPS，或在 hub 所在机器的浏览器访问 localhost。
 - 手机与日常使用：受信任 HTTPS 入口反向代理到现有 HTTP daemon；仍可仅在 VPN 内开放。证书须被设备信任，VPN 不代替安全上下文。
-- WebRTC 音频通常由浏览器直达上游，须单独验证浏览器网络；Hub 信令经 SSH 可达不等于音频可达。
+- WebRTC 音频通常由浏览器直达上游，须单独验证浏览器网络；Hub 信令可达不等于音频可达。
 - HTTPS 入口同时代理页面与 API，避免页面调用远程 HTTP API 的混合内容问题；SSE 不应被代理缓冲。
 
 ## 历史与上下文
