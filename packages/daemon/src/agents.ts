@@ -528,9 +528,8 @@ export class AgentRegistry {
     if (typeof enabled !== 'boolean') throw new HttpError(400, 'streamBridge must be a boolean');
     const adapter = buildAdapter(instance, this.defaultCommands);
     if (!adapter.capabilities.streamBridge || !adapter.streamBridgeEnvironment) throw new HttpError(400, 'this agent has no experimental stream bridge');
-    let environment: Record<string, string>;
-    try { environment = await adapter.streamBridgeEnvironment(enabled); }
-    catch (error) { throw new HttpError(400, error instanceof Error ? error.message : String(error)); }
+    // Incompatible installs still save the preference; the adapter's turns fall back to text output.
+    const { environment } = await adapter.streamBridgeEnvironment(enabled);
     return { ...instance, env: { ...instance.env, ...environment } };
   }
 

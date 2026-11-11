@@ -9,7 +9,7 @@ import { AttachmentStore } from '../src/attachments.js';
 import { Store } from '../src/store.js';
 import { ThreadManager } from '../src/threads.js';
 import { createHttpServer } from '../src/http.js';
-import { createFakeDoubaoRuntime } from './fixtures/doubao-runtime.mjs';
+import { createFakeDoubaoRuntime, fakeDoubaoBundle, writeFakeDoubaoManifest } from './fixtures/doubao-runtime.mjs';
 import { validateDoubaoStreamRuntime } from '../src/adapters/doubao-runtime.js';
 
 const wait = async (check: () => unknown, timeout = 8_000) => {
@@ -41,7 +41,7 @@ test('stream bridge settings validate read-only, persist only their own env and 
   const h = await setup(t);
   const original = readFileSync(join(h.root, 'resources/js_app/entry-cli-router/main.js'), 'utf8');
   const supported = await (await h.api('/api/agents/supported')).json() as any[];
-  assert.deepEqual(supported.find(a => a.adapter === 'doubao').capabilities.streamBridge, { version: '2.31.2', platform: 'Linux x64', temporaryMegabytes: 106 });
+  assert.deepEqual(supported.find(a => a.adapter === 'doubao').capabilities.streamBridge, { platform: 'Linux x64', temporaryMegabytes: 106 });
   assert.equal(supported.find(a => a.adapter === 'pi').capabilities.streamBridge, undefined);
   const before = await (await h.api('/api/agents')).json() as any[];
   assert.equal(before.find(a => a.id === 'doubao').streamBridgeEnabled, false);
@@ -69,7 +69,7 @@ test('stream bridge settings validate read-only, persist only their own env and 
   assert.equal((await (await h.api('/api/agents/doubao/diagnostics')).json() as any).protocol, 'doubao -p (text)', 'settings invalidate cached diagnostics');
 });
 
-test('invalid, unsupported and incompatible settings do not partially update a registration', async t => {
+test('invalid settings do not partially update; incompatible installs save and report a fallback', async t => {
   const h = await setup(t), original = h.registry.get('doubao'), adapter = h.registry.adapters.get('doubao');
   for (const value of [null, 'true', 1, {}, []]) {
     assert.equal((await h.api('/api/agents/doubao', 'PATCH', { label: 'Changed', streamBridge: value })).status, 400);
@@ -77,13 +77,27 @@ test('invalid, unsupported and incompatible settings do not partially update a r
     assert.equal(h.registry.adapters.get('doubao'), adapter);
   }
   for (const value of [false, true]) assert.equal((await h.api('/api/agents/pi', 'PATCH', { streamBridge: value })).status, 400);
+  // A CLI update that keeps the output seams still passes; compatibility ignores the version.
   const manifestPath = join(h.root, 'manifest.json'), manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   writeFileSync(manifestPath, JSON.stringify({ ...manifest, version: '2.32.0' }));
-  const res = await h.api('/api/agents/doubao', 'PATCH', { label: 'Changed', streamBridge: true });
-  assert.equal(res.status, 400); assert.match((await res.json() as any).error, /版本或平台/);
-  assert.deepEqual(h.registry.get('doubao'), original);
-  assert.equal(existsSync(h.file), false, 'failed enable did not persist');
-  assert.equal((await h.api('/api/agents/doubao', 'PATCH', { streamBridge: false })).status, 200, 'disabling works on unsupported installs');
+  assert.deepEqual(await (await h.api('/api/agents/doubao/stream-bridge')).json(), { compatible: true });
+  const saved = await h.api('/api/agents/doubao', 'PATCH', { streamBridge: true });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(h.registry.get('doubao'), { ...h.instance, env: { ...h.instance.env, CALLI_DOUBAO_STREAM: '1' } });
+  // Changed output seams are reported by the status endpoint, but saving consent never fails.
+  const bundlePath = join(h.root, 'resources/js_app/entry-cli-router/main.js'), bundle = readFileSync(bundlePath, 'utf8');
+  writeFileSync(bundlePath, fakeDoubaoBundle('entry-cli-router').replace('case"stream-json":', 'case"new":'));
+  writeFakeDoubaoManifest(h.root);
+  const status = await (await h.api('/api/agents/doubao/stream-bridge')).json() as any;
+  assert.equal(status.compatible, false); assert.match(status.reason, /输出结构/);
+  assert.equal((await h.api('/api/agents/doubao/stream-bridge', 'GET', undefined, false)).status, 401);
+  assert.equal((await h.api('/api/agents/pi/stream-bridge')).status, 400);
+  assert.equal((await h.api('/api/agents/missing/stream-bridge')).status, 404);
+  assert.equal((await h.api('/api/agents/doubao', 'PATCH', { streamBridge: false })).status, 200, 'disabling works on incompatible installs');
+  assert.equal((await h.api('/api/agents/doubao', 'PATCH', { streamBridge: true })).status, 200, 'enabling saves even when incompatible');
+  assert.equal(h.registry.adapters.get('doubao')!.streamBridgeEnabled, true);
+  writeFileSync(bundlePath, bundle); writeFakeDoubaoManifest(h.root); writeFileSync(manifestPath, JSON.stringify(manifest));
+  assert.deepEqual(await (await h.api('/api/agents/doubao/stream-bridge')).json(), { compatible: true });
   assert.deepEqual(h.calls(), []);
 });
 

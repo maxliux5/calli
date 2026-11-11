@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { AgentInfo, Api } from '../api';
 import { t } from '../i18n';
 import { DialogSurface } from './Dialog';
@@ -11,7 +11,20 @@ export function AgentSettingsDialog({ api, agent, onReload, onClose }: {
   const [enabled, setEnabled] = useState(agent.streamBridgeEnabled ?? false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  /** Why the bridge would not run on this install; empty once the check says it would. */
+  const [incompatible, setIncompatible] = useState('');
+  const checkId = useRef(0);
   const capability = agent.capabilities.streamBridge;
+  // Advisory only: saving still succeeds and turns fall back to text output on their own.
+  const checkBridge = (on: boolean) => {
+    const id = ++checkId.current;
+    if (!capability || !on) { setIncompatible(''); return; }
+    void api.agentStreamBridge(agent.id)
+      .then(status => { if (checkId.current === id) setIncompatible(status.compatible || !status.reason ? '' : status.reason); })
+      .catch(() => { if (checkId.current === id) setIncompatible(''); });
+  };
+  useEffect(() => { checkBridge(agent.streamBridgeEnabled ?? false); }, []);
+  const toggle = (next: boolean) => { setEnabled(next); checkBridge(next); };
   const save = async () => {
     if (busy) return;
     setBusy(true); setError('');
@@ -27,7 +40,8 @@ export function AgentSettingsDialog({ api, agent, onReload, onClose }: {
   return <DialogSurface className="agent-settings-dialog" labelledBy="agent-settings-title" onClose={onClose} busy={busy}>
     <h2 id="agent-settings-title" className="dialog-title">{t('agents.settings')}</h2>
     <p className="dialog-message">{agent.label}</p>
-    {capability && <StreamBridgeOption capability={capability} value={enabled} onChange={setEnabled} disabled={busy} />}
+    {capability && <StreamBridgeOption capability={capability} value={enabled} onChange={toggle} disabled={busy} />}
+    {incompatible && <p className="agent-bridge-hint" role="status">{t('streamBridge.incompatible', incompatible)}</p>}
     <p className="agent-bridge-hint">{t('streamBridge.nextTurn')}</p>
     {error && <p className="teams-error" role="alert">{error}</p>}
     <div className="dialog-actions">

@@ -138,11 +138,14 @@ test('the bridge resolves npm launchers using the selected instance home and pre
   await assert.rejects(prepareDoubaoStreamRuntime([script], { HOME: join(h.dir, 'not-signed-in') }, h.dir));
 });
 
-test('unknown versions, tampered files, symlinks and unsafe manifests are rejected before native execution', async t => {
+test('a moved version still prepares, but tampered files, symlinks and unsafe manifests are rejected before native execution', async t => {
   const h = setup(t), manifestPath = join(h.root, 'manifest.json');
   const original = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  // The version number alone is not compatibility: matching seams keep the bridge usable.
+  writeFileSync(manifestPath, JSON.stringify({ ...original, version: '2.32.0' }));
+  const updated = await prepareDoubaoStreamRuntime([h.bin], {}, h.dir);
+  assert.notEqual(dirname(updated.command[0]), h.root); await updated.close();
   for (const manifest of [
-    { ...original, version: '2.32.0' },
     { ...original, files: [...original.files, original.files[0]] },
     { ...original, files: [{ ...original.files[0], path: '../escape' }, ...original.files.slice(1)] },
     { ...original, files: original.files.filter((file: any) => !file.path.includes('entry-cli-chat')) },
@@ -155,6 +158,27 @@ test('unknown versions, tampered files, symlinks and unsafe manifests are reject
   writeFileSync(resource, 'tampered'); await assert.rejects(prepareDoubaoStreamRuntime([h.bin], {}, h.dir), /校验失败/);
   const outside = join(h.dir, 'outside.txt'); writeFileSync(outside, 'outside'); rmSync(resource); symlinkSync(outside, resource);
   writeFakeDoubaoManifest(h.root); await assert.rejects(prepareDoubaoStreamRuntime([h.bin], {}, h.dir), /普通文件/);
+});
+
+test('an enabled bridge on an incompatible install reports why and falls back to the text surface', async t => {
+  const h = setup(t), log = join(h.dir, 'calls.jsonl');
+  const bundlePath = join(h.root, 'resources/js_app/entry-cli-router/main.js'), bundle = readFileSync(bundlePath, 'utf8');
+  writeFileSync(bundlePath, bundle.replace('case"stream-json":', 'case"new":'));
+  writeFakeDoubaoManifest(h.root);
+  const adapter = new DoubaoAdapter([h.bin], { CALLI_DOUBAO_STREAM: '1', FAKE_DOUBAO_LOG: log });
+  const setting = await adapter.streamBridgeEnvironment(true);
+  assert.equal(setting.environment.CALLI_DOUBAO_STREAM, '1');
+  assert.match(setting.incompatible ?? '', /输出结构/, 'the reason explains the fallback');
+  assert.equal((await adapter.streamBridgeEnvironment(false)).incompatible, undefined, 'disabling never reports incompatibility');
+  const session = await adapter.start({ cwd: h.dir });
+  t.after(() => session.close());
+  const events: EmittedEvent[] = [];
+  const hooks = { emit: (event: EmittedEvent) => events.push(event), requestApproval: async () => { throw new Error('not supported'); } };
+  assert.deepEqual(await session.prompt({ text: 'plain reply', images: [] }, hooks), { stopReason: 'end_turn' }, 'the turn completes without the bridge');
+  assert.ok(events.length >= 1 && events.every(event => event.type === 'message.delta'), 'the reply arrives as plain text output');
+  const calls = readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(calls[0].runtime, h.bin, 'the original unpatched CLI ran');
+  assert.equal(adapter.streamBridgeEnabled, true, 'the saved preference itself stays on');
 });
 
 test('streaming adapter uses an isolated copy, emits tools/deltas before result, resumes and cleans up', async t => {
