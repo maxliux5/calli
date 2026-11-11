@@ -30,7 +30,7 @@ daemon（Node.js，跑在远程主机上）
 | TraeX | 执行、命令、历史与分叉走 `traex app-server`，复用 Codex 线程协议；模型元数据仍走 ACP | 原生 `/goal`、多轮流式、审批、恢复、压缩、模型/强度/权限；额度保留 `traex models --json`。已有 ACP 会话通过同一原生会话 ID 恢复，入口命令配置无需迁移 |
 | zcode | `zcode app-server`（无 jsonrpc 字段的 NDJSON） | 精简协议接入：关闭自动记忆、基础工具白名单、流式、审批回调、取消、恢复、模型/强度、图片输入（按原生模型能力）、`/compact`；无权限档位，扩展全局关闭需另配，见 `zcode-minimal-design.md` |
 | DeepSeek Harness | ACP，`dsh --profile acp`（stdio JSON-RPC） | 流式、逐次审批（allow-once/reject-once，审批卡回填工具信息）、`session/resume` 恢复（不回放）、协作、模型（分组、不透明路由 id）与 reasoning effort（按模型）、图片输入（按路由）；无 modes、fork、历史回放与会话删除，见 `dsh-acp-design.md` |
-| Doubao CLI | `doubao -p`，每轮一个原生进程，`--resume` 续接 | 默认最终文本，可选临时运行副本的实验 `stream-json` 桥（真实正文增量与工具快照，未知结果不补成功）；原生会话 ID 延迟保存、恢复、停止、两档权限、协作环境、终端登录；添加与实例设置页可按能力开关流式桥，保存到 Calli 的实例环境、下一轮生效；未找到原生 ACP 入口，无模型目录/人工审批/图片/历史分叉，见 `doubao-cli-design.md` |
+| Doubao CLI | `doubao -p`，每轮一个原生进程，`--resume` 续接 | 默认最终文本，可选临时运行副本的实验 `stream-json` 桥（真实正文增量与工具快照，未知结果不补成功）；原生会话 ID 延迟保存、恢复、停止、两档权限、协作环境、终端登录；添加与实例设置页可按能力开关流式桥，保存到 Calli 的实例环境、下一轮生效；版本限定隔离目录桥可选真实模型和每模型强度、下一轮续接同一会话；未找到原生 ACP 入口，无人工审批/图片/历史分叉，见 `doubao-cli-design.md` |
 
 注意：`@zed-industries/claude-agent-acp` 已停更（0.23.1，模型列表过时），不要用回去。
 

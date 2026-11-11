@@ -8,7 +8,9 @@ export function fakeDoubaoBundle(bundle) {
   const router = bundle === 'entry-cli-router';
   const printer = router ? 'I=e=>{i.flush(),n.stdout' : 'm=e=>{r.flush(),i.stdout';
   const session = router ? 'f' : 'p';
-  return `const request={output_format:"text"}; switch(format){case"stream-json":let ${printer}(JSON.stringify(e))};let init={subtype:"init",session_id:${session}};let events={onEvent:e=>{switch(e.type){case"session.created":case"session.bound":break}}};case"json":break}`;
+  const method = router ? 'resolveSettings(e,t){return G({im:this.im,botId:this.botId},e,t)}' : 'resolveSettings(e,t){return et({im:this.im,botId:this.botId},e,t)}';
+  const models = `class Chat{${method}};if("list"===o.kind)return ${router ? 'p' : 'b'}(e,t);const endpoint="/alice/slot/action_bar_v3/brief_list";`;
+  return `${models}const request={output_format:"text"}; switch(format){case"stream-json":let ${printer}(JSON.stringify(e))};let init={subtype:"init",session_id:${session}};let events={onEvent:e=>{switch(e.type){case"session.created":case"session.bound":break}}};case"json":break}`;
 }
 
 export function writeFakeDoubaoManifest(root) {

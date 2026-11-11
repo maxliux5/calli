@@ -3,9 +3,10 @@ import type { Readable } from 'node:stream';
 import { cliDiagnostic } from './diagnostics.js';
 import { DOUBAO_STREAM_BRIDGE, prepareDoubaoStreamRuntime, validateDoubaoStreamRuntime, type DoubaoStreamRuntime } from './doubao-runtime.js';
 import { DoubaoStream } from './doubao-stream.js';
+import { readDoubaoModels } from './doubao-models.js';
 import { DOUBAO_ICON } from './icons.js';
 import { quoteArg } from './session-location.js';
-import { sessionEnvironment, type AgentAdapter, type AgentSession, type PermissionMode, type StartOptions, type TurnHooks, type TurnInput, type TurnResult } from './types.js';
+import { sessionEnvironment, type AgentAdapter, type AgentSession, type EffortLevel, type ModelOption, type PermissionMode, type StartOptions, type TurnHooks, type TurnInput, type TurnResult } from './types.js';
 import { commandExists } from '../util.js';
 
 /**
@@ -67,9 +68,9 @@ export class DoubaoAdapter implements AgentAdapter {
     approvals: false,
     permissionModes: ['auto_edit', 'full_access'] as const,
     defaultPermissionMode: 'auto_edit' as const,
-    // Models and their efforts cannot be queried without a real prompt. Use the CLI's default
-    // (or the instance's --model/--effort flags), rather than inventing a selectable catalog.
-    modelCatalog: false,
+    // A guarded temporary copy calls the native read-only loader, without opening a conversation.
+    modelCatalog: true,
+    modelSwitch: true,
     effortLevels: [] as const,
     images: false,
     deleteSession: false,
@@ -86,8 +87,27 @@ export class DoubaoAdapter implements AgentAdapter {
     this.command = command.length ? [...command] : ['doubao'];
   }
 
+  private modelCache: { at: number; value: ModelOption[] } | null = null;
+  private modelLoad: Promise<ModelOption[]> | null = null;
+  onModelsChanged?: (models: ModelOption[]) => void;
+
   available(): Promise<boolean> { return Promise.resolve(commandExists(this.command[0])); }
-  models() { return Promise.resolve([]); }
+  models(refresh = false): Promise<ModelOption[]> {
+    if (this.modelLoad) return this.modelLoad;
+    if (!refresh && this.modelCache && Date.now() - this.modelCache.at < 60_000) return Promise.resolve(this.modelCache.value);
+    // Strip every business flag: a catalog process cannot inherit a prompt or resume a conversation.
+    this.modelLoad = readDoubaoModels([this.command[0], ...this.cliPrefix()], sessionEnvironment(this.env), process.cwd())
+      .then(models => {
+        const configured = this.command.slice(1).flatMap((arg, index, args) =>
+          arg === '--model' ? [args[index + 1]] : arg.startsWith('--model=') ? [arg.slice(8)] : []).at(-1);
+        if (configured) models = models.map(model => ({ ...model, isDefault: model.id === configured || model.label === configured }));
+        const previous = this.modelCache;
+        this.modelCache = { at: Date.now(), value: models };
+        if (previous && JSON.stringify(previous.value) !== JSON.stringify(models)) this.onModelsChanged?.(models);
+        return models;
+      }).finally(() => { this.modelLoad = null; });
+    return this.modelLoad;
+  }
   commands() { return Promise.resolve([]); }
   get streamBridgeEnabled(): boolean { return (this.env.CALLI_DOUBAO_STREAM ?? process.env.CALLI_DOUBAO_STREAM) === '1'; }
   async streamBridgeEnvironment(enabled: boolean): Promise<Record<string, string>> {
@@ -141,6 +161,9 @@ class DoubaoSession implements AgentSession {
     if (mode === 'ask') throw new Error('Doubao 无界面模式不能请求人工审批');
     this.opts.permissionMode = mode;
   }
+
+  async setModel(model: string): Promise<boolean> { this.opts.model = model; return true; }
+  async setEffort(effort: EffortLevel): Promise<boolean> { this.opts.effort = effort; return true; }
 
   async prompt(input: TurnInput, hooks: TurnHooks): Promise<TurnResult> {
     if (this.closed) throw new Error('Doubao 会话已关闭');

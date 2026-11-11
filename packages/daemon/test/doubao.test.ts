@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import { DoubaoAdapter, doubaoArgs } from '../src/adapters/doubao.js';
+import { createFakeDoubaoRuntime } from './fixtures/doubao-runtime.mjs';
 import { AgentRegistry } from '../src/agents.js';
 import { AttachmentStore } from '../src/attachments.js';
 import { loadConfig } from '../src/config.js';
@@ -33,15 +34,16 @@ function setup(t: { after(fn: () => unknown): void }, base: string[] = [], env: 
   const dir = mkdtempSync(join(tmpdir(), 'calli-doubao-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const log = join(dir, 'calls.jsonl');
-  const adapter = new DoubaoAdapter([...command, ...base], { FAKE_DOUBAO_LOG: log, FAKE_DOUBAO_MARKER: 'instance-one', CALLI_DOUBAO_STREAM: '', ...env });
+  const bin = createFakeDoubaoRuntime(join(dir, 'native'));
+  const adapter = new DoubaoAdapter([...command, ...base], { CALLI_DOUBAO_RUNTIME: join(dir, 'native'), FAKE_DOUBAO_LOG: log, FAKE_DOUBAO_MARKER: 'instance-one', CALLI_DOUBAO_STREAM: '', ...env });
   const calls = () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
-  return { dir, log, adapter, calls };
+  return { dir, log, bin, adapter, calls };
 }
 
-test('Doubao advertises only its public CLI capabilities, and catalog reads never prompt', async t => {
+test('Doubao advertises a guarded native catalog, and catalog reads never prompt', async t => {
   const h = setup(t);
   assert.equal(await h.adapter.available(), true);
-  assert.deepEqual(await h.adapter.models(), []);
+  assert.deepEqual((await h.adapter.models()).map(model => model.id), ['native-default', 'native-fast']);
   assert.deepEqual(await h.adapter.commands(), []);
   assert.deepEqual(h.calls(), []);
   const cap = h.adapter.capabilities;
@@ -52,7 +54,8 @@ test('Doubao advertises only its public CLI capabilities, and catalog reads neve
   assert.equal(cap.defaultPermissionMode, 'auto_edit');
   for (const key of ['images', 'history', 'fork', 'forkAt', 'forkInto', 'deleteSession', 'quota', 'multiAccount'] as const) assert.equal(cap[key], false, key);
   assert.deepEqual(cap.effortLevels, []);
-  assert.equal(cap.modelCatalog, false);
+  assert.equal(cap.modelCatalog, true);
+  assert.equal(cap.modelSwitch, true);
   assert.deepEqual(await h.adapter.diagnose(), { version: '2.31.2', protocol: 'doubao -p (text)' });
   assert.deepEqual(h.calls(), [], 'the diagnostic is only --version');
   assert.equal(await new DoubaoAdapter(['/nonexistent/doubao']).available(), false);
@@ -227,7 +230,7 @@ test('Doubao configuration has a PATH default and an executable override', () =>
 
 async function apiSetup(t: { after(fn: () => unknown): void }) {
   const h = setup(t);
-  const registry = new AgentRegistry([{ id: 'doubao', adapter: 'doubao', command, env: { FAKE_DOUBAO_LOG: h.log } }], null);
+  const registry = new AgentRegistry([{ id: 'doubao', adapter: 'doubao', command, env: { FAKE_DOUBAO_LOG: h.log, CALLI_DOUBAO_RUNTIME: join(h.dir, 'native') } }], null);
   const store = new Store(h.dir);
   let manager = new ThreadManager(store, registry.adapters, [h.dir], new AttachmentStore(h.dir));
   let server = createHttpServer({ manager, registry, token: 'test-token', webDir: null, version: 'test' });
@@ -254,11 +257,11 @@ test('Doubao API persists a newly announced id during a turn, and resumes it aft
   const agents = await (await h.api('/api/agents')).json() as any[];
   assert.ok(agents[0].available);
   assert.equal(agents[0].capabilities.approvals, false);
-  assert.deepEqual(await (await h.api('/api/agents/doubao/models')).json(), []);
+  assert.deepEqual((await (await h.api('/api/agents/doubao/models')).json() as any[]).map(model => model.id), ['native-default', 'native-fast']);
   const diagnostic = await (await h.api('/api/agents/doubao/diagnostics')).json() as any;
-  assert.equal(diagnostic.state, 'cli_only');
-  assert.equal(diagnostic.capabilities.modelCatalog, false);
-  assert.match(diagnostic.message, /不提供模型目录/);
+  assert.equal(diagnostic.state, 'ready');
+  assert.equal(diagnostic.capabilities.modelCatalog, true);
+  assert.match(diagnostic.message, /模型读取成功/);
   assert.deepEqual(h.calls(), [], 'diagnostics only read the CLI version');
   const made = await h.api('/api/threads', 'POST', { agent: 'doubao', cwd: h.dir });
   assert.equal(made.status, 201);
@@ -287,7 +290,7 @@ test('Doubao API rejects invented catalog capabilities and keeps native defaults
   const h = await apiSetup(t);
   const thread = await (await h.api('/api/threads', 'POST', { agent: 'doubao', cwd: h.dir })).json() as { id: string; permissionMode: string };
   assert.equal(thread.permissionMode, 'auto_edit');
-  for (const patch of [{ model: 'invented' }, { effort: 'high' }, { permissionMode: 'ask' }, { workMode: 'plan' }]) {
+  for (const patch of [{ model: 'invented' }, { effort: 'max' }, { permissionMode: 'ask' }, { workMode: 'plan' }]) {
     assert.equal((await h.api(`/api/threads/${thread.id}`, 'PATCH', patch)).status, 400, JSON.stringify(patch));
   }
   assert.equal((await h.api('/api/agents/doubao/quota')).status, 400);
@@ -297,4 +300,48 @@ test('Doubao API rejects invented catalog capabilities and keeps native defaults
   await h.api(`/api/threads/${thread.id}/turns`, 'POST', { text: 'hello' });
   await wait(() => h.manager.threadView(thread.id).status !== 'running');
   assert.ok(h.calls()[0].args.includes('--dangerously-bypass-approvals-and-sandbox'));
+});
+
+
+test('Doubao API selects real models and efforts, switches on the next turn and preserves identity after restart', async t => {
+  const h = await apiSetup(t);
+  assert.equal((await h.api('/api/threads', 'POST', { agent: 'doubao', cwd: h.dir, model: 'native-locked' })).status, 400);
+  const made = await h.api('/api/threads', 'POST', { agent: 'doubao', cwd: h.dir, model: 'native-default', effort: 'high' });
+  assert.equal(made.status, 201);
+  const thread = await made.json() as { id: string };
+  await h.api(`/api/threads/${thread.id}/turns`, 'POST', { text: 'first' });
+  await wait(() => h.manager.threadView(thread.id).status !== 'running');
+  const id = h.manager.getThread(thread.id).agentSessionId;
+  assert.ok(id);
+  assert.equal(h.calls()[0].args[h.calls()[0].args.indexOf('--model') + 1], 'native-default');
+  assert.equal(h.calls()[0].args[h.calls()[0].args.indexOf('--effort') + 1], 'high');
+  await h.api(`/api/threads/${thread.id}/turns`, 'POST', { text: 'slow' });
+  await wait(() => h.calls().length === 2);
+  const changed = await h.api(`/api/threads/${thread.id}`, 'PATCH', { model: 'native-fast' });
+  assert.equal(changed.status, 200);
+  assert.equal(h.manager.threadView(thread.id).status, 'running', 'a model change must not interrupt the active task');
+  assert.equal(h.manager.getThread(thread.id).effort, null, 'unsupported effort is reset when changing models');
+  assert.equal((await h.api(`/api/threads/${thread.id}`, 'PATCH', { effort: 'high' })).status, 400);
+  await h.api(`/api/threads/${thread.id}/cancel`, 'POST', {});
+  await wait(() => h.manager.threadView(thread.id).status !== 'running');
+  await h.api(`/api/threads/${thread.id}/turns`, 'POST', { text: 'fast' });
+  await wait(() => h.manager.threadView(thread.id).status !== 'running');
+  assert.equal(h.calls()[2].args[h.calls()[2].args.indexOf('--model') + 1], 'native-fast');
+  assert.equal(h.calls()[2].args.includes('--effort'), false);
+  assert.equal(h.manager.getThread(thread.id).agentSessionId, id);
+  await h.restart();
+  await h.api(`/api/threads/${thread.id}/turns`, 'POST', { text: 'after restart' });
+  await wait(() => h.manager.threadView(thread.id).status !== 'running');
+  assert.equal(h.calls()[3].args[h.calls()[3].args.indexOf('--model') + 1], 'native-fast');
+  assert.equal(h.calls()[3].args[h.calls()[3].args.indexOf('--resume') + 1], id);
+  assert.equal((await h.api(`/api/threads/${thread.id}`, 'PATCH', { model: 'native-default', effort: 'off' })).status, 200);
+  await h.api(`/api/threads/${thread.id}/turns`, 'POST', { text: 'no reasoning' });
+  await wait(() => h.manager.threadView(thread.id).status !== 'running');
+  assert.equal(h.calls()[4].args[h.calls()[4].args.indexOf('--effort') + 1], 'none');
+  assert.equal((await h.api(`/api/threads/${thread.id}`, 'PATCH', { model: null, effort: null })).status, 200);
+  await h.api(`/api/threads/${thread.id}/turns`, 'POST', { text: 'defaults' });
+  await wait(() => h.manager.threadView(thread.id).status !== 'running');
+  assert.equal(h.calls()[5].args.includes('--model'), false);
+  assert.equal(h.calls()[5].args.includes('--effort'), false);
+  assert.equal(h.manager.getThread(thread.id).agentSessionId, id);
 });

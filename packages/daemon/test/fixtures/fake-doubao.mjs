@@ -27,7 +27,23 @@ for (let index = 0; index < args.length; index++) {
   else if (booleans.has(name)) flags.set(name, true);
   else fail('invalid_arguments: Unknown CLI argument.');
 }
-if (flags.has('--list')) { console.log('fixture-session  Fixture conversation'); process.exit(0); }
+if (flags.has('--list')) {
+  const runtime = process.env.FAKE_DOUBAO_RUNTIME;
+  const source = runtime && readFileSync(join(dirname(runtime), 'resources/js_app/entry-cli-router/main.js'), 'utf8');
+  if (!source?.includes('type:"calli_models"')) { console.log('fixture-session  Fixture conversation'); process.exit(0); }
+  if (process.env.FAKE_DOUBAO_MODEL_LOG) appendFileSync(process.env.FAKE_DOUBAO_MODEL_LOG, JSON.stringify({ args, runtime, marker: process.env.FAKE_DOUBAO_MARKER }) + '\n');
+  if (process.env.FAKE_DOUBAO_IGNORE_SIGINT) process.on('SIGINT', () => undefined);
+  await delay(Number(process.env.FAKE_DOUBAO_MODEL_DELAY ?? 0));
+  if (process.env.FAKE_DOUBAO_MODEL_LARGE) { await new Promise(resolve => process.stdout.write('x'.repeat(1024 * 1024 + 1), resolve)); process.exit(0); }
+  if (process.env.FAKE_DOUBAO_MODEL_ERROR) fail(process.env.FAKE_DOUBAO_MODEL_ERROR);
+  if (process.env.FAKE_DOUBAO_MODEL_OUTPUT) { console.log(process.env.FAKE_DOUBAO_MODEL_OUTPUT); process.exit(0); }
+  console.log(JSON.stringify({ type: 'calli_models', models: [
+    { modelId: 'native-default', name: 'Doubao Default', available: true, isDefault: true, effortAdjustable: true, efforts: [{ level: 'none', name: 'None' }, { level: 'low', name: 'Low' }, { level: 'high', name: 'High' }] },
+    { modelId: 'native-fast', name: 'Doubao Fast', description: 'Fast task model', available: true, isDefault: false, effortAdjustable: false, efforts: [] },
+    { modelId: 'native-locked', name: 'Doubao Locked', available: false, isDefault: false, effortAdjustable: true, efforts: [] },
+  ] }));
+  process.exit(0);
+}
 if (!flags.get('-p')?.trim()) fail('invalid_arguments: A prompt must immediately follow -p.');
 if (flags.get('-C') !== process.cwd()) fail('invalid_arguments: Wrong working directory.');
 if (flags.has('--permission-mode') && flags.has('--dangerously-bypass-approvals-and-sandbox')) fail('invalid_arguments: Conflicting permission flags.');
