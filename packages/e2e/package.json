@@ -6,7 +6,7 @@
   "scripts": {
     "test": "node run.mjs",
     "test:restart": "node --test test/restart-idle.spec.mjs",
-    "test:runner": "node --test runner.test.mjs test/restart-idle.spec.mjs",
+    "test:runner": "node --test runner.test.mjs test/restart-idle.spec.mjs test/install.spec.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

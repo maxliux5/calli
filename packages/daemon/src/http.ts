@@ -87,6 +87,8 @@ const GLOBAL_EVENT_TYPES = new Set([
   'input.resolved',
   'todo.updated',
   'agent.modelsChanged',
+  // An account's plan usage moved: what the agent said while answering, or a probe.
+  'quota.updated',
   // Not a thread event: written by the extension host's own subscription below, like schedules.changed.
   'extensions.changed',
 ]);

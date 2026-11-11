@@ -1922,6 +1922,11 @@ export const zh = {
   'sidebar.reply': '回复：',
   'sidebar.settings': '配置',
   'quickSwitch.sessions': '最近会话',
+  'quickSwitch.hide': '隐藏入口',
+  'quickSwitch.handle': '快速切换把手',
+  'quickSwitch.handleHint': '手机上显示在右侧，可拖动位置',
+  'quickSwitch.show': '显示',
+  'quickSwitch.hidden': '隐藏',
 
   // Skills
   'skills.view': '查看说明',
