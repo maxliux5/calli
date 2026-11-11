@@ -30,7 +30,8 @@ export interface FeishuRecord {
   result: 'received' | 'sent' | 'failed' | 'dropped';
   reason: string | null;
 }
-export interface FeishuSetup { state: 'idle' | 'waiting' | 'done' | 'failed'; url: string | null; reason: string | null }
+/** `create` makes the bot; `login` signs the person in once, which is how their own open_id becomes known. */
+export interface FeishuSetup { state: 'idle' | 'waiting' | 'done' | 'failed'; url: string | null; reason: string | null; kind: 'create' | 'login' | null }
 
 /** The bot gets its own lark-cli profile so it never shares an app (and its event connection) with another tool. */
 export const FEISHU_PROFILE = 'calli';
@@ -89,7 +90,7 @@ export class FeishuChat {
   private realtime: FeishuRealtime = 'off';
   private pendingOwner: string | null = null;
   private readonly hinted = new Set<string>();
-  private setup: FeishuSetup = { state: 'idle', url: null, reason: null };
+  private setup: FeishuSetup = { state: 'idle', url: null, reason: null, kind: null };
   private setupChild: ChildProcess | null = null;
   private consumer: ChildProcess | null = null;
   private consumerGeneration = 0;
@@ -177,9 +178,21 @@ export class FeishuChat {
     const id = await this.identity();
     if (!id.cli) throw new HttpError(409, 'lark-cli is not installed');
     if (id.configured) throw new HttpError(409, 'the bot already exists');
+    return this.runSetup('create');
+  }
+  /** Signing in once tells us who the person is; their open_id then needs no typing. */
+  async startLogin() {
+    if (this.setupChild) return this.status();
+    const id = await this.identity();
+    if (!id.cli) throw new HttpError(409, 'lark-cli is not installed');
+    if (!id.configured) throw new HttpError(409, 'create the bot first');
+    return this.runSetup('login');
+  }
+  private async runSetup(kind: 'create' | 'login') {
     const { executable, env } = this.process();
-    this.setup = { state: 'waiting', url: null, reason: null };
-    const child = spawn(executable, ['config', 'init', '--new', '--name', FEISHU_PROFILE], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    this.setup = { state: 'waiting', url: null, reason: null, kind };
+    const args = kind === 'create' ? ['config', 'init', '--new', '--name', FEISHU_PROFILE] : ['--profile', FEISHU_PROFILE, 'auth', 'login', '--domain', 'im'];
+    const child = spawn(executable, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
     this.setupChild = child;
     let text = '';
     const take = (chunk: Buffer) => {
@@ -192,19 +205,19 @@ export class FeishuChat {
     child.stdout!.on('data', take); child.stderr!.on('data', take);
     const timer = setTimeout(() => child.kill('SIGTERM'), this.options.setupTimeoutMs ?? SETUP_TIMEOUT_MS);
     timer.unref();
-    child.on('error', e => { this.setupChild = null; clearTimeout(timer); this.setup = { state: 'failed', url: null, reason: (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'cli_missing' : 'cli_failed' }; });
+    child.on('error', e => { this.setupChild = null; clearTimeout(timer); this.setup = { state: 'failed', url: null, reason: (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'cli_missing' : 'cli_failed', kind }; });
     child.on('close', code => {
       clearTimeout(timer);
       const cancelled = this.setupChild !== child;
       this.setupChild = null;
       if (cancelled || this.stopped) return;
-      if (code !== 0) { this.setup = { state: 'failed', url: null, reason: 'cli_failed' }; return; }
+      if (code !== 0) { this.setup = { state: 'failed', url: null, reason: 'cli_failed', kind }; return; }
       void this.identity().then(after => {
-        if (!after.configured) { this.setup = { state: 'failed', url: null, reason: 'cli_failed' }; return; }
-        // The person who approved the bot is the one it should listen to.
+        if (!after.configured || kind === 'login' && !after.user) { this.setup = { state: 'failed', url: null, reason: 'cli_failed', kind }; return; }
+        // The person who approved is the one the bot should listen to; signing in again is a deliberate change of owner.
         const settings = this.getSettings();
-        if (!settings.owner && after.user) this.store.saveHubSetting('feishu', { ...settings, owner: after.user });
-        this.setup = { state: 'done', url: null, reason: null };
+        if (after.user && (!settings.owner || kind === 'login')) this.store.saveHubSetting('feishu', { ...settings, owner: after.user });
+        this.setup = { state: 'done', url: null, reason: null, kind };
         void this.configure();
       });
     });
@@ -216,7 +229,7 @@ export class FeishuChat {
     const child = this.setupChild;
     this.setupChild = null;
     child?.kill('SIGTERM');
-    if (this.setup.state === 'waiting') this.setup = { state: 'idle', url: null, reason: null };
+    if (this.setup.state === 'waiting') this.setup = { state: 'idle', url: null, reason: null, kind: null };
     return this.status();
   }
 

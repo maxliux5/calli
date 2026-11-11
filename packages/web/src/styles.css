@@ -12703,10 +12703,20 @@ button.trace-step-head:hover { background: var(--hover); }
 .feishu-link { color: var(--accent); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; overflow-wrap: anywhere; font-size: 13px; }
 .feishu-setup > .personal-warning, .feishu-setup-waiting .personal-warning { margin: 0; font-size: 13px; }
 .feishu-records .feishu-dir { min-width: 2em; }
-/* The owner's open_id, usually filled by the scan; the bind button only appears as a fallback. */
-.feishu-owner { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.feishu-owner input { width: min(220px, 40vw); }
-.feishu-owner .ghost { flex-shrink: 0; }
+/* The owner's open_id: the scan is the main action, the input and its alternatives sit below it. */
+.feishu-owner { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }
+.feishu-owner-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.feishu-owner-main input { width: min(220px, 40vw); }
+.feishu-owner-main .primary { flex-shrink: 0; }
+.feishu-owner-main .text-btn { flex-shrink: 0; font-size: 12px; }
+.feishu-owner-alt { display: flex; align-items: center; gap: 10px; }
+.feishu-owner-alt small { display: inline; margin: 0; color: var(--muted); font-size: 12px; }
+.feishu-owner-alt .ghost { flex-shrink: 0; font-size: 12px; min-height: 30px; padding: 0 12px; }
+@media (max-width: 640px) {
+  /* The scan button and the input already fill a phone row; the label takes the line above. */
+  .feishu-owner-line { flex-wrap: wrap; }
+  .feishu-owner-line > span { flex-basis: 100%; }
+}
 .feishu-bottom .ghost { white-space: nowrap; flex-shrink: 0; }
 .agent-notice { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--muted); margin: 0; line-height: 1.6; }
 .agent-notice > svg { align-self: center; flex-shrink: 0; }

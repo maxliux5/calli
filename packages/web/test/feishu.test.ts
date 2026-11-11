@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { feishuLine, feishuReason, feishuResult } from '../src/feishu.js';
+import { feishuLine, feishuLoginPending, feishuReason, feishuResult, feishuSetupCopy } from '../src/feishu.js';
 import type { FeishuStatus } from '../src/api.js';
 
 const status = (patch: Partial<FeishuStatus> = {}): FeishuStatus => ({
   cli: true, configured: true, botReady: true, realtime: 'live', reason: null, pendingOwner: null,
-  setup: { state: 'idle', url: null, reason: null },
+  setup: { state: 'idle', kind: null, url: null, reason: null },
   records: [], dropped: 0, ...patch,
 });
 
@@ -49,4 +49,26 @@ test('a record outcome reads as one short word', () => {
   assert.equal(feishuResult('sent'), '已发出');
   assert.equal(feishuResult('failed'), '失败');
   assert.equal(feishuResult('dropped'), '已丢弃');
+});
+
+test('pairing copy follows the kind: the sign-in never speaks of creating a bot', () => {
+  const create = feishuSetupCopy('create');
+  const login = feishuSetupCopy('login');
+  assert.ok(create.hint.includes('创建'), 'the create pane introduces the bot');
+  assert.ok(!login.hint.includes('创建'), 'the sign-in pane never says create');
+  assert.ok(login.hint.includes('身份'));
+  assert.equal(login.waiting, '在飞书里打开下面的链接并同意登录，完成后自动填入你的账号。');
+  assert.equal(login.failed, '登录失败');
+  assert.equal(login.failed !== create.failed, true);
+  assert.equal(feishuSetupCopy(null).waiting, create.waiting, 'a missing kind reads as the original bot creation');
+  assert.equal(feishuSetupCopy(undefined).failed, create.failed);
+});
+
+test('a sign-in panel is up only while the login is out or failed', () => {
+  assert.equal(feishuLoginPending(null), false);
+  assert.equal(feishuLoginPending(status()), false, 'idle setup is no panel');
+  assert.equal(feishuLoginPending(status({ setup: { state: 'waiting', kind: 'login', url: 'u', reason: null } })), true);
+  assert.equal(feishuLoginPending(status({ setup: { state: 'failed', kind: 'login', url: null, reason: 'timeout' } })), true);
+  assert.equal(feishuLoginPending(status({ setup: { state: 'done', kind: 'login', url: null, reason: null } })), false);
+  assert.equal(feishuLoginPending(status({ setup: { state: 'waiting', kind: 'create', url: 'u', reason: null } })), false, 'a bot creation belongs to the unconfigured page');
 });
