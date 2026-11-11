@@ -122,6 +122,7 @@ test('the settings section stays one line until turned on, and a rejected reposi
     await openUi(page, daemon);
     await page.evaluate(() => { location.hash = '#/todos'; });
     await page.locator('.personal-summary').click();
+    await page.getByRole('button', { name: /主动行动/ }).click();
     const mode = name => page.locator('.proactive-mode').getByRole('button', { name, exact: true });
     await mode('关').waitFor();
     assert.equal(await mode('关').getAttribute('aria-pressed'), 'true');
@@ -136,9 +137,9 @@ test('the settings section stays one line until turned on, and a rejected reposi
     await page.locator('.personal-settings [role=alert]').getByText('目录不是可用的 git 仓库').waitFor();
     await page.locator('.proactive-repo').getByRole('button', { name: '移除 /not/a/repo', exact: true }).click();
     assert.equal(await page.locator('.proactive-repo').count(), 0);
-    await page.getByText('没有仓库时只备材料').waitFor();
+    await page.getByText('没有仓库时也会备材料').waitFor();
     await page.getByRole('button', { name: '保存', exact: true }).click();
-    await page.locator('.personal-settings').waitFor({ state: 'detached' });
+    await page.locator('.personal-settings').getByText('已保存', { exact: true }).waitFor();
     assert.deepEqual(saved.at(-1), { mode: 'auto', repos: [] }, 'enabled is never sent');
   } finally { await browser.close(); await daemon.stop(); }
 });

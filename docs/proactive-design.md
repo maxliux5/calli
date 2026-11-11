@@ -86,3 +86,108 @@
 - 假 agent（`test/fixtures/`）：能对 prepare / sandbox 提示词产出可断言的行为。
 - e2e（临时 hub + 假 agent）：三档开关、观察记录与「这条可以」、沙盒卡三动作、筛选与撤回。
 - 真实浏览器桌面/手机 × 亮/暗截图。
+
+## 第二期：推进（2026-11-11）
+
+### 为什么
+
+用户反馈「助手不够主动，好多问题没帮我解决」。实测一周：模式为观察、`repos` 为空，7 条观察全是同一件 11-05 已过期的事项，其余 17 件从未被看过。原因：
+
+1. bug：`tick` 只取第一个候选，它 24 小时内已记过就整轮返回，不看下一件。
+2. bug：`dueAt <= now + 48h` 把已过期的截止也算作「快到期」，过期事项永远占着第一位。
+3. 准备只看「重要 + 两天内截止」，而大多数事项没有截止；沙盒要先在设置里填仓库；任何线程在跑就整体不动，而用户几乎总有线程在跑。
+
+参考 Persona（`docs/assistant/agent-work.md`，#1686）：用户同样说过「不够主动」，它的解法不是知识库，而是让每个会话只处于三态之一——在干活 / 在等一个说得出名字的前提 / 已完成——并由助手推进前提：临时错误自动续跑、等外部的定时叫醒、等人的变成一点就答的卡片、完成的写一行结论。本期照这个思路做，知识库暂不加。
+
+### 改动一览
+
+| # | 改动 | 默认 |
+|---|---|---|
+| 1 | 修两个 bug：已记过的候选跳过、继续看下一件；截止早于今天 0 点的不算「快到期」 | — |
+| 2 | 新动作 `advance`（推进）：事项的工作线程停下后分流并推进 | 随三档开关 |
+| 3 | 空闲判定改为按事项：该事项没有运行中的线程即可；主动开出的运行中线程 ≤ 2 | — |
+| 4 | 笼统事项拆解：没截止、没线程的事项也能准备材料（拆步骤 + 第一步方案） | 随三档开关 |
+| 5 | 沙盒授权卡：事项线程在某个 git 仓库里但不在允许列表 → 卡片一键允许 | 随三档开关 |
+
+L3 对外动作（推远端、发消息、合入）仍然永远要人点头，本期不变。
+
+### 1. 候选修正
+
+- `tick` 依次尝试候选；某候选 24 小时内已有同事项同 kind 的 `observed/approved` 记录（或其他不该重复的记录）就跳过，继续下一件，直到找到一件或没有。
+- `preparationCandidate` 的 `soon`：`dueAt` 在今天 0 点（本地）之后且不晚于 48 小时后。截止已过（早于今天）的事项不再因截止成为准备候选（它仍可能因「今天有日程」或下面的拆解规则成为候选）。
+
+### 2. 推进（advance）
+
+**候选**：未完成、未提议的事项，有关联工作线程（`todoThreadIds`），该线程：不在运行、未归档、最后一轮由 hub 发起（不是终端导入或外部导入）、结束于 15 分钟到 7 天前、这一轮还没被推进过（以 `threadId + turnId` 去重）。主动 run 自己开的线程不在此列（由原有流程收尾）。
+
+**分流：先规则，再模型。**
+
+1. 这一轮以模型服务的临时错误结束（`turnOutcome` 为 error，文字匹配 408/429/5xx、`overloaded`、`rate limit`、`Connection error`、`timed out`、`ECONNRESET`、`fetch failed`、`socket hang up`）→ `transient`。认证、额度耗尽、上下文过长等不算临时（额度耗尽交给已有的额度恢复续跑）。
+2. 否则用私人 agent 调一次 `askOnce`（归档的一次性线程，不碰工作线程的会话），输入：事项文字、接续说明（截前 2000 字）、这一轮人的要求、最终回复（首尾各 1500 字）、当前时间。要求只输出 JSON：
+
+   ```json
+   {"phase":"done|blocked|unsure","on":"user|external",
+    "line":"不超过 30 字：结论，或在等什么",
+    "question":{"text":"原样引用回复里的问题","options":["…","…"]},
+    "wait":{"what":"在等什么","then":"等到后做什么","checkMinutes":10}}
+   ```
+
+   判断原则写进提示词：结尾「要不要我再…？」这类可选提议不算等人，任务做完就是 `done`；只有回复里确实在等人决定、提供信息或操作时才是 `blocked · user`；拿不准就 `unsure`。
+3. 代码校验：`question.text` 必须是最终回复的子串（去首尾空白后），否则降为 `unsure`；`options` 最多 4 个、每个 ≤ 40 字；`checkMinutes` 夹到 2–240；`line` 截 30 字。解析失败按 `unsure`。
+
+**动作**（`auto` 档全部执行。`observe` 档：`transient` 与 `blocked · external` 不自动发送，只写 `observed` 记录，`summary` 写「会怎么做」；`blocked · user` 与 `done` 照常出 `asking` 卡片，因为卡片本身不发任何消息，只有人点了才发）：
+
+| 分流 | 动作 | run 状态 |
+|---|---|---|
+| `transient` | 退避后向该线程发 `继续`：1、2、4 分钟…上限 30 分钟，同一事项连续最多 3 次；第 3 次仍失败 → 变成 `asking` 卡片「模型服务连续出错：<原文>」，选项「再试一次」/「先放着」 | `waiting` → `continued` |
+| `blocked · external` | 到 `wakeAt` 时向线程发叫醒消息：上一轮说在等什么、等到后做什么，请它自己检查；好了就继续，没好就说还要多久。间隔每次翻倍（≤ 1 小时），最多 6 次；之后变成卡片「等了 6 次还在等 X」，选项「继续等」/「不等了」 | `waiting` → `continued` |
+| `blocked · user` | 卡片：问题原文 + 选项 + 自由回答；人点了就把 `关于你上面的问题：Q → A` 发给该线程 | `asking` → `answered` |
+| `done` | 卡片「看起来做完了：<line>」，动作「关掉事项」/「还没完」 | `asking` → `closed` / `discarded` |
+| `unsure` | 不动作，只留审计记录 | `discarded` |
+
+- 卡片不是对外动作，`observe` 档也出卡片；人点卡片按钮就是授权，发出的消息走正常 `startTurn`（非 `scheduled`）。
+- 每次自动发送前重查：线程仍停着、最后一轮仍是那一轮（人没有自己发过）、设置仍是 `auto`、不在安静时段。不满足则把这条 run 记 `discarded`（`discardReason` 写原因）。
+- 线程开始新一轮（无论谁发起）时，该线程上 `waiting/asking` 的 run 作废为 `discarded`（`discardReason: '线程已继续'`）。
+- 每日上限：自动发送（续跑 + 叫醒）≤ 20 次；分流的模型调用 ≤ 30 次。
+- 有 `asking` 卡片时用 `manager.notice(..., proactive=true)` 推一条，标题「需要你：<事项>」。
+
+### 3. 空闲判定
+
+- 原「任何线程在跑就不动」改为：候选事项自己没有运行中的关联线程；主动开出的、仍在运行的线程数 < 2。
+- 60 分钟间隔只约束开新线程的动作（prepare / sandbox / 拆解）；推进的分流与发送不受此约束（它们不开新线程），但同一线程两次自动发送间隔 ≥ 2 分钟。
+- 安静时段仍然全部不动（卡片已发出的照常可答）。
+
+### 4. 笼统事项拆解
+
+- **候选**：未完成、未提议、没有关联线程、接续说明里没有「已备好」、事项文字 ≥ 6 个字。按更新时间新→旧，每件 7 天内最多一次。
+- **动作**：开 `prepare` 线程（`variant: 'plan'`），提示词：把事项拆成 3–7 步，写出第一步的具体方案（要改哪里、怎么验证、要问人什么），写入 `artifacts/plan.md`；可以只读查看相关仓库，不改任何仓库，不对外；用 `calli todo update` 在接续说明记一句「已备好 拆解与第一步方案」。其余与原 L1 相同（落盘、已备好卡、计入 prepare 每日 5 次）。
+- 优先级：有截止的准备 > 推进 > 沙盒 > 拆解。
+
+### 5. 沙盒授权卡
+
+- 沙盒候选扫描时，若事项的关联线程 `cwd` 在允许的工作目录内、属于某个 git 仓库（取 `git rev-parse --show-toplevel`），但该仓库不在 `repos` 里 → 写一条 `kind: 'sandbox'`、`status: 'observed'`、`needsRepo: true`、`repo: <根目录>` 的记录，`summary`「这件事的线程在 <仓库名> 里，允许它在沙盒里继续吗？」。同一事项同一仓库 7 天内只出一次。
+- 新动作 `allow-repo`：把该仓库加入 `repos`（走 `save` 的同一套校验），记录变 `approved`。之后的 tick 按原 L2 规则执行。
+
+### 记录与 API 增量
+
+- `ProactiveRun.kind` 增加 `'advance'`；`prepare` 增加可选 `variant: 'deadline' | 'plan'`；`sandbox` 增加可选 `needsRepo: true`。
+- `status` 增加 `'waiting' | 'asking' | 'answered' | 'continued' | 'closed'`。
+- `advance` 字段：`turnId`、`phase`、`on`、`line`、`question?: { text, options: string[] }`、`wait?: { what, then }`、`wakeAt?`、`attempts?`、`reason?: 'transient' | 'external' | 'user' | 'done'`。
+- 新接口：
+  - `POST /api/personal/proactive/runs/:id/answer` `{ answer: string }` → run：仅 `asking` 且 `reason` 为 `user/transient/external`；`transient` 的「再试一次」发 `继续`，`external` 的「继续等」重新排一次叫醒，「先放着」「不等了」记 `discarded`；其他回答按「关于你上面的问题」发出，记 `answered`。线程正在运行 → 409。
+  - `POST /api/personal/proactive/runs/:id/close-matter` → run：仅 `reason: 'done'` 的 `asking`；把事项标为完成，run 记 `closed`。
+  - `POST /api/personal/proactive/runs/:id/dismiss` → run：`asking/waiting` → `discarded`（「还没完」也走这里）。
+  - `POST /api/personal/proactive/runs/:id/allow-repo` → run：仅 `needsRepo` 的 `observed`。
+- `counts()` 与 `GET /api/todos` 的 `proactiveRunCount` 继续不含 `discarded`；`GET /api/personal/proactive?summary=true` 新增 `asking: Record<事项ID, number>`（每件事项等人处理的卡片数），列表层据此显示标记，总数由前端求和，不用展开。
+
+### 界面
+
+- 桌面事项摊开层（`ProactiveRuns`）新增四种卡：等你回答（问题原文、选项按钮、「其他回答」输入）、看起来做完了（关掉事项 / 还没完）、在等（「在等：X · HH:MM 再看」，可「不等了」）、允许沙盒（允许 / 不用）。拆解材料沿用「已备好」卡。
+- 事项列表层：有 `asking` 的事项直接显示一个需要注意的标记（颜色只用在这里），不用展开就能看到；桌面顶部显示「N 件需要你」入口。
+- 文案写进 i18n 三语；手机与桌面、亮暗色都要看过。
+
+### 验收
+
+- 单测：两个 bug 的回归；空闲判定按事项；推进的规则分流（临时错误各词、非临时不续跑）、模型输出校验（问题非原文降级、解析失败、checkMinutes 夹取）、各分流动作与发送前重查、线程继续后作废、每日上限、observe 只记录不发送；拆解候选与 7 天去重；授权卡生成与 `allow-repo`；新接口状态校验（409/404）。
+- 假 agent（`packages/daemon/test/fixtures/`）：对推进分流提示词按约定关键字返回固定 JSON（done / user / external / unsure / 坏 JSON），对拆解提示词写出 `artifacts/plan.md`。
+- e2e：推进卡片四种的显示与操作，`N 件需要你` 入口。

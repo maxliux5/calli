@@ -603,13 +603,24 @@ export interface ProactiveFile {
   deletions: number;
 }
 
-export type ProactiveStatus = 'running' | 'observed' | 'approved' | 'ready' | 'merged' | 'discarded' | 'reverted' | 'failed';
+export type ProactiveStatus = 'running' | 'observed' | 'approved' | 'ready' | 'merged' | 'discarded' | 'reverted' | 'failed' | 'waiting' | 'asking' | 'answered' | 'continued' | 'closed';
 
 /** One thing she did unasked: materials prepared for a matter, or code changed in a sandbox. */
 export interface ProactiveRun {
   id: string;
   matterId: string;
-  kind: 'prepare' | 'sandbox';
+  kind: 'prepare' | 'sandbox' | 'advance';
+  variant?: 'deadline' | 'plan';
+  needsRepo?: true;
+  turnId?: string;
+  phase?: 'done' | 'blocked' | 'unsure';
+  on?: 'user' | 'external';
+  line?: string;
+  question?: { text: string; options: string[] };
+  wait?: { what: string; then: string };
+  wakeAt?: string;
+  attempts?: number;
+  reason?: 'transient' | 'external' | 'user' | 'done';
   repo?: string;
   branch?: string;
   threadId: string;
@@ -625,7 +636,7 @@ export interface ProactiveRun {
   discardReason?: string;
 }
 
-export type ProactiveAction = 'merge' | 'discard' | 'revert' | 'approve';
+export type ProactiveAction = 'merge' | 'discard' | 'revert' | 'approve' | 'answer' | 'close-matter' | 'dismiss' | 'allow-repo';
 
 /** Where a matter stands, derived by the daemon. Null when nothing is going on with it. */
 export type TodoStage = 'answer' | 'review' | 'blocked' | 'working' | 'idle';
@@ -1233,10 +1244,10 @@ export class Api {
   briefSettings(): Promise<BriefSettings> { return this.request('GET', '/api/personal/brief/settings'); }
   saveBriefSettings(value: BriefSettings): Promise<BriefSettings> { return this.request('PUT', '/api/personal/brief/settings', value); }
   proactive(matterId?: string): Promise<{ settings: ProactiveSettings; runs: ProactiveRun[] }> { return this.request('GET', `/api/personal/proactive${matterId ? `?matterId=${encodeURIComponent(matterId)}` : ''}`); }
-  proactiveSettings(): Promise<{ settings: ProactiveSettings }> { return this.request('GET', '/api/personal/proactive?summary=true'); }
+  proactiveSettings(): Promise<{ settings: ProactiveSettings; counts: Record<string, number>; asking: Record<string, number> }> { return this.request('GET', '/api/personal/proactive?summary=true'); }
   saveProactiveSettings(value: Partial<Omit<ProactiveSettings, 'enabled'>>): Promise<ProactiveSettings> { return this.request('PUT', '/api/personal/proactive/settings', value); }
   proactiveDiff(id: string): Promise<{ files: ProactiveFile[] }> { return this.request('GET', `/api/personal/proactive/runs/${encodeURIComponent(id)}/diff`); }
-  proactiveAct(id: string, action: ProactiveAction): Promise<ProactiveRun> { return this.request('POST', `/api/personal/proactive/runs/${encodeURIComponent(id)}/${action}`); }
+  proactiveAct(id: string, action: ProactiveAction, answer?: string): Promise<ProactiveRun> { return this.request('POST', `/api/personal/proactive/runs/${encodeURIComponent(id)}/${action}`, action === 'answer' ? { answer } : undefined); }
   larkChannel(): Promise<LarkChannelSettings> { return this.request('GET', '/api/personal/channels/lark'); }
   saveLarkChannel(value: LarkChannelSettings): Promise<LarkChannelSettings> { return this.request('PUT', '/api/personal/channels/lark', value); }
   larkStatus(): Promise<LarkChannelStatus> { return this.request('GET', '/api/personal/channels/lark/status'); }

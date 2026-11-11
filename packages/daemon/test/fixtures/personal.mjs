@@ -8,6 +8,13 @@ export function personalFixture(text) {
   if (text.includes('<calli-personal-router>')) router = true;
   if (router && command === 'router-fixture-fail' && existsSync('.calli/router-retry-ready')) return JSON.stringify({ intro: text.includes('<calli-personal-router>'), profile: text.includes('<calli-personal-profile>') });
   if (router && ['router-fixture-slow', 'router-fixture-fail'].includes(command)) return null;
+  if (command === '由 Calli 发起的推进分流。') {
+    if (text.includes('advance-invalid')) return 'not JSON';
+    if (text.includes('advance-done')) return JSON.stringify({ phase: 'done', line: '测试和实现已做好' });
+    if (text.includes('advance-user')) return JSON.stringify({ phase: 'blocked', on: 'user', line: '等你选方案', question: { text: '请选择 A 还是 B？', options: ['A', 'B'] } });
+    if (text.includes('advance-external')) return JSON.stringify({ phase: 'blocked', on: 'external', line: '等 CI', wait: { what: 'CI 结束', then: '检查结果', checkMinutes: 10 } });
+    return JSON.stringify({ phase: 'unsure', line: '' });
+  }
   const proactive = ['由 Calli 发起的提前准备。', '由 Calli 发起的沙盒动手。'].includes(command);
   const explore = command === '由 Calli 发起的一键配置探索。';
   const clarification = process.env.FAKE_PERSONAL_DELEGATE_CLARIFY === '1' && command.startsWith('这是一件新交给你的事，不是交接');
@@ -36,10 +43,11 @@ export function personalFixture(text) {
       const dir = text.match(/^材料目录：(.+)$/m)?.[1];
       if (!dir || dir.startsWith('/') || dir.includes('..')) throw new Error('invalid artifact path');
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, 'outline.md'), '# 会前提纲\n\n先核对目标，再列决策。\n');
+      const plan = text.includes('本轮是笼统事项拆解');
+      writeFileSync(join(dir, plan ? 'plan.md' : 'outline.md'), plan ? '# 拆解与第一步方案\n\n1. 读取现状\n2. 确认方案\n3. 实现验证\n' : '# 会前提纲\n\n先核对目标，再列决策。\n');
       const todo = cli(['todo', 'show', id]);
-      cli(['todo', 'update', id, '--rev', String(todo.rev), '--note-file', '-'], `${todo.note.text}\n已备好会前提纲。`);
-      return '已备好会前提纲，列出目标和待决策问题。';
+      cli(['todo', 'update', id, '--rev', String(todo.rev), '--note-file', '-'], `${todo.note.text}\n${plan ? '已备好 拆解与第一步方案' : '已备好会前提纲。'}`);
+      return plan ? '已备好 拆解与第一步方案。' : '已备好会前提纲，列出目标和待决策问题。';
     }
     for (const instruction of [`Calli-Proactive: ${id}`, '跑该仓库测试', '不动主工作区', '不推送远端']) {
       if (!text.includes(instruction)) throw new Error(`missing sandbox instruction: ${instruction}`);

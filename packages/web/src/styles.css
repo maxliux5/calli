@@ -13023,10 +13023,10 @@ button.trace-step-head:hover { background: var(--hover); }
 
 /* What she did on her own: settings, cards on the spread, the desk filter. */
 .desk-views { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
-.desk-filter { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: none; color: var(--muted); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
-.desk-filter:hover { color: var(--text); }
+.desk-filter, .desk-attention { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: none; color: var(--muted); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.desk-filter:hover, .desk-attention:hover { color: var(--text); }
 .desk-filter > span { color: var(--faint); font-variant-numeric: tabular-nums; }
-.desk-filter[aria-pressed='true'] { background: var(--surface); color: var(--text); box-shadow: var(--shadow-card); }
+.desk-filter[aria-pressed='true'], .desk-attention[aria-pressed='true'] { background: var(--surface); color: var(--text); box-shadow: var(--shadow-card); }
 .proactive-body { margin-top: 6px; }
 .proactive-body > small { margin-top: 2px; line-height: 1.6; }
 .proactive-body .lark-group { padding: 6px 0; font-size: 13px; }
@@ -13034,6 +13034,18 @@ button.trace-step-head:hover { background: var(--hover); }
 .proactive-repo > span { direction: rtl; text-align: left; unicode-bidi: plaintext; }
 .proactive-repo { min-width: 0; }
 .lark-add:disabled { opacity: .5; cursor: default; }
+/* Questions stay with their controls, including on narrow screens. */
+.proactive-answer { flex-basis: 100%; min-width: 0; }
+.proactive-answer p, .proactive-card p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.proactive-answer-form { flex-wrap: nowrap; align-items: stretch; }
+.proactive-answer-form input { flex: 1 1 140px; min-width: 0; padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font: inherit; font-size: 12px !important; height: 40px; box-sizing: border-box; }
+.proactive-answer-form button { flex: none; height: 40px; }
+.proactive-answer-form input:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+.proactive-answer .desk-card-actions button { min-height: 40px; white-space: normal; overflow-wrap: anywhere; }
+.desk-cover-alert.personal-warning { color: var(--warn); }
+.desk-attention { min-width: 100px; font-variant-numeric: tabular-nums; }
+.desk-attention.empty { visibility: hidden; }
+.proactive-list > li > p { flex-basis: 100%; margin: 0; font-size: 13px; overflow-wrap: anywhere; }
 .proactive-card .desk-card-kind.personal-warning { color: var(--warn); }
 .proactive-card.prepared p, .proactive-card.observed p, .proactive-card.approved p, .proactive-card.reverted p { color: var(--muted); }
 .proactive-mode { align-self: center; }
@@ -13109,7 +13121,7 @@ button.proactive-row-title:hover { color: var(--muted); }
 .proactive-diff-files .diff-stats, .proactive-diff-total .diff-stats { flex: none; }
 @media (max-width: 760px) {
   .desk-views { justify-content: flex-start; }
-  .desk-filter { min-height: 40px; }
+  .desk-filter, .desk-attention { min-height: 40px; }
   .proactive-list { padding: 0 14px; }
   .proactive-list .desk-card-actions button { min-height: 40px; }
 }

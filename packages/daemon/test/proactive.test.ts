@@ -7,12 +7,14 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Store, type TodoRecord } from '../src/store.js';
+import { Workdirs } from '../src/workdirs.js';
 import { ThreadManager } from '../src/threads.js';
 import { AttachmentStore } from '../src/attachments.js';
 import { ClaudeAcpAdapter } from '../src/adapters/claude.js';
 import type { AgentAdapter } from '../src/adapters/types.js';
 import { createHttpServer, listenPrivate } from '../src/http.js';
 import { personalServer } from '../src/personal.js';
+import { advancePrompt, parseAdvance, transientError } from '../src/proactive-advance.js';
 import { preparationCandidate, ProactiveService, type ProactiveRun } from '../src/proactive.js';
 import { ProactiveSandbox } from '../src/proactive-sandbox.js';
 import { PushService } from '../src/push.js';
@@ -31,7 +33,7 @@ async function setup(mode = '') {
   const cwd = join(dir, 'personal'); mkdirSync(cwd);
   const store = new Store(dir);
   const adapters = new Map<string, AgentAdapter>([['claude', new ClaudeAcpAdapter([process.execPath, resolve('test/fixtures/fake-acp.mjs')], mode ? { FAKE_PROACTIVE_MODE: mode } : {})]]);
-  const manager = new ThreadManager(store, adapters, [dir], new AttachmentStore(dir));
+  const manager = new ThreadManager(store, adapters, new Workdirs([dir], join(dir, 'roots'), join(dir, 'scratch')), new AttachmentStore(dir));
   const personal = manager.personal, service = personal.proactive;
   personal.putSettings({ directory: cwd, agent: 'claude' });
   personal.socket = join(dir, 'personal.sock');
@@ -122,7 +124,7 @@ test('idle gates: disabled, empty, shared quiet hours, busy threads, interval an
   const h = await setup(); try {
     await h.service.tick(now); assert.equal(h.service.runs().length, 0);
     await h.service.save({ mode: 'auto' }); await h.service.tick(now); assert.equal(h.store.listThreads().length, 0);
-    h.todo();
+    const todo = h.todo();
     await h.service.save({ mode: 'off' }); await h.service.tick(now); assert.equal(h.service.runs().length, 0);
     await h.service.save({ mode: 'auto' });
     await h.service.tick(new Date(2026, 10, 1, 23)); await h.service.tick(new Date(2026, 10, 1, 7, 59));
@@ -132,8 +134,9 @@ test('idle gates: disabled, empty, shared quiet hours, busy threads, interval an
     await h.service.tick(now); assert.equal(h.service.runs().length, 0, 'uses the edited brief/review window');
     h.store.saveHubSetting('personalReview', review);
     const busy = await h.manager.createThread({ agent: 'claude', cwd: h.cwd }); h.store.updateThread(busy.id, { status: 'running' });
+    h.store.linkTodoThread(todo.id, busy.id);
     await h.service.tick(now); assert.equal(h.service.runs().length, 0);
-    h.store.updateThread(busy.id, { status: 'idle' });
+    h.store.updateThread(busy.id, { status: 'idle' }); h.store.unlinkTodoThread(todo.id, busy.id);
     h.store.saveHubSetting('personalProactiveRuns', [historical('recent', 'sandbox', new Date(now.getTime() - 3599999).toISOString())]);
     await h.service.tick(now); assert.equal(h.service.runs().length, 1, 'interval includes other kinds');
     h.store.saveHubSetting('personalProactiveRuns', Array.from({ length: 5 }, (_, i) => historical(String(i), 'prepare', at(5 + i))));
@@ -231,7 +234,7 @@ test('observations are free of the daily limit but keep the hour, one per matter
 
 test('approve marks an observation as read; other states refuse and a verdict mutes the candidate for a day', async () => {
   const h = await setup(); try {
-    const todo = h.todo();
+    const todo = h.todo({ dueAt: at(15, 2) });
     await h.service.save({ mode: 'observe' });
     await h.service.tick(now);
     const observation = h.service.runs()[0];
@@ -317,11 +320,12 @@ test('L2 requires a prior linked work thread inside an explicitly allowed repo a
   const h = await setup(); try {
     const repo = await h.repository();
     const todo = h.todo({ importance: 'normal', dueAt: null });
-    const other = await h.manager.createThread({ agent: 'claude', cwd: h.cwd }); h.store.linkTodoThread(todo.id, other.id);
+    const plain = join(h.dir, 'plain'); mkdirSync(plain);
+    const other = await h.manager.createThread({ agent: 'claude', cwd: plain }); h.store.linkTodoThread(todo.id, other.id);
     await h.service.save({ mode: 'auto', repos: [repo] });
     await h.service.tick(now); assert.deepEqual(h.service.runs(), []);
     const work = await h.manager.createThread({ agent: 'claude', cwd: repo }); h.store.linkTodoThread(todo.id, work.id);
-    await h.service.save({ repos: [] }); await h.service.tick(now); assert.deepEqual(h.service.runs(), []);
+    await h.service.save({ repos: [] }); await h.service.tick(now); assert.equal(h.service.runs()[0].needsRepo, true);
     await h.service.save({ repos: [repo] });
     h.store.saveHubSetting('personalProactiveRuns', [historical('one', 'sandbox', at(8)), historical('two', 'sandbox', at(9))]);
     await h.service.tick(now); assert.equal(h.service.runs().length, 2);
@@ -530,4 +534,330 @@ test('sandbox decisions serialize per repository, reject running workers and pre
     h.store.saveHubSetting('personalProactiveRuns', [service.runs()[0], { ...another, status: 'failed' }]);
     assert.equal((await service.act('two', 'discard')).status, 'discarded');
   } finally { release(); await h.close(); }
+});
+
+test('regression: an observed first candidate does not starve the next matter', async () => {
+  const h = await setup(); try {
+    const one = h.todo(), two = h.todo();
+    await h.service.save({ mode: 'observe' });
+    await h.service.tick(now);
+    await h.service.tick(new Date(now.getTime() + 2 * 3600_000));
+    assert.deepEqual(new Set(h.service.runs().map(run => run.matterId)), new Set([one.id, two.id]));
+    assert.equal(h.store.listThreads().length, 0);
+  } finally { await h.close(); }
+});
+
+test('regression: yesterday is not an upcoming deadline, today starts at local midnight', async () => {
+  const h = await setup(); try {
+    const todo = h.todo();
+    assert.equal(preparationCandidate({ ...todo, dueAt: at(23, 0) }, '', now), false);
+    assert.equal(preparationCandidate({ ...todo, dueAt: at(0) }, '', now), true);
+    assert.equal(preparationCandidate({ ...todo, dueAt: at(12, 3) }, '', now), true);
+    assert.equal(preparationCandidate({ ...todo, dueAt: at(13, 3) }, '', now), false);
+  } finally { await h.close(); }
+});
+
+test('advance rules distinguish transient service errors and validate model evidence', () => {
+  for (const error of ['408', '429', '500', '503', '599', 'overloaded', 'rate limit', 'Connection error', 'timed out', 'ECONNRESET', 'fetch failed', 'socket hang up']) assert.equal(transientError(null, error), true, error);
+  for (const error of ['401 unauthorized', '429 quota exhausted', '500 context too long', '额度耗尽 429', 'insufficient credits', 'permission denied']) assert.equal(transientError(null, error), false, error);
+  assert.equal(transientError('plan_exhausted', '429'), false);
+  assert.equal(parseAdvance('bad JSON', '').phase, 'unsure');
+  assert.equal(parseAdvance('null', '').phase, 'unsure');
+  assert.equal(parseAdvance('{"phase":"blocked","on":"user","line":"等你","question":{"text":"invented"}}', 'real').phase, 'unsure');
+  const question = parseAdvance(JSON.stringify({ phase: 'blocked', on: 'user', line: '长'.repeat(60), question: { text: ' Q? ', options: ['长'.repeat(60), 'A', 'B', 'C', 'D'] } }), 'Here Q?');
+  assert.equal(question.line.length, 30); assert.equal(question.question!.options.length, 4); assert.equal(question.question!.options[0].length, 40);
+  for (const [input, expected] of [[1, 2], [999, 240], [10, 10]]) {
+    const parsed = parseAdvance(JSON.stringify({ phase: 'blocked', on: 'external', line: '等 CI', wait: { what: 'CI', then: '验证', checkMinutes: input } }), '');
+    assert.equal(parsed.checkMinutes, expected);
+  }
+  const prompt = advancePrompt('matter', 'n'.repeat(3000), 'request', 'x'.repeat(4000), now);
+  assert.equal(/\bfail\b/.test(prompt), false);
+  assert.ok(prompt.includes('可选提议不算等人')); assert.ok(prompt.length < 6500);
+});
+
+async function workTurn(h: Awaited<ReturnType<typeof setup>>, marker = 'advance-user', error?: string, extra: Record<string, unknown> = {}) {
+  const todo = h.todo({ text: marker, dueAt: null });
+  const thread = await h.manager.createThread({ agent: 'claude', cwd: h.cwd });
+  h.store.linkTodoThread(todo.id, thread.id);
+  const turnId = `turn-${todo.id}`;
+  h.store.appendEvent(thread.id, turnId, 'turn.started', { text: marker, ...extra });
+  h.store.appendEvent(thread.id, turnId, 'message.delta', { text: `${marker} 请选择 A 还是 B？` });
+  h.store.appendEvent(thread.id, turnId, error ? 'turn.error' : 'turn.done', error ? { message: error, ...extra } : { ...extra });
+  h.store.db.prepare('UPDATE events SET ts=? WHERE thread_id=?').run(new Date(now.getTime() - 20 * 60_000).toISOString(), thread.id);
+  return { todo, thread, turnId };
+}
+
+test('advance fixture classifies user, done, external, unsure and invalid output through archived askOnce', async () => {
+  for (const [marker, status, reason] of [['advance-user', 'asking', 'user'], ['advance-done', 'asking', 'done'], ['advance-external', 'waiting', 'external'], ['advance-unsure', 'discarded', undefined], ['advance-invalid', 'discarded', undefined]] as const) {
+    const h = await setup(); try {
+      const { thread } = await workTurn(h, marker);
+      await h.service.save({ mode: 'auto' }); await h.service.tick(now);
+      const run = h.service.runs()[0]; assert.equal(run.status, status, run.summary); assert.equal(run.reason, reason);
+      assert.equal(h.store.listTurns(thread.id).length, 1, 'classification does not send to the work thread');
+      assert.equal(h.store.listThreads({ archived: true }).length, 1, 'askOnce is archived');
+      assert.equal(h.store.listEventsOfType(thread.id, 'agent.notice').length, status === 'asking' ? 1 : 0);
+      const summary = await (await h.api('/api/personal/proactive?summary=true')).json();
+      assert.deepEqual(summary.asking, status === 'asking' ? { [run.matterId]: 1 } : {});
+      await h.service.tick(new Date(now.getTime() + 60_000));
+      assert.equal(h.service.runs().filter(run => run.kind === 'advance').length, 1, 'thread+turn is classified only once');
+    } finally { await h.close(); }
+  }
+});
+
+test('observe keeps user and done cards actionable, only observes automatic sends, and discards unsure', async () => {
+  for (const [marker, error, status] of [
+    ['advance-user', undefined, 'asking'], ['advance-done', undefined, 'asking'],
+    ['advance-external', undefined, 'observed'], ['transient', '503 overloaded', 'observed'],
+    ['advance-unsure', undefined, 'discarded'],
+  ] as const) {
+    const h = await setup(); try {
+      const { thread, todo } = await workTurn(h, marker, error);
+      const startTurn = h.manager.startTurn.bind(h.manager);
+      let sends = 0;
+      h.manager.startTurn = (...args) => {
+        if (args[0] === thread.id) sends++;
+        return startTurn(...args);
+      };
+      const unrelated = await h.manager.createThread({ agent: 'claude', cwd: h.cwd }); h.store.updateThread(unrelated.id, { status: 'running' });
+      await h.service.save({ mode: 'observe' }); await h.service.tick(now);
+      const run = h.service.runs()[0]; assert.equal(run.status, status, marker);
+      assert.equal(sends, 0, 'classification never calls startTurn on the work thread');
+      assert.equal(h.store.listTurns(thread.id).length, 1, 'observation never automatically continues a work thread');
+      assert.equal(h.store.listEventsOfType(thread.id, 'agent.notice').length, status === 'asking' ? 1 : 0);
+      assert.deepEqual(h.service.asking(), status === 'asking' ? { [todo.id]: 1 } : {});
+      if (marker === 'advance-user') {
+        const response = await h.api(`/api/personal/proactive/runs/${run.id}/answer`, 'POST', { answer: 'A' });
+        assert.equal(response.status, 200); assert.equal((await response.json()).status, 'answered');
+        assert.equal(h.store.listTurns(thread.id).length, 2, 'a person can authorize an answer while observing');
+        assert.equal(sends, 1);
+      } else if (marker === 'advance-done') {
+        const response = await h.api(`/api/personal/proactive/runs/${run.id}/close-matter`, 'POST');
+        assert.equal(response.status, 200); assert.equal(h.store.getTodo(todo.id)!.done, true);
+      } else {
+        await h.service.tick(new Date(now.getTime() + 20 * 60_000));
+        assert.equal(h.store.listTurns(thread.id).length, 1, 'a recorded wake does not send later in observe');
+        assert.equal(sends, 0, 'an observed wake never calls startTurn');
+      }
+      h.store.updateThread(unrelated.id, { status: 'idle' });
+    } finally { await h.close(); }
+  }
+});
+
+test('transient advances wait, retry without scheduled, respect two-minute spacing and stop after three attempts', async () => {
+  const h = await setup(); try {
+    const { todo, thread } = await workTurn(h, 'transient', '503 overloaded');
+    h.manager.askOnce = async () => { throw new Error('transient should not call the model'); };
+    await h.service.save({ mode: 'auto' }); await h.service.tick(now);
+    let run = h.service.runs()[0]; assert.equal(run.status, 'waiting'); assert.equal(run.wakeAt, new Date(now.getTime() + 60_000).toISOString());
+    await h.service.tick(new Date(now.getTime() + 30_000)); assert.equal(h.store.listTurns(thread.id).length, 1);
+    await h.service.tick(new Date(now.getTime() + 60_000));
+    run = h.service.runs()[0]; assert.equal(run.status, 'continued'); assert.equal(run.attempts, 1);
+    const started = h.store.listEventsOfType(thread.id, 'turn.started').at(-1)!;
+    assert.equal(String(started.data.text).split('\n')[0], '继续'); assert.equal(started.data.scheduled, undefined); assert.equal(started.data.proactive, true);
+    await wait(() => h.store.getThread(thread.id)?.status !== 'running');
+    const next = 'third-error';
+    h.store.appendEvent(thread.id, next, 'turn.started', { text: '继续', proactive: true });
+    h.store.appendEvent(thread.id, next, 'turn.error', { message: '503 overloaded' });
+    h.store.db.prepare('UPDATE events SET ts=? WHERE thread_id=? AND turn_id=?').run(new Date(now.getTime() - 20 * 60_000).toISOString(), thread.id, next);
+    h.store.saveHubSetting('personalProactiveRuns', [{ ...run, attempts: 3 }]);
+    await h.service.tick(new Date(now.getTime() + 3 * 60_000));
+    const card = h.service.runs().at(-1)!; assert.equal(card.status, 'asking'); assert.equal(card.reason, 'transient'); assert.equal(card.matterId, todo.id);
+    assert.deepEqual(card.question!.options, ['再试一次', '先放着']);
+  } finally { await h.close(); }
+});
+
+test('new APIs validate missing and incompatible cards, answer normally, close and dismiss', async () => {
+  const h = await setup(); try {
+    const { todo, thread } = await workTurn(h, 'advance-user');
+    await h.service.save({ mode: 'auto' }); await h.service.tick(now);
+    const run = h.service.runs()[0], endpoint = `/api/personal/proactive/runs/${run.id}`;
+    for (const action of ['answer', 'close-matter', 'dismiss', 'allow-repo']) assert.equal((await h.api(`/api/personal/proactive/runs/missing/${action}`, 'POST', { answer: 'A' })).status, 404);
+    assert.equal((await h.api(`${endpoint}/close-matter`, 'POST')).status, 409);
+    assert.equal((await h.api(`${endpoint}/allow-repo`, 'POST')).status, 409);
+    assert.equal((await h.api(`${endpoint}/answer`, 'POST', { answer: '' })).status, 400);
+    h.store.updateThread(thread.id, { status: 'running' });
+    assert.equal((await h.api(`${endpoint}/answer`, 'POST', { answer: 'A' })).status, 409);
+    h.store.updateThread(thread.id, { status: 'idle' });
+    const response = await h.api(`${endpoint}/answer`, 'POST', { answer: 'A' }); assert.equal(response.status, 200); assert.equal((await response.json()).status, 'answered');
+    assert.equal(String(h.store.listEventsOfType(thread.id, 'turn.started').at(-1)!.data.text).split('\n')[0], '关于你上面的问题：请选择 A 还是 B？ → A');
+    assert.equal((await h.api(`${endpoint}/answer`, 'POST', { answer: 'B' })).status, 409);
+    assert.equal(h.store.getTodo(todo.id)!.done, false);
+    const completed = await workTurn(h, 'advance-done');
+    await h.service.tick(now); const done = h.service.runs().at(-1)!;
+    assert.equal((await h.api(`/api/personal/proactive/runs/${done.id}/close-matter`, 'POST')).status, 200);
+    assert.equal(h.store.getTodo(completed.todo.id)!.done, true); assert.equal(h.service.runs().at(-1)!.status, 'closed');
+    const pending = await workTurn(h, 'advance-external'); await h.service.tick(now);
+    const waiting = h.service.runs().at(-1)!;
+    assert.equal(waiting.matterId, pending.todo.id);
+    assert.equal((await h.api(`/api/personal/proactive/runs/${waiting.id}/dismiss`, 'POST')).status, 200);
+    assert.equal(h.service.runs().at(-1)!.status, 'discarded');
+  } finally { await h.close(); }
+});
+
+test('plans prepare plan.md once in seven days and repo cards authorize canonical roots', async () => {
+  const h = await setup(); try {
+    const todo = h.todo({ text: '把整个项目梳理一下', dueAt: null });
+    await h.service.save({ mode: 'auto' }); await h.service.tick(now);
+    const plan = await h.settled(); assert.equal(plan.variant, 'plan'); assert.equal(plan.status, 'ready', plan.summary); assert.ok(plan.files?.some(file => file.path.endsWith('/plan.md')));
+    assert.equal(plan.matterId, todo.id);
+    const repo = await h.repository(); const nested = join(repo, 'nested'); mkdirSync(nested);
+    const sandboxTodo = h.todo({ dueAt: null }); const thread = await h.manager.createThread({ agent: 'claude', cwd: nested }); h.store.linkTodoThread(sandboxTodo.id, thread.id);
+    await h.service.tick(new Date(now.getTime() + 2 * 3600_000));
+    const card = h.service.runs().at(-1)!; assert.equal(card.needsRepo, true); assert.equal(card.repo, repo);
+    await h.service.tick(new Date(now.getTime() + 3 * 3600_000)); assert.equal(h.service.runs().length, 2, 'repo cards deduplicate for seven days');
+    const allowed = await h.api(`/api/personal/proactive/runs/${card.id}/allow-repo`, 'POST'); assert.equal(allowed.status, 200); assert.equal((await allowed.json()).status, 'approved');
+    assert.deepEqual(h.service.settings().repos, [repo]);
+    assert.equal((await h.api(`/api/personal/proactive/runs/${card.id}/allow-repo`, 'POST')).status, 409);
+  } finally { await h.close(); }
+});
+
+test('advance candidates exclude imported, archived, recent, old, busy and proactive worker turns', async () => {
+  const h = await setup(); try {
+    const imported = await workTurn(h, 'advance-done', undefined, { imported: true });
+    const terminal = await workTurn(h, 'advance-done', undefined, { fromTerminal: true });
+    const archived = await workTurn(h, 'advance-done'); h.store.updateThread(archived.thread.id, { archivedAt: now.toISOString() });
+    const recent = await workTurn(h, 'advance-done'); h.store.db.prepare('UPDATE events SET ts=? WHERE thread_id=?').run(now.toISOString(), recent.thread.id);
+    const old = await workTurn(h, 'advance-done'); h.store.db.prepare('UPDATE events SET ts=? WHERE thread_id=?').run(at(12, -7), old.thread.id);
+    const busy = await workTurn(h, 'advance-done'); h.store.updateThread(busy.thread.id, { status: 'running' });
+    const own = await workTurn(h, 'advance-done'); h.store.saveHubSetting('personalProactiveRuns', [{ ...historical('worker', 'prepare'), threadId: own.thread.id }]);
+    await h.service.save({ mode: 'observe' }); await h.service.tick(now);
+    assert.equal(h.service.runs().filter(run => run.kind === 'advance').length, 0);
+    assert.equal(h.store.listThreads({ archived: true }).length, 1, 'no classifier was opened');
+    assert.ok(imported && terminal); h.store.updateThread(busy.thread.id, { status: 'idle' });
+  } finally { await h.close(); }
+});
+
+test('automatic send rechecks settings and latest turn in startTurn claim; new turns invalidate cards', async () => {
+  for (const change of ['mode', 'quiet', 'turn', 'busy', 'done'] as const) {
+    const h = await setup(); try {
+      const { thread, todo } = await workTurn(h, 'transient', '429 rate limit');
+      await h.service.save({ mode: 'auto' }); await h.service.tick(now);
+      const before = h.manager.startTurn.bind(h.manager);
+      h.manager.startTurn = async (...args) => {
+        if (change === 'mode') await h.service.save({ mode: 'observe' });
+        if (change === 'quiet') h.store.saveHubSetting('personalReview', { ...h.personal.review.status(), quietHours: { start: '11:00', end: '13:00' } });
+        if (change === 'turn') { h.store.appendEvent(thread.id, 'new', 'turn.started', { text: 'new' }); h.store.appendEvent(thread.id, 'new', 'turn.done', {}); }
+        if (change === 'busy') h.store.updateThread(thread.id, { status: 'running' });
+        if (change === 'done') h.personal.update(todo.id, { done: true });
+        return before(...args);
+      };
+      await h.service.tick(new Date(now.getTime() + 60_000));
+      const run = h.service.runs()[0]; assert.equal(run.status, 'discarded', change); assert.ok(run.discardReason);
+      assert.equal(h.store.listTurns(thread.id).length, change === 'turn' ? 2 : 1);
+      h.store.updateThread(thread.id, { status: 'idle' });
+    } finally { await h.close(); }
+  }
+  const h = await setup(); try {
+    const { thread } = await workTurn(h);
+    await h.service.save({ mode: 'auto' }); await h.service.tick(now);
+    assert.equal(h.service.runs()[0].status, 'asking');
+    await h.manager.startTurn(thread.id, { text: '人自己接着说' });
+    assert.equal(h.service.runs()[0].status, 'discarded'); assert.equal(h.service.runs()[0].discardReason, '线程已继续');
+  } finally { await h.close(); }
+});
+
+test('advance respects model/send daily budgets, send spacing and quiet hours independently of the opening interval', async () => {
+  const h = await setup(); try {
+    const { thread } = await workTurn(h, 'transient', '503 overloaded');
+    await h.service.save({ mode: 'auto' });
+    h.store.saveHubSetting('personalProactiveRuns', [historical('just-opened', 'prepare', now.toISOString())]);
+    await h.service.tick(now); const run = h.service.runs().at(-1)!; assert.equal(run.status, 'waiting', 'advance ignores the 60-minute interval');
+    const day = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
+    h.store.saveHubSetting('personalProactiveBudget', { day, sends: 20, models: 0, sent: {} });
+    await h.service.tick(new Date(now.getTime() + 60_000)); assert.equal(h.store.listTurns(thread.id).length, 1);
+    h.store.saveHubSetting('personalProactiveBudget', { day, sends: 0, models: 0, sent: { [thread.id]: now.getTime() } });
+    await h.service.tick(new Date(now.getTime() + 60_000)); assert.equal(h.store.listTurns(thread.id).length, 1);
+    h.store.saveHubSetting('personalReview', { ...h.personal.review.status(), quietHours: { start: '11:00', end: '13:00' } });
+    await h.service.tick(new Date(now.getTime() + 2 * 60_000)); assert.equal(h.store.listTurns(thread.id).length, 1);
+    h.store.saveHubSetting('personalReview', { ...h.personal.review.status(), quietHours: { start: '23:00', end: '08:00' } });
+    await h.service.tick(new Date(now.getTime() + 2 * 60_000)); assert.equal(h.store.listTurns(thread.id).length, 2);
+    await wait(() => h.store.getThread(thread.id)?.status !== 'running');
+    await workTurn(h, 'advance-done');
+    h.store.saveHubSetting('personalProactiveBudget', { day, sends: 20, models: 30, sent: {} });
+    const calls = h.store.listThreads({ archived: true }).length;
+    await h.service.tick(new Date(now.getTime() + 3 * 60_000));
+    assert.equal(h.store.listThreads({ archived: true }).length, calls, 'model daily budget is independent');
+  } finally { await h.close(); }
+});
+
+test('external wakes double to one hour, stop at six and can explicitly wait again', async () => {
+  const h = await setup(); try {
+    const { thread, todo } = await workTurn(h, 'advance-external', undefined, { proactive: true });
+    const previous: ProactiveRun = { ...historical('previous', 'advance', at(10)), matterId: todo.id, threadId: thread.id, status: 'continued', reason: 'external', attempts: 2, wakeAt: at(10).replace(':00:00.', ':40:00.') };
+    h.store.saveHubSetting('personalProactiveRuns', [previous]);
+    await h.service.save({ mode: 'auto' }); await h.service.tick(now);
+    let run = h.service.runs().at(-1)!; assert.equal(run.status, 'waiting'); assert.equal(run.attempts, 2); assert.equal(run.wakeAt, at(13));
+    h.store.saveHubSetting('personalProactiveRuns', [{ ...previous, attempts: 6 }]);
+    await h.service.tick(now); run = h.service.runs().at(-1)!; assert.equal(run.status, 'asking'); assert.deepEqual(run.question!.options, ['继续等', '不等了']);
+    const response = await h.api(`/api/personal/proactive/runs/${run.id}/answer`, 'POST', { answer: '继续等' });
+    assert.equal(response.status, 200); assert.equal((await response.json()).status, 'waiting'); assert.equal(h.store.listTurns(thread.id).length, 1);
+    h.store.saveHubSetting('personalProactiveRuns', [{ ...run, status: 'asking' }]);
+    assert.equal((await h.api(`/api/personal/proactive/runs/${run.id}/answer`, 'POST', { answer: '不等了' })).status, 200);
+    assert.equal(h.service.runs()[0].status, 'discarded');
+  } finally { await h.close(); }
+});
+
+test('two active proactive workers cap openings; unrelated activity permits preparation', async () => {
+  const h = await setup(); try {
+    h.todo(); await h.service.save({ mode: 'observe' });
+    const threads = await Promise.all([h.manager.createThread({ agent: 'claude', cwd: h.cwd }), h.manager.createThread({ agent: 'claude', cwd: h.cwd })]);
+    for (const thread of threads) h.store.updateThread(thread.id, { status: 'running' });
+    h.store.saveHubSetting('personalProactiveRuns', threads.map((thread, i) => ({ ...historical(String(i), 'prepare'), status: 'running', threadId: thread.id })));
+    await h.service.tick(now); assert.equal(h.service.runs().length, 2);
+    h.store.updateThread(threads[0].id, { status: 'idle' });
+    await h.service.tick(now); assert.equal(h.service.runs().length, 3, 'one unrelated active worker leaves capacity');
+    h.store.updateThread(threads[1].id, { status: 'idle' });
+  } finally { await h.close(); }
+});
+
+test('plans have a seven-day window and prioritize the latest unstarted matter', async () => {
+  const h = await setup(); try {
+    const old = h.todo({ text: '梳理旧项目的结构', dueAt: null });
+    const newer = h.todo({ text: '整理新项目的方案', dueAt: null });
+    h.store.db.prepare('UPDATE todos SET updated_at=? WHERE id=?').run(at(10, 0), old.id);
+    await h.service.save({ mode: 'observe' }); await h.service.tick(now);
+    assert.equal(h.service.runs()[0].matterId, newer.id); assert.equal(h.service.runs()[0].variant, 'plan');
+    await h.service.tick(new Date(now.getTime() + 2 * 3600_000)); assert.equal(h.service.runs()[1].matterId, old.id);
+    await h.service.tick(new Date(now.getTime() + 6 * 86400_000)); assert.equal(h.service.runs().length, 2);
+    await h.service.tick(new Date(now.getTime() + 7 * 86400_000)); assert.equal(h.service.runs().length, 3);
+  } finally { await h.close(); }
+});
+
+test('external wake sends its named condition and next step, and user retry remains a normal turn', async () => {
+  for (const reason of ['external', 'transient'] as const) {
+    const h = await setup(); try {
+      const { thread } = await workTurn(h, reason === 'external' ? 'advance-external' : 'transient', reason === 'transient' ? '503 overloaded' : undefined);
+      await h.service.save({ mode: 'auto' }); await h.service.tick(now);
+      const run = h.service.runs()[0];
+      if (reason === 'external') {
+        await h.service.tick(new Date(now.getTime() + 10 * 60_000));
+        assert.equal(h.service.runs()[0].status, 'continued');
+        const text = String(h.store.listEventsOfType(thread.id, 'turn.started').at(-1)!.data.text);
+        assert.match(text, /CI 结束/); assert.match(text, /检查结果/); assert.match(text, /不做其他未经人确认的对外动作/);
+      } else {
+        h.store.saveHubSetting('personalProactiveRuns', [{ ...run, status: 'asking', question: { text: '连续出错', options: ['再试一次', '先放着'] } }]);
+        await h.service.save({ mode: 'off' });
+        const response = await h.api(`/api/personal/proactive/runs/${run.id}/answer`, 'POST', { answer: '再试一次' });
+        assert.equal(response.status, 200); assert.equal((await response.json()).status, 'answered');
+        const start = h.store.listEventsOfType(thread.id, 'turn.started').at(-1)!;
+        assert.equal(String(start.data.text).split('\n')[0], '继续'); assert.equal(start.data.scheduled, undefined); assert.equal(start.data.proactive, undefined);
+      }
+    } finally { await h.close(); }
+  }
+});
+
+test('model result is discarded if the person continues or completes the matter during classification', async () => {
+  for (const change of ['turn', 'done'] as const) {
+    const h = await setup(); try {
+      const { todo, thread } = await workTurn(h);
+      h.manager.askOnce = async () => {
+        if (change === 'done') h.personal.update(todo.id, { done: true });
+        else { h.store.appendEvent(thread.id, 'new-turn', 'turn.started', { text: 'changed' }); h.store.appendEvent(thread.id, 'new-turn', 'turn.done', {}); }
+        return JSON.stringify({ phase: 'done', line: '做完了' });
+      };
+      await h.service.save({ mode: 'auto' }); await h.service.tick(now);
+      assert.equal(h.service.runs()[0].status, 'discarded'); assert.ok(h.service.runs()[0].discardReason);
+      assert.equal(h.store.listEventsOfType(thread.id, 'agent.notice').length, 0);
+    } finally { await h.close(); }
+  }
 });

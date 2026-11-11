@@ -11,6 +11,9 @@ export const removeRepo = (settings: ProactiveSettings, path: string): Proactive
 /** What the person can still do about a run: say an observation was right, decide on sandbox work, clear away a failed attempt. */
 export type RunControl = 'diff' | ProactiveAction;
 export function runControls(run: ProactiveRun): RunControl[] {
+  if (run.status === 'asking') return run.reason === 'done' ? ['close-matter', 'dismiss'] : ['answer'];
+  if (run.status === 'waiting') return ['dismiss'];
+  if (run.status === 'observed' && run.needsRepo) return ['allow-repo', 'dismiss'];
   if (run.status === 'observed') return ['approve'];
   if (run.kind !== 'sandbox') return [];
   if (run.status === 'ready') return ['diff', 'merge', 'discard'];
@@ -20,7 +23,7 @@ export function runControls(run: ProactiveRun): RunControl[] {
 }
 
 /** Sandbox work in hand or waiting for a decision comes before the note; materials and observations sit quietly after it. */
-export const isDecision = (run: ProactiveRun): boolean => run.kind === 'sandbox' && run.status !== 'observed' && run.status !== 'approved';
+export const isDecision = (run: ProactiveRun): boolean => run.status === 'asking' || run.status === 'waiting' || (run.status === 'observed' && Boolean(run.needsRepo)) || (run.kind === 'sandbox' && run.status !== 'observed' && run.status !== 'approved');
 
 const newestFirst = (a: ProactiveRun, b: ProactiveRun) => Date.parse(b.startedAt) - Date.parse(a.startedAt);
 
@@ -31,8 +34,8 @@ const newestFirst = (a: ProactiveRun, b: ProactiveRun) => Date.parse(b.startedAt
 export function matterRuns(runs: readonly ProactiveRun[], matterId: string): ProactiveRun[] {
   // Discarded work is an audit record, not a card.
   const own = runs.filter((run) => run.matterId === matterId && run.status !== 'discarded').sort(newestFirst);
-  const latest = new Set(['prepare', 'sandbox'].map((kind) => own.find((run) => run.kind === kind)?.id));
-  return own.filter((run) => latest.has(run.id) || run.status === 'running' || run.status === 'ready' || run.status === 'merged');
+  const latest = new Set(['prepare', 'sandbox', 'advance'].map((kind) => own.find((run) => run.kind === kind)?.id));
+  return own.filter((run) => latest.has(run.id) || run.status === 'asking' || run.status === 'waiting' || (run.needsRepo && run.status === 'observed') || run.status === 'running' || run.status === 'ready' || run.status === 'merged');
 }
 
 export const replaceRun = (runs: readonly ProactiveRun[], next: ProactiveRun): ProactiveRun[] =>

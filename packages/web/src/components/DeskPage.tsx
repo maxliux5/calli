@@ -62,11 +62,24 @@ export function DeskPage(props: Props) {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState('');
   const [proactiveOnly, setProactiveOnly] = useState(false);
+  const [askingOnly, setAskingOnly] = useState(false);
+  const [asking, setAsking] = useState<Record<string, number> | null>(null);
+  const [askingError, setAskingError] = useState('');
+  const [proactiveVersion, setProactiveVersion] = useState(0);
   const piles = LANES.flatMap(lane => desk.lanes[lane]);
   const selected = piles.find(pile => pile.todo.id === open?.id);
   const periods = byPeriod(piles, now);
   const proactiveMatterCount = proactiveCount(todos);
-  const proactive = useProactive(api, proactiveOnly ? '' : selected?.todo.proactiveRunCount ? selected.todo.id : null, refreshKey);
+  const proactive = useProactive(api, proactiveOnly || askingOnly ? '' : selected?.todo.proactiveRunCount ? selected.todo.id : null, refreshKey, () => { setProactiveVersion(n => n + 1); onReload(); });
+  useEffect(() => {
+    if (api.demo) { setAsking({}); setAskingError(''); return; }
+    let live = true;
+    setAskingError('');
+    void api.proactiveSettings().then(value => { if (live) setAsking(value.asking ?? {}); }).catch(() => { if (live) setAskingError(t('proactive.attentionFailed')); });
+    return () => { live = false; };
+  }, [api, refreshKey, proactiveVersion]);
+  const askingCount = Object.values(asking ?? {}).reduce((total, count) => total + count, 0);
+  const showAttention = asking === null || Boolean(askingError) || askingCount > 0 || askingOnly;
   useEffect(() => { if (refreshKey > 0) onReload(); }, [refreshKey, onReload]);
   // Her conversation, once there is one: a quiet way back into it from the head of the desk.
   const [routerThreadId, setRouterThreadId] = useState<string | null>(null);
@@ -132,9 +145,10 @@ export function DeskPage(props: Props) {
     act(() => api.resolveTodoProposal(todo.id, proposal.id, action, todo.rev), action === 'accept' && proposal.kind === 'done');
 
   const matrix = order === 'matrix';
-  const pileCard = (pile: Pile) => <PileCover key={pile.todo.id} pile={pile} now={now} weighed={matrix} onOpen={source => showMatter(pile, source)} />;
+  const needsAnswer = (pile: Pile) => (asking?.[pile.todo.id] ?? 0) > 0;
+  const pileCard = (pile: Pile) => <PileCover key={pile.todo.id} pile={pile} now={now} weighed={matrix} asking={needsAnswer(pile)} onOpen={source => showMatter(pile, source)} />;
   const laterPiles = matrix ? desk.quadrants.later : desk.lanes.later;
-  const stack = (list: Pile[]) => <StackButton id="later" count={list.length} label={t('desk.laterCount', list.length)} onOpen={source => show('later', source)}><strong>{t('desk.laterCount', list.length)}</strong><span className="desk-stack-preview">{list.map(pile => pile.todo.text).join(' · ')}</span></StackButton>;
+  const stack = (list: Pile[]) => <StackButton id="later" count={list.length} label={t('desk.laterCount', list.length)} onOpen={source => show('later', source)}><strong>{t('desk.laterCount', list.length)}</strong>{list.some(needsAnswer) && <span className="personal-warning">{t('proactive.status.asking')}</span>}<span className="desk-stack-preview">{list.map(pile => pile.todo.text).join(' · ')}</span></StackButton>;
   const title = open?.id === 'inbox' ? t('desk.inbox') : open?.id === 'later' ? t('desk.later') : selected?.todo.text ?? '';
   if (settingsOpen) return <AssistantSettings api={api} agents={agents} setupNeeded={props.setupNeeded} onExplore={props.onExplore ? () => { setSettingsOpen(false); props.onExplore?.(); } : undefined} onClose={() => { setSettingsOpen(false); setPendingDelegate(null); }} onSave={value => { onPersonalChange(value); setSettingsOpen(false); setSettingsSaved(n => n + 1); if (pendingDelegate) void delegate(pendingDelegate, true); }} />;
   return <div className="desk-page">
@@ -142,11 +156,11 @@ export function DeskPage(props: Props) {
       <div><h1>{formatDate(now, { month: 'long', day: 'numeric', weekday: 'long' })}</h1>
         {!loading && !error && (api.demo ? <p className="desk-summary"><span>{t('desk.needsYou', desk.needsYou)}</span></p> : <DeskMeta key={settingsSaved} api={api} count={t('desk.needsYou', desk.needsYou)} stale={desk.stale} now={now} refreshKey={refreshKey} onConfigure={() => { setSettingsOpen(true); if (!personal) onPersonalRetry(); }} onChat={routerThreadId ? () => onOpenThread(routerThreadId) : undefined} />)}
       </div>
-      <div className="desk-views">{(proactiveOnly || proactiveMatterCount > 0) && <button className="desk-filter" aria-pressed={proactiveOnly} onClick={() => setProactiveOnly(on => !on)}><IconSparkle size={13} />{t('proactive.filter')}{proactiveMatterCount > 0 && <span>{proactiveMatterCount}</span>}</button>}
-        <div className="desk-segment" role="group" aria-label={t('desk.title')}>{ORDERS.map(value => <button key={value} aria-pressed={!proactiveOnly && order === value} onClick={() => { setProactiveOnly(false); setOrder(value); try { localStorage.setItem(ORDER_KEY, value); } catch { /* Keep the choice for this visit. */ } }}>{t(`desk.${value}`)}</button>)}</div></div>
+      <div className="desk-views"><button className={`desk-attention${showAttention ? '' : ' empty'}`} aria-hidden={!showAttention} tabIndex={showAttention ? undefined : -1} aria-pressed={askingOnly} disabled={asking === null && !askingError} onClick={() => { if (askingError) setProactiveVersion(n => n + 1); else { setAskingOnly(on => !on); setProactiveOnly(false); } }}>{askingError || (asking === null ? t('proactive.attentionLoading') : t('proactive.attentionCount', askingCount))}</button>{(proactiveOnly || proactiveMatterCount > 0) && <button className="desk-filter" aria-pressed={proactiveOnly} onClick={() => { setProactiveOnly(on => !on); setAskingOnly(false); }}><IconSparkle size={13} />{t('proactive.filter')}{proactiveMatterCount > 0 && <span>{proactiveMatterCount}</span>}</button>}
+        <div className="desk-segment" role="group" aria-label={t('desk.title')}>{ORDERS.map(value => <button key={value} aria-pressed={!proactiveOnly && !askingOnly && order === value} onClick={() => { setProactiveOnly(false); setAskingOnly(false); setOrder(value); try { localStorage.setItem(ORDER_KEY, value); } catch { /* Keep the choice for this visit. */ } }}>{t(`desk.${value}`)}</button>)}</div></div>
     </header>
     {loading ? <p className="desk-state" role="status">{t('common.loading')}</p> : error ? <p className="desk-state" role="alert">{t('desk.loadFailed')} <button className="ghost" onClick={onReload}>{t('common.retry')}</button></p> : <div className="desk-board">
-      {proactiveOnly ? <ProactiveList api={api} todos={todos} state={proactive} canOpen={id => piles.some(pile => pile.todo.id === id)} onOpen={show} /> : <><div className={`desk-top${desk.inbox.length ? ' has-inbox' : ''}`}>
+      {proactiveOnly || askingOnly ? <ProactiveList api={api} todos={todos} state={proactive} askingOnly={askingOnly} canOpen={id => piles.some(pile => pile.todo.id === id)} onOpen={show} /> : <><div className={`desk-top${desk.inbox.length ? ' has-inbox' : ''}`}>
         <WeekCard week={desk.week} done={desk.doneThisWeek} />
         <section className="desk-first desk-paper"><h2>{t('desk.first')}</h2>
           {desk.first.length ? <ol>{desk.first.map(pile => <li key={pile.todo.id}><button onClick={e => showMatter(pile, e.currentTarget)}>{pile.todo.text}</button></li>)}</ol> : <p className="desk-empty">{t('desk.firstEmpty')}</p>}
@@ -218,17 +232,18 @@ function SourceLine({ todo, label }: { todo: DeskTodo; label: string }) {
   return <p className="desk-source">{url ? <a href={url} target="_blank" rel="noreferrer">{label}<IconExternal size={13} /></a> : <span>{label}</span>}{at && <time>{at}</time>}</p>;
 }
 
-function PileCover({ pile, now, weighed, onOpen }: { pile: Pile; now: Date; weighed: boolean; onOpen: (source: HTMLElement) => void }) {
+function PileCover({ pile, now, weighed, asking, onOpen }: { pile: Pile; now: Date; weighed: boolean; asking: boolean; onOpen: (source: HTMLElement) => void }) {
   const { todo } = pile;
   const why = weighed ? whyHere(todo, now) : null;
   const preview = todo.notePreview || todo.threads[0]?.title;
   // Where the reason already says when it is due, the date is not said twice.
   const due = todo.dueAt && !why?.urgent?.length ? dueLabel(todo.dueAt, now) : null;
   const stage = todo.stage ? t(`desk.stage.${todo.stage}`) : null;
-  return <button id={`desk-pile-${todo.id}`} className="desk-pile" style={rotation(todo.id)} onClick={e => onOpen(e.currentTarget)} aria-label={[todo.text, stage, t('desk.cards', pile.cards)].filter(Boolean).join(' · ')}>
+  return <button id={`desk-pile-${todo.id}`} className="desk-pile" style={rotation(todo.id)} onClick={e => onOpen(e.currentTarget)} aria-label={[todo.text, asking && t('proactive.status.asking'), stage, t('desk.cards', pile.cards)].filter(Boolean).join(' · ')}>
     {pile.cards > 1 && <span className="desk-back one" />}{pile.cards > 2 && <span className="desk-back two" />}
     <span className="desk-cover">{preview && <span className="desk-cover-preview"><span>{preview}</span></span>}
       <strong>{todo.text}</strong><span className="desk-cover-meta">{stage && <span className={needsPerson(todo.stage) ? 'personal-warning' : ''}>{stage}</span>}{why?.urgent && <span className={why.overdue ? 'personal-warning' : ''}>{why.urgent}</span>}{why?.important && <span>{why.important}</span>}{todo.owner === 'agent' && <span className="desk-cover-owner"><IconAgents size={11} />{t('desk.agent')}</span>}{weighed && (pile.lane === 'wait' || pile.lane === 'later') && <span>{t(`desk.${pile.lane}`)}</span>}{due && <span className={due.overdue ? 'personal-warning' : ''}>{due.text}</span>}{pile.idleDays > 0 && <span>{t('desk.idleDays', pile.idleDays)}</span>}</span>
+      {asking && <span className="desk-cover-alert personal-warning">{t('proactive.status.asking')}</span>}
       {todo.proposals?.some(proposal => proposal.kind === 'done') && <span className="desk-cover-alert">{t('desk.doneProposal')}</span>}
     </span>{pile.cards >= 2 && <span className="desk-count">{t('desk.cards', pile.cards)}</span>}
   </button>;
@@ -309,7 +324,7 @@ function MatterCards({ api, pile, busy, proactive, onChange, onUnsubscribe, onRe
   const runCard = (run: typeof runs[number]) => <ProactiveCard key={run.id} api={api} run={run} state={proactive} style={rotation(run.id)} />;
   return <div className="desk-fan">
     {(source || subscriptions.length > 0 || !api.demo) && <article className="desk-card desk-source-card" style={rotation(todo.id + 'source')}><span className="desk-card-kind">{t('desk.source')}</span>{source && <SourceLine todo={todo} label={source} />}{subscriptions.length > 0 && <Subscriptions list={subscriptions} busy={busy} onUnsubscribe={item => onUnsubscribe(todo, item)} />}{!api.demo && <MatterSignals api={api} matterId={todo.id} />}</article>}
-    {expectsRuns && !proactive.runs && <article className="desk-card proactive-card" style={rotation(todo.id + 'runs')}><span className="desk-card-kind"><IconSparkle size={14} />{t('proactive.filter')}</span>{proactive.error ? <p role="alert">{proactive.error}<button className="ghost" onClick={proactive.load}>{t('common.retry')}</button></p> : <p role="status">{t('common.loading')}</p>}</article>}
+    {expectsRuns && (!proactive.runs || proactive.error) && <article className="desk-card proactive-card" style={rotation(todo.id + 'runs')}><span className="desk-card-kind"><IconSparkle size={14} />{t('proactive.filter')}</span>{proactive.error ? <p role="alert">{proactive.error}<button className="ghost" onClick={proactive.load}>{t('common.retry')}</button></p> : <p role="status">{t('common.loading')}</p>}</article>}
     {decisions.map(runCard)}
     <article className="desk-card desk-note-card" style={rotation(todo.id + 'note')}><span className="desk-card-kind"><IconFile size={14} />{t('desk.note')}</span>
       {!note && !error && <p role="status">{t('common.loading')}</p>}

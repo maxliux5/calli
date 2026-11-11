@@ -9,6 +9,7 @@ import { HttpError } from './errors.js';
 import type { StoredEvent } from './events.js';
 import { turnOutcome } from './lifecycle.js';
 import type { PersonalService } from './personal.js';
+import { advancePrompt, parseAdvance, transientError, type AdvanceDecision } from './proactive-advance.js';
 import { ProactiveSandbox, type SandboxChanges } from './proactive-sandbox.js';
 import { urgencyOf, type Store, type TodoRecord } from './store.js';
 import type { ThreadManager } from './threads.js';
@@ -25,14 +26,25 @@ export interface ProactiveSettings {
 export interface ProactiveRun {
   id: string;
   matterId: string;
-  kind: 'prepare' | 'sandbox';
+  kind: 'prepare' | 'sandbox' | 'advance';
+  variant?: 'deadline' | 'plan';
+  needsRepo?: true;
+  turnId?: string;
+  phase?: AdvanceDecision['phase'];
+  on?: AdvanceDecision['on'];
+  line?: string;
+  question?: AdvanceDecision['question'];
+  wait?: AdvanceDecision['wait'];
+  wakeAt?: string;
+  attempts?: number;
+  reason?: 'transient' | 'external' | 'user' | 'done';
   repo?: string;
   branch?: string;
   /** Empty while setting up, when setup fails before a worker can be created, or for an observation. */
   threadId: string;
   startedAt: string;
   endedAt?: string;
-  status: 'running' | 'observed' | 'approved' | 'ready' | 'merged' | 'discarded' | 'reverted' | 'failed';
+  status: 'running' | 'observed' | 'approved' | 'ready' | 'merged' | 'discarded' | 'reverted' | 'failed' | 'waiting' | 'asking' | 'answered' | 'continued' | 'closed';
   summary?: string;
   /** Why a sandbox round ended silently: failed tests or nothing reviewable. An observation needs no reason. */
   discardReason?: string;
@@ -57,7 +69,7 @@ export function preparationCandidate(todo: TodoRecord, note: string, now: Date):
   if (todo.done || todo.state === 'done' || todo.proposed || note.includes('已备好')) return false;
   const meeting = todo.source?.type === 'lark-calendar' && Boolean(todo.source.at)
     && localDay(new Date(todo.source.at!)) === localDay(now);
-  const soon = Boolean(todo.dueAt) && Date.parse(todo.dueAt!) <= now.getTime() + 48 * HOUR;
+  const soon = Boolean(todo.dueAt) && Date.parse(todo.dueAt!) >= new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() && Date.parse(todo.dueAt!) <= now.getTime() + 48 * HOUR;
   return (todo.importance === 'high' || urgencyOf(todo, now).urgent || meeting) && (soon || meeting);
 }
 
@@ -183,8 +195,12 @@ export class ProactiveService {
     }
   }
 
-  private busy(): boolean {
-    return [...this.store.listThreads(), ...this.store.listThreads({ archived: true })].some(thread => thread.status === 'running');
+  private busy(matterId: string): boolean {
+    return this.store.todoThreadIds(matterId).some(id => this.store.getThread(id)?.status === 'running');
+  }
+  private atCapacity(): boolean {
+    return new Set(this.runs().filter(run => run.kind !== 'advance' && run.status === 'running'
+      && this.store.getThread(run.threadId)?.status === 'running').map(run => run.threadId)).size >= 2;
   }
   private quiet(now: Date): boolean {
     // This is exactly the source used by PersonalBriefSchedule, including user edits.
@@ -196,50 +212,236 @@ export class ProactiveService {
   async tick(now = new Date()): Promise<void> {
     if (this.ticking) return;
     this.recover(now);
-    const settings = this.settings();
-    if (settings.mode === 'off' || this.quiet(now) || this.busy() || this.finishing.size || this.acting.size) return;
-    const runs = this.runs();
-    if (runs.some(run => now.getTime() - Date.parse(run.startedAt) < HOUR)) return;
-    // Observations keep the hour honest but are free: they never consume a daily limit.
-    const today = runs.filter(run => !['observed', 'approved'].includes(run.status) && localDay(new Date(run.startedAt)) === localDay(now));
-    const todos = this.store.listTodos().filter(todo => !todo.done && todo.state !== 'done' && !todo.proposed
-      && !runs.some(run => run.matterId === todo.id && run.status === 'running'));
-    let candidate: { todo: TodoRecord; kind: ProactiveRun['kind']; repo?: string } | undefined;
-    if (today.filter(run => run.kind === 'prepare').length < 5) {
-      const todo = todos.find(todo => !runs.some(run => run.matterId === todo.id && run.kind === 'prepare' && run.status === 'ready')
-        && preparationCandidate(todo, this.store.todoNote(todo.id).text, now));
-      if (todo) candidate = { todo, kind: 'prepare' };
-    }
-    if (!candidate && today.filter(run => run.kind === 'sandbox').length < 2) {
-      for (const todo of todos) {
-        // A merged result remains available for withdrawal; do not silently mutate its branch.
-        if (runs.some(run => run.matterId === todo.id && run.kind === 'sandbox' && ['ready', 'merged'].includes(run.status))) continue;
-        const repo = settings.repos.find(repo => isWithinWorkdirs(repo, this.manager.allowedWorkdirs)
-          && this.store.todoThreadIds(todo.id).some(id => {
+    this.invalidate();
+    if (this.settings().mode === 'off' || this.quiet(now) || this.acting.size) return;
+    this.ticking = true;
+    try {
+      for (const run of this.runs()) {
+        if (run.status === 'waiting' && run.wakeAt && Date.parse(run.wakeAt) <= now.getTime()) await this.sendAdvance(run, now);
+      }
+      const runs = this.runs(), settings = this.settings();
+      const today = runs.filter(run => !['observed', 'approved'].includes(run.status) && !run.needsRepo && localDay(new Date(run.startedAt)) === localDay(now));
+      const todos = this.store.listTodos().filter(todo => !todo.done && todo.state !== 'done' && !todo.proposed && !this.busy(todo.id)
+        && !runs.some(run => run.matterId === todo.id && ['running', 'waiting', 'asking'].includes(run.status)));
+      const canOpen = !this.atCapacity() && !runs.some(run => run.kind !== 'advance' && !run.needsRepo && now.getTime() - Date.parse(run.startedAt) < HOUR);
+      const observed = (todo: TodoRecord, kind: ProactiveRun['kind']) => settings.mode === 'observe' && runs.some(run => !run.needsRepo && run.matterId === todo.id && run.kind === kind
+        && ['observed', 'approved'].includes(run.status) && now.getTime() - Date.parse(run.startedAt) < DAY);
+      if (canOpen && today.filter(run => run.kind === 'prepare').length < 5) {
+        const todo = todos.find(todo => !observed(todo, 'prepare') && !runs.some(run => run.matterId === todo.id && run.kind === 'prepare' && run.status === 'ready')
+          && preparationCandidate(todo, this.store.todoNote(todo.id).text, now));
+        if (todo) { await this.prepareOrObserve(todo, 'prepare', now, undefined, 'deadline'); return; }
+      }
+      if (await this.advance(todos, now)) return;
+      if (today.filter(run => run.kind === 'sandbox').length < 2) {
+        for (const todo of todos) {
+          if (runs.some(run => run.matterId === todo.id && run.kind === 'sandbox' && ['ready', 'merged'].includes(run.status))) continue;
+          for (const id of this.store.todoThreadIds(todo.id)) {
             const thread = this.store.getThread(id);
-            return thread && !runs.some(run => run.threadId === id) && isWithinWorkdirs(thread.cwd, [repo]);
-          }));
-        if (repo) { candidate = { todo, kind: 'sandbox', repo }; break; }
+            if (!thread || thread.archivedAt || runs.some(run => run.kind !== 'advance' && run.threadId === id) || !isWithinWorkdirs(thread.cwd, this.manager.allowedWorkdirs)) continue;
+            let repo: string;
+            try { repo = realpathSync((await exec('git', ['rev-parse', '--show-toplevel'], { cwd: thread.cwd, timeout: 5000 })).stdout.trim()); }
+            catch { continue; }
+            if (!isWithinWorkdirs(repo, this.manager.allowedWorkdirs) || this.busy(todo.id) || this.settings().mode === 'off') continue;
+            if (!this.settings().repos.includes(repo)) {
+              if (runs.some(run => run.needsRepo && run.matterId === todo.id && run.repo === repo && now.getTime() - Date.parse(run.startedAt) < 7 * DAY)) continue;
+              this.saveRun({ id: randomUUID(), matterId: todo.id, kind: 'sandbox', needsRepo: true, repo, threadId: '', startedAt: now.toISOString(), status: 'observed',
+                summary: `这件事的线程在 ${repo.split('/').pop()} 里，允许它在沙盒里继续吗？` });
+              return;
+            }
+            if (canOpen && !observed(todo, 'sandbox')) { await this.prepareOrObserve(todo, 'sandbox', now, repo); return; }
+          }
+        }
+      }
+      if (canOpen && today.filter(run => run.kind === 'prepare').length < 5) {
+        const todo = todos.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).find(todo => this.store.todoThreadIds(todo.id).length === 0
+          && [...todo.text].length >= 6 && !this.store.todoNote(todo.id).text.includes('已备好')
+          && !runs.some(run => run.matterId === todo.id && run.kind === 'prepare' && (run.status === 'ready' || now.getTime() - Date.parse(run.startedAt) < 7 * DAY)));
+        if (todo) await this.prepareOrObserve(todo, 'prepare', now, undefined, 'plan');
+      }
+    } finally { this.ticking = false; }
+  }
+
+  private async prepareOrObserve(todo: TodoRecord, kind: 'prepare' | 'sandbox', now: Date, repo?: string, variant?: ProactiveRun['variant']): Promise<void> {
+    if (this.settings().mode === 'observe') {
+      this.saveRun({ id: randomUUID(), matterId: todo.id, kind, repo, variant, threadId: '', startedAt: now.toISOString(), status: 'observed',
+        summary: variant === 'plan' ? `会为「${todo.text}」拆解步骤，备好第一步方案` : observationSummary(todo, kind, repo, now) });
+    } else if (this.settings().mode === 'auto') await this.start(todo, kind, now, repo, variant);
+  }
+
+  asking(): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const run of this.runs()) if (run.status === 'asking') counts[run.matterId] = (counts[run.matterId] ?? 0) + 1;
+    return counts;
+  }
+
+  private latest(threadId: string) {
+    const events = this.store.recentLifecycle(threadId, 2);
+    const end = events[0], start = events[1];
+    if (!end || !start || start.type !== 'turn.started' || end.type === 'turn.started' || end.turnId !== start.turnId) return null;
+    if (start.data.imported || start.data.fromTerminal || end.data.imported || end.data.fromTerminal) return null;
+    return { start, end, turnId: end.turnId };
+  }
+
+  private invalidate(threadId?: string): void {
+    for (const run of this.runs()) {
+      if (!['waiting', 'asking'].includes(run.status) || threadId && run.threadId !== threadId) continue;
+      if (threadId || this.store.recentLifecycle(run.threadId, 1)[0]?.turnId !== run.turnId) {
+        this.update(run.id, { status: 'discarded', discardReason: '线程已继续' });
       }
     }
-    if (!candidate) return;
-    if (settings.mode === 'observe') { this.observe(candidate, now); return; }
-    this.ticking = true;
-    try { await this.start(candidate.todo, candidate.kind, now, candidate.repo); }
-    finally { this.ticking = false; }
   }
 
-  /** Record what would be done and why, start nothing; one record per matter and kind per day. */
-  private observe(candidate: { todo: TodoRecord; kind: ProactiveRun['kind']; repo?: string }, now: Date): void {
-    const { todo, kind, repo } = candidate;
-    if (this.runs().some(run => run.matterId === todo.id && run.kind === kind && ['observed', 'approved'].includes(run.status)
-      && now.getTime() - Date.parse(run.startedAt) < DAY)) return;
-    this.saveRun({ id: randomUUID(), matterId: todo.id, kind, ...(repo ? { repo } : {}), threadId: '',
-      startedAt: now.toISOString(), status: 'observed', summary: observationSummary(todo, kind, repo, now) });
+  /** Persist counters separately from the bounded, user-facing run history. */
+  private budget(now: Date) {
+    const value = this.store.hubSetting<{ day: string; models: number; sends: number; sent: Record<string, number> }>('personalProactiveBudget', { day: '', models: 0, sends: 0, sent: {} });
+    return value.day === localDay(now) ? value : { day: localDay(now), models: 0, sends: 0, sent: value.sent };
   }
 
-  private async start(todo: TodoRecord, kind: ProactiveRun['kind'], now: Date, repo?: string): Promise<void> {
-    const run: ProactiveRun = { id: randomUUID(), matterId: todo.id, kind, ...(repo ? { repo } : {}), threadId: '', startedAt: now.toISOString(), status: 'running' };
+  private async advance(todos: TodoRecord[], now: Date): Promise<boolean> {
+    for (const todo of todos) for (const threadId of this.store.todoThreadIds(todo.id)) {
+      const thread = this.store.getThread(threadId), runs = this.runs();
+      if (!thread || thread.status === 'running' || thread.archivedAt || runs.some(run => run.kind !== 'advance' && run.threadId === threadId)) continue;
+      const latest = this.latest(threadId);
+      if (!latest || runs.some(run => run.kind === 'advance' && run.threadId === threadId && run.turnId === latest.turnId)) continue;
+      const age = now.getTime() - Date.parse(latest.end.ts);
+      if (age < 15 * 60_000 || age > 7 * DAY) continue;
+      const began = Date.now();
+      const outcome = turnOutcome(latest.end)!;
+      const transient = outcome.outcome === 'error' && transientError(outcome.code, outcome.message ?? '');
+      let decision: AdvanceDecision = { phase: 'unsure', line: '' };
+      if (!transient) {
+        if (this.budget(now).models >= 30) continue;
+        const settings = await this.personal.resolvedSettings();
+        if (!settings.agent || this.settings().mode === 'off' || this.busy(todo.id)) continue;
+        const budget = this.budget(now); budget.models++;
+        this.store.saveHubSetting('personalProactiveBudget', budget);
+        const answer = turnAnswer(this.store.voiceAnswerEvents(threadId, latest.turnId), latest.turnId, Number.MAX_SAFE_INTEGER).trim();
+        try {
+          decision = parseAdvance(await this.manager.askOnce(settings.agent,
+            advancePrompt(todo.text, this.store.todoNote(todo.id).text, String(latest.start.data.text ?? ''), answer, now),
+            { model: settings.model, title: '推进分流', recordPrompt: false, timeoutMs: 60_000 }), answer);
+        } catch { /* A classifier outage produces an audit entry, never a continuation. */ }
+      }
+      const reason = transient ? 'transient' : decision.phase === 'done' ? 'done' : decision.phase === 'blocked' ? decision.on : undefined;
+      const previous = [...runs].reverse().find(run => run.kind === 'advance' && run.matterId === todo.id && run.threadId === threadId && run.status === 'continued');
+      const attempts = latest.start.data.proactive && previous && previous.reason === reason ? previous.attempts ?? 0 : 0;
+      const run: ProactiveRun = { id: randomUUID(), matterId: todo.id, kind: 'advance', threadId, turnId: latest.turnId, startedAt: now.toISOString(),
+        status: 'discarded', phase: transient ? 'blocked' : decision.phase, on: decision.on, line: decision.line, reason, question: decision.question, wait: decision.wait };
+      if (reason === 'transient' || reason === 'external') {
+        run.attempts = attempts;
+        const limit = reason === 'transient' ? 3 : 6;
+        if (attempts >= limit) {
+          run.status = 'asking';
+          run.question = reason === 'transient' ? { text: `模型服务连续出错：${outcome.message ?? ''}`, options: ['再试一次', '先放着'] }
+            : { text: `等了 6 次还在等 ${decision.wait!.what}`, options: ['继续等', '不等了'] };
+        } else {
+          run.status = 'waiting';
+          const delay = reason === 'transient' ? Math.min(30, 2 ** attempts)
+            : attempts && previous?.wakeAt ? Math.min(60, Math.max(2, (Date.parse(previous.wakeAt) - Date.parse(previous.startedAt)) / 60_000) * 2) : decision.checkMinutes ?? 10;
+          run.wakeAt = new Date(now.getTime() + delay * 60_000).toISOString();
+        }
+      } else if (reason === 'done' || reason === 'user') run.status = 'asking';
+      run.summary = reason === 'transient' ? '会在退避后续跑临时出错的线程' : reason === 'external' ? `会定时检查：${decision.wait!.what}`
+        : reason === 'user' ? `会请你回答：${decision.question!.text}` : reason === 'done' ? `看起来做完了：${decision.line}` : '无法确定下一步，保留记录';
+      if (this.settings().mode === 'observe' && run.status === 'waiting') run.status = 'observed';
+      const currentTodo = this.store.getTodo(todo.id);
+      if (this.settings().mode === 'off' || this.quiet(new Date(now.getTime() + Date.now() - began)) || !currentTodo || currentTodo.done || currentTodo.state === 'done' || currentTodo.proposed
+        || this.store.getThread(threadId)?.archivedAt || this.busy(todo.id) || this.latest(threadId)?.turnId !== latest.turnId) {
+        run.status = 'discarded'; run.discardReason = '线程或主动行动设置已改变';
+      }
+      this.saveRun(run);
+      if (run.status === 'asking') this.manager.notice(threadId, `需要你：${todo.text}`, false, true);
+      return true;
+    }
+    return false;
+  }
+
+  private checkAdvance(run: ProactiveRun, now: Date, automatic: boolean): void {
+    const current = this.get(run.id), thread = this.store.getThread(run.threadId), todo = this.store.getTodo(run.matterId);
+    if (!['waiting', 'asking'].includes(current.status)) throw new HttpError(409, '这张卡片已失效，请刷新');
+    if (!thread || thread.archivedAt) throw new HttpError(409, '线程已归档或不存在');
+    if (thread.status === 'running' || this.busy(run.matterId)) throw new HttpError(409, '线程正在运行');
+    if (this.latest(run.threadId)?.turnId !== run.turnId) throw new HttpError(409, '线程已继续');
+    if (!todo || todo.done || todo.state === 'done' || todo.proposed) throw new HttpError(409, '事项已结束或尚未确认');
+    if (automatic && (this.settings().mode !== 'auto' || this.quiet(now))) throw new HttpError(409, '主动行动已关闭或进入安静时段');
+  }
+
+  private async sendAdvance(run: ProactiveRun, now: Date, answer?: string): Promise<ProactiveRun> {
+    const began = Date.now();
+    const currentTime = () => new Date(now.getTime() + Date.now() - began);
+    const automatic = answer === undefined;
+    const discard = (error: unknown) => {
+      const current = this.get(run.id);
+      return ['waiting', 'asking'].includes(current.status) ? this.update(run.id, { status: 'discarded', discardReason: message(error) }) : current;
+    };
+    if (automatic) {
+      try { this.checkAdvance(run, now, true); }
+      catch (error) { return discard(error); }
+      const budget = this.budget(now);
+      if (budget.sends >= 20 || now.getTime() - (budget.sent[run.threadId] ?? 0) < 2 * 60_000) return run;
+    } else this.checkAdvance(run, now, false);
+    const text = answer !== undefined ? run.reason === 'transient' && answer === '再试一次' ? '继续' : `关于你上面的问题：${run.question?.text ?? run.line ?? ''} → ${answer}`
+      : run.reason === 'transient' ? '继续' : `上一轮说在等：${run.wait?.what}。等到后：${run.wait?.then}。请检查条件是否已满足；好了就继续，没好请说明还要多久。不推送远端、不发消息、不合入，不做其他未经人确认的对外动作。`;
+    try {
+      await this.manager.startTurn(run.threadId, { text, ...(automatic ? { proactive: true } : {}) }, undefined, false, undefined, () => {
+        this.checkAdvance(run, currentTime(), automatic);
+        if (automatic) {
+          const sendingAt = currentTime(), budget = this.budget(sendingAt);
+          if (budget.sends >= 20 || sendingAt.getTime() - (budget.sent[run.threadId] ?? 0) < 2 * 60_000) throw new HttpError(409, '已达到自动发送限制');
+          budget.sends++;
+          budget.sent = Object.fromEntries(Object.entries(budget.sent).filter(([, at]) => sendingAt.getTime() - at < 2 * 60_000));
+          budget.sent[run.threadId] = sendingAt.getTime();
+          this.store.saveHubSetting('personalProactiveBudget', budget);
+        }
+        // Claim before turn.started invalidates all other cards on this thread.
+        this.update(run.id, { status: automatic ? 'continued' : 'answered', endedAt: now.toISOString(), attempts: (run.attempts ?? 0) + (automatic ? 1 : 0) });
+      });
+      return this.get(run.id);
+    } catch (error) {
+      if (!automatic) throw error;
+      return discard(error);
+    }
+  }
+
+  async answer(id: string, answer: unknown): Promise<ProactiveRun> {
+    const run = this.get(id);
+    if (run.status !== 'asking' || !['user', 'transient', 'external'].includes(run.reason ?? '')) throw new HttpError(409, '只有等待回答的卡片可以回答');
+    if (typeof answer !== 'string' || !answer.trim() || answer.length > 4000) throw new HttpError(400, '请提供 1–4000 字的回答');
+    this.checkAdvance(run, new Date(), false);
+    answer = answer.trim();
+    if ((run.reason === 'transient' && answer === '先放着') || (run.reason === 'external' && answer === '不等了')) return this.dismiss(id);
+    if (run.reason === 'external' && answer === '继续等') return this.update(id, { status: 'waiting', attempts: 0, wakeAt: new Date(Date.now() + 10 * 60_000).toISOString() });
+    return this.sendAdvance(run, new Date(), answer as string);
+  }
+
+  closeMatter(id: string): ProactiveRun {
+    const run = this.get(id);
+    if (run.status !== 'asking' || run.reason !== 'done') throw new HttpError(409, '只有看起来做完的卡片可以关掉事项');
+    this.checkAdvance(run, new Date(), false);
+    this.personal.update(run.matterId, { done: true });
+    return this.update(id, { status: 'closed', endedAt: new Date().toISOString() });
+  }
+
+  dismiss(id: string): ProactiveRun {
+    const run = this.get(id);
+    if (!['asking', 'waiting'].includes(run.status) && !(run.needsRepo && run.status === 'observed')) throw new HttpError(409, '当前卡片不能忽略');
+    return this.update(id, { status: 'discarded', endedAt: new Date().toISOString() });
+  }
+
+  async allowRepo(id: string): Promise<ProactiveRun> {
+    const run = this.get(id);
+    if (!run.needsRepo || run.status !== 'observed' || !run.repo) throw new HttpError(409, '只有待授权的仓库卡片可以允许');
+    if (this.acting.has('allow-repo')) throw new HttpError(409, '正在允许另一个仓库，请稍后重试');
+    this.acting.add('allow-repo');
+    try {
+      await this.save({ repos: [...new Set([...this.settings().repos, run.repo])] });
+      return this.update(id, { status: 'approved' });
+    } finally { this.acting.delete('allow-repo'); }
+  }
+
+  private async start(todo: TodoRecord, kind: 'prepare' | 'sandbox', now: Date, repo?: string, variant?: ProactiveRun['variant']): Promise<void> {
+    const began = Date.now();
+    const run: ProactiveRun = { id: randomUUID(), matterId: todo.id, kind, variant, ...(repo ? { repo } : {}), threadId: '', startedAt: now.toISOString(), status: 'running' };
     this.saveRun(run);
     let createdThreadId = '';
     try {
@@ -250,19 +452,20 @@ export class ProactiveService {
       const sandbox = repo ? await this.sandbox.prepare(repo, todo.id) : undefined;
       if (sandbox) this.update(run.id, { branch: sandbox.branch });
       // Settings and threads may change while preparing git or discovering the agent.
-      if (this.settings().mode === 'off' || repo && !this.settings().repos.includes(repo)) throw new HttpError(409, '主动行动已关闭或该仓库已移出允许列表');
-      if (this.busy()) throw new HttpError(409, '有工作线程正在运行，本次主动行动未启动');
+      if (this.settings().mode !== 'auto' || repo && !this.settings().repos.includes(repo)) throw new HttpError(409, '主动行动已关闭或该仓库已移出允许列表');
+      if (this.busy(todo.id) || this.atCapacity()) throw new HttpError(409, '有工作线程正在运行，本次主动行动未启动');
       const thread = await this.manager.createThread({ agent: settings.agent!, cwd: sandbox?.root ?? settings.directory,
         title: todo.text, permissionMode: adapter.capabilities.defaultPermissionMode, ...(settings.model ? { model: settings.model } : {}) });
       this.update(run.id, { threadId: thread.id });
       createdThreadId = thread.id;
       const note = this.store.todoNote(todo.id).text || '尚未写入。';
-      const prompt = kind === 'prepare'
+      let prompt = kind === 'prepare'
         ? `由 Calli 发起的提前准备。\n事项：${todo.text}\nID：${todo.id}\n材料目录：${artifacts}\n接续说明：\n${note}\n\n按接续说明提前备好回复草稿、会前提纲或其他值得准备的材料，只写材料目录下的文件。这个目录中的 artifacts 是本轮唯一允许直接写入的事项材料，matter.md 仍只由 Calli 管理。\n先用 calli todo show ${todo.id} 读取最新 rev；产出写入 ${artifacts}/<名称>.md，再用 calli todo update ${todo.id} --rev N --note-file FILE 在接续说明记一句「已备好 X」，保留原有说明。\n不发消息、不推送、不删除、不改外部仓库，不做任何对外动作。不要自行 git 提交，Calli 会为材料留底。没有值得准备的材料就安静结束，不凑内容、不通知。结束回复只写材料摘要。`
         : `由 Calli 发起的沙盒动手。\n事项：${todo.text}\nID：${todo.id}\n接续说明：\n${note}\n\n这是独立 worktree 沙盒；只按接续说明推进已由人开始的工作。每个提交必须带 git trailer：\nCalli-Proactive: ${todo.id}\n\n跑该仓库测试；只改当前沙盒，不动主工作区、不推送远端、不发消息、不做其他对外动作。只在此沙盒提交改动。不要查看其他 agent 会话，也不要修改它们的目录或配置。结束回复按「## 改动摘要」「## 测试结果」两段写清实际改动、执行的测试和结果；没有运行测试也要写清原因。`;
+      if (variant === 'plan') prompt += `\n本轮是笼统事项拆解：把事项拆成 3–7 步，写出第一步的具体方案（要改哪里、怎么验证、要问人什么），写入 ${artifacts}/plan.md。可以只读查看相关仓库，不改任何仓库、不对外。用 calli todo update 在接续说明记一句「已备好 拆解与第一步方案」。`;
       await this.manager.startTurn(thread.id, { text: prompt, scheduled: true, proactive: true }, undefined, false, undefined, turnId => {
-        if (this.busy()) throw new HttpError(409, '有工作线程正在运行，本次主动行动未启动');
-        if (this.settings().mode === 'off' || repo && !this.settings().repos.includes(repo)) throw new HttpError(409, '主动行动设置已改变，本次未启动');
+        if (this.busy(todo.id) || this.atCapacity()) throw new HttpError(409, '有工作线程正在运行，本次主动行动未启动');
+        if (this.settings().mode !== 'auto' || this.quiet(new Date(now.getTime() + Date.now() - began)) || repo && !this.settings().repos.includes(repo)) throw new HttpError(409, '主动行动设置或安静时段已改变，本次未启动');
         this.personal.linkWorkThread(todo.id, thread.id, todo.rev);
         this.turns.set(run.id, turnId);
       });
@@ -275,6 +478,7 @@ export class ProactiveService {
   }
 
   private onEvent(event: StoredEvent): void {
+    if (event.type === 'turn.started') this.invalidate(event.threadId);
     const outcome = turnOutcome(event);
     if (!outcome || outcome.imported || outcome.fromTerminal || !event.turnId) return;
     const run = this.runs().find(run => run.status === 'running' && run.threadId === event.threadId && this.turns.get(run.id) === event.turnId);

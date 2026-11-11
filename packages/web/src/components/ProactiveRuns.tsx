@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Api, ProactiveAction, ProactiveFile, ProactiveRun, Todo } from '../api';
-import { t } from '../i18n';
+import { formatDateTime, t, type MessageKey } from '../i18n';
 import { diffTotals, fileName, proactiveMatters, replaceRun, runControls } from '../proactive';
 import { Dialog, DialogSurface } from './Dialog';
 import { IconFile, IconSparkle } from './icons';
@@ -17,31 +17,32 @@ export interface ProactiveState {
   pending: Record<string, ProactiveAction>;
   /** Why the last action on a run failed; the buttons stay, so it can be tried again. */
   failures: Record<string, string>;
-  act: (run: ProactiveRun, action: ProactiveAction) => void;
+  act: (run: ProactiveRun, action: ProactiveAction, answer?: string) => void;
 }
 
 /** Her runs, read only for what is on screen: one matter's (`scope` its id), all of them (''), or none (null). */
-export function useProactive(api: Api, scope: string | null, refreshKey: number): ProactiveState {
+export function useProactive(api: Api, scope: string | null, refreshKey: number, onAction?: () => void): ProactiveState {
   const [runs, setRuns] = useState<ProactiveRun[] | null>(null);
   const [error, setError] = useState('');
   const [pending, setPending] = useState<Record<string, ProactiveAction>>({});
   const [failures, setFailures] = useState<Record<string, string>>({});
   const asked = useRef(0);
+  const currentScope = useRef(scope);
   const load = useCallback(() => {
     const ticket = ++asked.current;
     setError('');
     void api.proactive(scope || undefined).then(value => { if (ticket === asked.current) setRuns(value.runs); }).catch(e => { if (ticket === asked.current) setError(message(e)); });
   }, [api, scope]);
-  useEffect(() => { asked.current++; setRuns(null); setError(''); }, [scope]);
+  useEffect(() => { currentScope.current = scope; asked.current++; setRuns(null); setError(''); }, [scope]);
   useEffect(() => { if (scope !== null) load(); }, [scope, refreshKey, load]);
-  const act = (run: ProactiveRun, action: ProactiveAction) => {
+  const act = (run: ProactiveRun, action: ProactiveAction, answer?: string) => {
     if (pending[run.id]) return;
     setPending(now => ({ ...now, [run.id]: action }));
     setFailures(({ [run.id]: _gone, ...rest }) => rest);
-    void api.proactiveAct(run.id, action)
+    void api.proactiveAct(run.id, action, answer)
       // An answer to a read begun before the action is out of date.
-      .then(next => { asked.current++; setRuns(now => now && replaceRun(now, next)); })
-      .catch(e => { setFailures(now => ({ ...now, [run.id]: message(e) })); load(); })
+      .then(next => { if (currentScope.current === scope) { asked.current++; setRuns(now => now && replaceRun(now, next)); } onAction?.(); })
+      .catch(e => { setFailures(now => ({ ...now, [run.id]: message(e) })); if (currentScope.current === scope) load(); })
       .finally(() => setPending(({ [run.id]: _done, ...rest }) => rest));
   };
   return { runs, error, load, pending, failures, act };
@@ -76,17 +77,38 @@ function DiffCount({ additions, deletions }: { additions: number; deletions: num
   return <span className="diff-stats"><span className="diff-added">+{additions}</span><span className="diff-removed">-{deletions}</span></span>;
 }
 
+/** System choices are protocol values the daemon parses back; translate only their labels, never the answer sent. */
+const SYSTEM_ANSWERS: Record<string, Record<string, MessageKey>> = { transient: { 再试一次: 'proactive.retryAgain', 先放着: 'proactive.leaveForNow' }, external: { 继续等: 'proactive.keepWaiting', 不等了: 'proactive.stopWaiting' } };
+
+function answerLabel(run: ProactiveRun, option: string): string {
+  const key = SYSTEM_ANSWERS[run.reason ?? '']?.[option];
+  return key ? t(key) : option;
+}
+
 /** What can be done about a run, wherever it shows. Discarding is the one thing that cannot be undone, so it asks. */
 export function RunControls({ api, run, state }: { api: Api; run: ProactiveRun; state: ProactiveState }) {
   const [viewing, setViewing] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [answer, setAnswer] = useState('');
   const pending = state.pending[run.id];
   const controls = runControls(run);
   if (!controls.length) return null;
+  if (controls.includes('answer')) return <div className="proactive-answer">
+    {run.question?.text && <p>{run.question.text}</p>}
+    <div className="desk-card-actions">{run.question?.options.map(option => <button key={option} className="ghost" disabled={Boolean(pending)} onClick={() => state.act(run, 'answer', option)}>{answerLabel(run, option)}</button>)}</div>
+    <form className="desk-card-actions proactive-answer-form" aria-label={t('proactive.otherAnswer')} onSubmit={e => { e.preventDefault(); if (answer.trim()) state.act(run, 'answer', answer.trim()); }}>
+      <input aria-label={t('proactive.otherAnswer')} placeholder={t('proactive.otherAnswer')} value={answer} disabled={Boolean(pending)} onChange={e => setAnswer(e.target.value)} />
+      <button className="ghost" disabled={Boolean(pending) || !answer.trim()}>{t('proactive.answer')}</button>
+    </form>
+  </div>;
+  const label = (control: Exclude<typeof controls[number], 'diff'>) => {
+    if (control === 'dismiss') return t(run.needsRepo ? 'proactive.declineRepo' : run.reason === 'done' ? 'proactive.notDone' : 'proactive.stopWaiting');
+    return t(`proactive.${control}`);
+  };
   return <>
     <div className="desk-card-actions">{controls.map(control => control === 'diff'
       ? <button key={control} className="ghost" onClick={() => setViewing(true)}>{t('proactive.viewChanges')}</button>
-      : <button key={control} className={control === 'merge' ? 'primary' : 'ghost'} disabled={Boolean(pending)} onClick={() => { if (control === 'discard') setConfirming(true); else state.act(run, control); }}>{t(pending === control ? `proactive.${control}ing` : `proactive.${control}`)}</button>)}
+      : <button key={control} className={control === 'merge' ? 'primary' : 'ghost'} disabled={Boolean(pending)} aria-busy={pending === control} onClick={() => { if (control === 'discard') setConfirming(true); else state.act(run, control); }}>{label(control)}</button>)}
     </div>
     {viewing && <DiffDialog api={api} run={run} onClose={() => setViewing(false)} />}
     {confirming && createPortal(<Dialog title={t('proactive.discardTitle')} message={t('proactive.discardHint')} confirmLabel={t('proactive.discard')} danger onCancel={() => setConfirming(false)} onConfirm={() => { setConfirming(false); state.act(run, 'discard'); }} />, document.body)}
@@ -94,6 +116,8 @@ export function RunControls({ api, run, state }: { api: Api; run: ProactiveRun; 
 }
 
 const statusLabel = (run: ProactiveRun): string => {
+  if (run.needsRepo && run.status === 'observed') return t('proactive.allowSandbox');
+  if (run.status === 'asking' && run.reason === 'done') return t('proactive.looksDone');
   if (run.status === 'ready') return t(run.kind === 'sandbox' ? 'proactive.status.sandboxReady' : 'proactive.status.prepared');
   if (run.status === 'running') return t(run.kind === 'sandbox' ? 'proactive.status.sandboxRunning' : 'proactive.status.preparing');
   return t(`proactive.status.${run.status}`);
@@ -107,26 +131,34 @@ export function ProactiveCard({ api, run, state, style }: { api: Api; run: Proac
   return <article className={`desk-card proactive-card ${run.status}${prepared ? ' prepared' : ''}`} data-run={run.id} style={style}>
     <span className={`desk-card-kind${failed ? ' personal-warning' : ''}`}>{prepared ? <IconFile size={14} /> : <IconSparkle size={14} />}{statusLabel(run)}</span>
     {prepared && (run.files?.length ?? 0) > 0 && <ul className="proactive-files">{run.files!.map(file => <li key={file.path} title={file.path}>{fileName(file.path)}</li>)}</ul>}
-    {failed ? <p>{run.summary || t('proactive.failedHint')}</p> : run.summary && <p className={prepared ? 'proactive-summary' : undefined}>{run.summary}</p>}
+    <RunSummary run={run} />
     {run.kind === 'sandbox' && run.status === 'ready' && run.testReport && <p className="proactive-tests">{run.testReport}</p>}
     {run.kind === 'sandbox' && run.status === 'ready' && run.files && <small className="desk-card-foot">{t('proactive.fileCount', run.files.length)}</small>}
-    <RunControls api={api} run={run} state={state} />
+    <RunControls key={run.id} api={api} run={run} state={state} />
     {failure && <p className="desk-action-error proactive-failure" role="alert">{failure}</p>}
   </article>;
 }
 
+function RunSummary({ run }: { run: ProactiveRun }) {
+  if (run.status === 'waiting') return <p>{t('proactive.waitingFor', run.wait?.what || run.line || run.summary || t('proactive.service'))}{run.wakeAt && Number.isFinite(Date.parse(run.wakeAt)) && <> · {t('proactive.checkAt', formatDateTime(run.wakeAt, { hour: '2-digit', minute: '2-digit', hour12: false }))}</>}</p>;
+  if (run.status === 'asking' && run.reason !== 'done' && run.question?.text) return null;
+  const summary = run.status === 'asking' ? run.line || run.summary : run.summary;
+  return <>{(summary || run.status === 'failed') && <p>{summary || t('proactive.failedHint')}</p>}{run.needsRepo && run.status === 'observed' && run.repo && <p className="proactive-tests">{run.repo}</p>}</>;
+}
+
 /** The filter's answer: one line per matter she acted on, with what is left to decide right on it. */
-export function ProactiveList({ api, todos, state, canOpen, onOpen }: { api: Api; todos: Todo[]; state: ProactiveState; canOpen: (id: string) => boolean; onOpen: (id: string, source: HTMLElement) => void }) {
+export function ProactiveList({ api, todos, state, canOpen, onOpen, askingOnly = false }: { api: Api; todos: Todo[]; state: ProactiveState; canOpen: (id: string) => boolean; onOpen: (id: string, source: HTMLElement) => void; askingOnly?: boolean }) {
   if (state.error) return <p className="desk-state" role="alert">{state.error} <button className="ghost" onClick={state.load}>{t('common.retry')}</button></p>;
   if (!state.runs) return <p className="desk-state" role="status">{t('common.loading')}</p>;
-  const matters = proactiveMatters(state.runs, todos);
-  if (!matters.length) return <p className="desk-empty">{t('proactive.none')}</p>;
+  const matters = proactiveMatters(askingOnly ? state.runs.filter(run => run.status === 'asking') : state.runs, todos);
+  if (!matters.length) return <p className="desk-empty">{t(askingOnly ? 'proactive.noneAsking' : 'proactive.none')}</p>;
   return <ul className="proactive-list desk-paper">{matters.map(({ matterId, todo, run }) => <li key={matterId} data-matter={matterId}>
     <div className="proactive-row-main">
       {todo && canOpen(matterId) ? <button className="proactive-row-title" onClick={e => onOpen(matterId, e.currentTarget)}>{todo.text}</button> : <span className="proactive-row-title">{todo?.text ?? run.summary ?? t('proactive.goneMatter')}</span>}
-      <span className={`proactive-row-status${run.status === 'failed' ? ' personal-warning' : ''}`}>{statusLabel(run)}</span>
+      <span className={`proactive-row-status${run.status === 'failed' || run.status === 'asking' ? ' personal-warning' : ''}`}>{statusLabel(run)}</span>
     </div>
-    <RunControls api={api} run={run} state={state} />
+    {(run.kind === 'advance' || run.needsRepo) && <RunSummary run={run} />}
+    <RunControls key={run.id} api={api} run={run} state={state} />
     {state.failures[run.id] && <p className="desk-action-error proactive-failure" role="alert">{state.failures[run.id]}</p>}
   </li>)}</ul>;
 }
