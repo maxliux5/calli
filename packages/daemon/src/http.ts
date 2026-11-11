@@ -668,6 +668,17 @@ export function createHttpServer(deps: HttpDeps): Server {
       return sendJson(res, 200, await manager.agentQuota(parts[2], url.searchParams.get('refresh') === '1'));
     }
 
+    // GET /api/agents/:id/stream-bridge: would the experimental bridge work on this install
+    // right now? Advisory status for the settings sheet; turns degrade on their own anyway.
+    if (method === 'GET' && parts[0] === 'api' && parts[1] === 'agents' && parts[2] && parts[3] === 'stream-bridge' && !parts[4]) {
+      if (!registry) throw new HttpError(404, 'this daemon has no agent registry');
+      const adapter = registry.adapters.get(parts[2]);
+      if (!adapter) throw new HttpError(404, `unknown agent: ${parts[2]}`);
+      if (!adapter.capabilities.streamBridge || !adapter.streamBridgeEnvironment) throw new HttpError(400, 'this agent has no experimental stream bridge');
+      const { incompatible } = await adapter.streamBridgeEnvironment(true);
+      return sendJson(res, 200, incompatible === undefined ? { compatible: true } : { compatible: false, reason: incompatible });
+    }
+
     // GET /api/agents/:id/commands
     if (method === 'GET' && parts[0] === 'api' && parts[1] === 'agents' && parts[2] && parts[3] === 'commands') {
       return sendJson(res, 200, await manager.listCommands(parts[2], url.searchParams.get('cwd') ?? undefined));

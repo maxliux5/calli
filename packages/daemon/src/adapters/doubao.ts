@@ -11,14 +11,15 @@ import { commandExists } from '../util.js';
 /**
  * Doubao CLI's public automation surface is one `-p` process per turn. Its text response is on
  * stdout; stderr announces the native conversation as {type:"session",session_id:"..."}.
- * CLI 2.31.2 exposes no ACP or output-format flag. An opt-in, version-guarded stream bridge
- * enables the shipped JSON printer in an isolated runtime copy, never modifying the installation.
+ * The CLI exposes no ACP or output-format flag. An opt-in stream bridge enables the shipped JSON
+ * printer in an isolated runtime copy, never modifying the installation. Compatibility follows
+ * the patch anchors rather than a pinned version; incompatible installs fall back to text output.
  */
 export const DOUBAO_METADATA = {
   adapter: 'doubao' as const,
   label: 'Doubao CLI',
   icon: DOUBAO_ICON,
-  installGuide: 'npm install -g @bytedance/doubao-cli@2.31.2',
+  installGuide: 'npm install -g @bytedance/doubao-cli',
 };
 
 const BYPASS = '--dangerously-bypass-approvals-and-sandbox';
@@ -90,9 +91,16 @@ export class DoubaoAdapter implements AgentAdapter {
   models() { return Promise.resolve([]); }
   commands() { return Promise.resolve([]); }
   get streamBridgeEnabled(): boolean { return (this.env.CALLI_DOUBAO_STREAM ?? process.env.CALLI_DOUBAO_STREAM) === '1'; }
-  async streamBridgeEnvironment(enabled: boolean): Promise<Record<string, string>> {
-    if (enabled) await validateDoubaoStreamRuntime(this.command, sessionEnvironment(this.env), process.cwd());
-    return { CALLI_DOUBAO_STREAM: enabled ? '1' : '0' };
+  /** Saving consent never fails: `incompatible` reports why turns will run in text output. */
+  async streamBridgeEnvironment(enabled: boolean): Promise<{ environment: Record<string, string>; incompatible?: string }> {
+    const environment = { CALLI_DOUBAO_STREAM: enabled ? '1' : '0' };
+    if (!enabled) return { environment };
+    try {
+      await validateDoubaoStreamRuntime(this.command, sessionEnvironment(this.env), process.cwd());
+      return { environment };
+    } catch (error) {
+      return { environment, incompatible: error instanceof Error ? error.message : String(error) };
+    }
   }
   diagnose() { return cliDiagnostic([this.command[0], ...this.cliPrefix()], this.env, this.streamBridgeEnabled ? 'doubao stream-json bridge (experimental)' : 'doubao -p (text)'); }
 
@@ -115,7 +123,12 @@ export class DoubaoAdapter implements AgentAdapter {
     if (opts.workMode === 'plan') throw new Error('此 agent 不支持计划模式');
     if (opts.permissionMode === 'ask') throw new Error('Doubao 无界面模式不能请求人工审批');
     // A new native id exists only after the first real prompt, never an empty probing session.
-    const runtime = this.streamBridgeEnabled ? await prepareDoubaoStreamRuntime(this.command, sessionEnvironment(this.env, opts.coordinationEnv), opts.cwd) : undefined;
+    // A bridge that cannot be prepared right now degrades to the public text surface, not an error.
+    let runtime: DoubaoStreamRuntime | undefined;
+    if (this.streamBridgeEnabled) {
+      try { runtime = await prepareDoubaoStreamRuntime(this.command, sessionEnvironment(this.env, opts.coordinationEnv), opts.cwd); }
+      catch (error) { console.warn(`[doubao] stream bridge unavailable, falling back to text output: ${error instanceof Error ? error.message : error}`); }
+    }
     return new DoubaoSession(runtime?.command ?? this.command, { ...opts }, this.env, runtime);
   }
 }

@@ -17,7 +17,7 @@ export function StreamBridgeOption({ capability, value, onChange, disabled = fal
       <button type="button" className="personal-switch" role="switch" aria-label={t('streamBridge.enable')} aria-describedby={hintId}
         aria-checked={value} disabled={disabled} onClick={() => onChange(!value)}><span /></button>
     </div>
-    <p id={hintId} className="agent-bridge-hint">{t('streamBridge.hint', capability.version, capability.platform)}</p>
+    <p id={hintId} className="agent-bridge-hint">{t('streamBridge.hint', capability.platform)}</p>
     {!compact && <p className="agent-bridge-hint">{t('streamBridge.footprint', capability.temporaryMegabytes)}</p>}
   </div>;
 }

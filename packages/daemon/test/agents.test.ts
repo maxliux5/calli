@@ -392,7 +392,7 @@ test('supported lists all built-in adapters with labels and install guides', () 
   assert.equal(supported.find((s) => s.adapter === 'traex')?.installGuide, undefined);
   assert.equal(supported.find((s) => s.adapter === 'zcode')?.installGuide, undefined);
   assert.equal(supported.find((s) => s.adapter === 'dsh')?.installGuide, 'npm install -g @deepseek-ai/dsh');
-  assert.equal(supported.find((s) => s.adapter === 'doubao')?.installGuide, 'npm install -g @bytedance/doubao-cli@2.31.2');
+  assert.equal(supported.find((s) => s.adapter === 'doubao')?.installGuide, 'npm install -g @bytedance/doubao-cli');
 });
 
 test('AgentRegistry.fromEnv supports an explicitly empty agents array', () => {
