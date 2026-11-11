@@ -24,6 +24,9 @@ const wait = async (predicate: () => boolean | Promise<boolean>, label = 'condit
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const flag = (call: Call, name: string) => call.args[call.args.indexOf(name) + 1];
 const event = (id: string, content = 'hello', extra: Record<string, unknown> = {}) => ({ message_id: id, chat_id: 'oc_private', chat_type: 'p2p', sender_id: 'ou_owner', sender_type: 'user', message_type: 'text', content, ...extra });
+const idleSetup = { state: 'idle', url: null, reason: null, kind: null };
+const createUrl = 'https://example.invalid/authorize?fixture=calli';
+const loginUrl = 'https://example.invalid/authorize?fixture=login';
 
 async function setup(config: Record<string, unknown> = {}, options: { executable?: string; timeoutMs?: number; retryMs?: number; setupTimeoutMs?: number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'calli-feishu-'));
@@ -117,9 +120,14 @@ test('private rejected messages are recorded; group and non-user noise is ignore
 test('first contact without an owner only proposes pendingOwner; explicit binding enables later messages', async () => {
   const h = await setup(); try {
     h.settings({ owner: '' }); h.deliver(event('om_unbound')); await wait(async () => (await h.chat.status()).pendingOwner === 'ou_owner', 'pending owner');
-    assert.equal(h.chat.getSettings().owner, ''); assert.equal(h.store.listThreads().length, 0); assert.equal((await h.chat.status()).records[0].reason, 'owner_missing');
+    assert.equal(h.chat.getSettings().owner, ''); assert.equal(h.store.listThreads().length, 0); assert.equal((await h.chat.status()).records.find(r => r.direction === 'in')?.reason, 'owner_missing');
+    // The sender is told once where to go; no thread starts, even on another message.
+    await h.sent(1); assert.equal(flag(h.replies()[0], '--message-id'), 'om_unbound'); assert.match(h.replies()[0].input, /绑定/); assert.equal(h.store.listThreads().length, 0);
+    h.deliver(event('om_unbound'), event('om_unbound_again'));
+    await wait(async () => (await h.chat.status()).records.some(row => row.key === 'om_unbound_again'), 'second unbound contact');
+    assert.equal(h.replies().length, 1); assert.equal(h.store.listThreads().length, 0); assert.equal(h.chat.getSettings().owner, '');
     h.chat.putSettings({ owner: 'ou_owner' }); assert.equal((await h.chat.status()).pendingOwner, null);
-    h.deliver(event('om_unbound'), event('om_bound')); await h.sent(1); assert.equal(h.store.listThreads().length, 1); assert.equal(flag(h.replies()[0], '--message-id'), 'om_bound');
+    h.deliver(event('om_unbound'), event('om_bound')); await h.sent(2); assert.equal(h.store.listThreads().length, 1); assert.equal(flag(h.replies()[1], '--message-id'), 'om_bound');
   } finally { await h.close(); }
 });
 
@@ -219,45 +227,121 @@ test('identity distinguishes missing CLI, unconfigured profile and an unavailabl
 
 test('QR setup returns a URL, adopts the authorized user and refuses replacing a configured bot', async () => {
   const h = await setup({ configured: false, setupWait: true, openId: 'ou_authorized' }); try {
-    const waiting = await h.chat.startSetup(); assert.equal(waiting.setup.state, 'waiting'); assert.equal(waiting.setup.url, 'https://example.invalid/authorize?fixture=calli');
+    assert.deepEqual((await h.chat.status()).setup, idleSetup);
+    const waiting = await h.chat.startSetup(); assert.deepEqual(waiting.setup, { state: 'waiting', url: createUrl, reason: null, kind: 'create' });
     await h.chat.startSetup(); assert.equal(h.calls().filter(call => call.args[0] === 'config').length, 1); h.changeConfig({ setupFinish: true });
-    await wait(async () => (await h.chat.status()).setup.state === 'done', 'setup completion'); assert.equal(h.chat.getSettings().owner, 'ou_authorized'); assert.equal((await h.chat.status()).configured, true); assert.equal((await h.chat.status()).setup.url, null);
+    await wait(async () => (await h.chat.status()).setup.state === 'done', 'setup completion'); assert.equal(h.chat.getSettings().owner, 'ou_authorized'); assert.equal((await h.chat.status()).configured, true);
+    assert.deepEqual((await h.chat.status()).setup, { state: 'done', url: null, reason: null, kind: 'create' });
     await assert.rejects(h.chat.startSetup(), (error: any) => error.status === 409); assert.ok(h.calls().every(call => call.credentials.length === 0 && (call.args.join(' ') === 'config init --new --name calli' || call.args[0] === '--profile' && call.args[1] === 'calli')));
   } finally { await h.close(); }
 });
 
 test('QR setup cancels, handles failure and preserves an existing owner', async () => {
   const h = await setup({ configured: false, setupWait: true }); try {
-    await h.chat.startSetup(); const child = h.calls().find(call => call.args[0] === 'config')!; assert.ok(alive(child.pid)); assert.equal((await h.chat.cancelSetup()).setup.state, 'idle');
+    await h.chat.startSetup(); const child = h.calls().find(call => call.args[0] === 'config')!; assert.ok(alive(child.pid)); assert.deepEqual((await h.chat.cancelSetup()).setup, idleSetup);
     await wait(() => !alive(child.pid)); assert.equal((await h.chat.status()).configured, false); h.changeConfig({ setupWait: false, setupExit: 1 }); await h.chat.startSetup();
-    await wait(async () => (await h.chat.status()).setup.state === 'failed'); assert.equal((await h.chat.status()).setup.reason, 'cli_failed');
+    await wait(async () => (await h.chat.status()).setup.state === 'failed'); assert.deepEqual((await h.chat.status()).setup, { state: 'failed', url: null, reason: 'cli_failed', kind: 'create' });
     h.chat.putSettings({ owner: 'ou_existing' }); h.changeConfig({ setupExit: 0 }); await h.chat.startSetup(); await wait(async () => (await h.chat.status()).setup.state === 'done'); assert.equal(h.chat.getSettings().owner, 'ou_existing');
+  } finally { await h.close(); }
+});
+
+for (const owner of ['', 'ou_previous']) test(`QR login confirms the user and ${owner ? 'replaces' : 'initializes'} the owner`, async () => {
+  const h = await setup({ userAvailable: false, loginWait: true, loginOpenId: 'ou_logged_in' }); try {
+    h.chat.putSettings({ owner, agent: 'claude', cwd: h.dir, echoWeb: true });
+    const before = h.chat.getSettings(); assert.deepEqual((await h.chat.status()).setup, idleSetup);
+    const waiting = await h.chat.startLogin(); assert.deepEqual(waiting.setup, { state: 'waiting', url: loginUrl, reason: null, kind: 'login' });
+    assert.equal(h.chat.getSettings().owner, owner);
+    assert.deepEqual((await h.chat.startLogin()).setup, waiting.setup);
+    assert.deepEqual((await h.chat.startSetup()).setup, waiting.setup);
+    const logins = h.calls().filter(call => call.args[3] === 'login'); assert.equal(logins.length, 1);
+    assert.deepEqual(logins[0].args, ['--profile', 'calli', 'auth', 'login', '--domain', 'im']); assert.ok(alive(logins[0].pid));
+    h.changeConfig({ loginFinish: true }); await wait(async () => (await h.chat.status()).setup.state === 'done', 'login completion');
+    assert.deepEqual((await h.chat.status()).setup, { state: 'done', url: null, reason: null, kind: 'login' });
+    assert.deepEqual(h.chat.getSettings(), { ...before, owner: 'ou_logged_in' });
+    assert.equal(h.store.hubSetting<any>('feishu', {}).owner, 'ou_logged_in');
+    assert.ok(h.calls().every(call => call.credentials.length === 0 && call.args[0] === '--profile' && call.args[1] === 'calli'));
+    await wait(() => !alive(logins[0].pid), 'login child to exit');
+  } finally { await h.close(); }
+});
+
+test('QR login cancels without changing the owner or user credentials', async () => {
+  const h = await setup({ userAvailable: false, loginWait: true }); try {
+    h.chat.putSettings({ owner: 'ou_previous' }); await h.chat.startLogin(); const child = h.calls().find(call => call.args[3] === 'login')!;
+    assert.ok(alive(child.pid)); assert.deepEqual((await h.chat.cancelSetup()).setup, idleSetup); await wait(() => !alive(child.pid));
+    assert.deepEqual((await h.chat.status()).setup, idleSetup); assert.equal(h.chat.getSettings().owner, 'ou_previous');
+    assert.equal(JSON.parse(readFileSync(join(h.dir, 'config.json'), 'utf8')).userAvailable, false);
+  } finally { await h.close(); }
+});
+
+for (const config of [{ loginExit: 7 }, { loginNoUser: true }]) test(`QR login failure ${JSON.stringify(config)} keeps the previous owner`, async () => {
+  const h = await setup({ userAvailable: false, loginDelayMs: 150, ...config }); try {
+    h.chat.putSettings({ owner: 'ou_previous' }); await h.chat.startLogin();
+    await wait(async () => (await h.chat.status()).setup.state === 'failed', 'failed login');
+    assert.deepEqual((await h.chat.status()).setup, { state: 'failed', url: null, reason: 'cli_failed', kind: 'login' });
+    assert.equal(h.chat.getSettings().owner, 'ou_previous'); assert.equal(h.store.listThreads().length, 0);
+  } finally { await h.close(); }
+});
+
+test('QR login requires a configured bot and an installed CLI', async () => {
+  for (const options of [{}, { executable: '/nonexistent/fixture-lark-cli' }]) {
+    const h = await setup({ configured: false }, options); try {
+      await assert.rejects(h.chat.startLogin(), (error: any) => error.status === 409);
+      assert.deepEqual((await h.chat.status()).setup, idleSetup); assert.equal(h.calls().filter(call => call.args[3] === 'login').length, 0);
+    } finally { await h.close(); }
+  }
+});
+
+test('dispose terminates a waiting QR login without changing the owner', async () => {
+  const h = await setup({ userAvailable: false, loginWait: true }); try {
+    await h.chat.startLogin(); const child = h.calls().find(call => call.args[3] === 'login')!; h.chat.dispose();
+    await wait(() => !alive(child.pid)); assert.equal(h.chat.getSettings().owner, '');
   } finally { await h.close(); }
 });
 
 test('dispose stops the consumer, setup and in-flight sends and prevents reconnects', async () => {
   const h = await setup({ configured: false, setupWait: true, replyTimeout: true }); try {
-    h.settings(); assert.equal((await h.chat.startSetup()).setup.state, 'waiting'); await wait(async () => (await h.chat.status()).realtime === 'live'); h.deliver(event('om_dispose')); await wait(() => h.replies().length === 1);
+    h.settings(); assert.deepEqual((await h.chat.startSetup()).setup, { state: 'waiting', url: createUrl, reason: null, kind: 'create' }); await wait(async () => (await h.chat.status()).realtime === 'live'); h.deliver(event('om_dispose')); await wait(() => h.replies().length === 1);
     const pids = h.calls().map(call => call.pid); h.chat.dispose(); await wait(() => pids.every(pid => !alive(pid)), 'all CLI subprocesses to stop');
     const count = h.calls().length; await pause(150); assert.equal(h.calls().length, count); h.deliver(event('om_after_dispose')); await pause(100); assert.equal(h.store.listThreads().length, 1);
   } finally { await h.close(); }
 });
 
-test('HTTP settings/status/setup/test routes enforce authentication, validation and response contracts', async () => {
-  const h = await setup({ configured: false, setupWait: true });
+test('HTTP settings/status/setup/login/test routes enforce authentication, validation and response contracts', async () => {
+  const h = await setup({ configured: false, setupWait: true, userAvailable: false, loginWait: true, loginOpenId: 'ou_http_login' });
   const server = createHttpServer({ manager: h.manager, feishu: h.chat, token: 'feishu-fixture', version: 'test', webDir: null });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve)); const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/feishu/`;
   const api = (path: string, method = 'GET', body?: unknown) => fetch(base + path, { method, headers: { Authorization: 'Bearer feishu-fixture', 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   try {
     assert.equal((await fetch(base + 'settings')).status, 401); assert.deepEqual(await (await api('settings')).json(), { enabled: false, agent: '', cwd: '', owner: '', echoWeb: false });
+    assert.equal((await fetch(base + 'login', { method: 'POST' })).status, 401); assert.equal((await api('login', 'POST')).status, 409);
     for (const body of [{ enabled: 'yes' }, { echoWeb: 1 }, { owner: 'bad-id' }, { agent: 'missing' }, { cwd: 'relative' }, { enabled: true }]) assert.equal((await api('settings', 'PUT', body)).status, 400);
     const saved = await api('settings', 'PUT', { agent: 'claude', cwd: h.dir, owner: 'ou_owner', echoWeb: true }); assert.equal(saved.status, 200); assert.equal((await saved.json()).echoWeb, true); assert.equal(h.store.hubSetting<any>('feishu', {}).owner, 'ou_owner');
-    const start = await api('setup', 'POST'); assert.equal(start.status, 200); assert.equal((await start.json()).setup.state, 'waiting');
-    const cancel = await api('setup', 'DELETE'); assert.equal(cancel.status, 200); assert.equal((await cancel.json()).setup.state, 'idle'); h.changeConfig({ configured: true }); assert.equal((await api('setup', 'POST')).status, 409);
+    const start = await api('setup', 'POST'); assert.equal(start.status, 200); assert.deepEqual((await start.json()).setup, { state: 'waiting', url: createUrl, reason: null, kind: 'create' });
+    assert.deepEqual((await (await api('login', 'POST')).json()).setup, { state: 'waiting', url: createUrl, reason: null, kind: 'create' });
+    assert.equal(h.calls().filter(call => call.args[3] === 'login').length, 0);
+    const cancel = await api('setup', 'DELETE'); assert.equal(cancel.status, 200); assert.deepEqual((await cancel.json()).setup, idleSetup); h.changeConfig({ configured: true }); assert.equal((await api('setup', 'POST')).status, 409);
+    const login = await api('login', 'POST'); assert.equal(login.status, 200); assert.deepEqual((await login.json()).setup, { state: 'waiting', url: loginUrl, reason: null, kind: 'login' });
+    assert.equal((await api('login', 'POST')).status, 200); assert.equal(h.calls().filter(call => call.args[3] === 'login').length, 1);
+    assert.deepEqual((await (await api('setup', 'DELETE')).json()).setup, idleSetup); assert.equal((await (await api('settings')).json()).owner, 'ou_owner');
+    await api('login', 'POST'); h.changeConfig({ loginFinish: true });
+    await wait(async () => (await (await api('status')).json()).setup.state === 'done', 'HTTP login completion');
+    assert.deepEqual((await (await api('status')).json()).setup, { state: 'done', url: null, reason: null, kind: 'login' });
+    assert.equal((await (await api('settings')).json()).owner, 'ou_http_login');
     const sent = await api('test', 'POST'); assert.equal(sent.status, 202); assert.equal((await sent.json()).result, 'sent'); assert.equal((await api('test', 'POST')).status, 202);
     const status = await (await api('status')).json(); for (const key of ['cli', 'configured', 'botReady', 'reason', 'realtime', 'setup', 'pendingOwner', 'records', 'dropped']) assert.ok(key in status, key);
     assert.equal(status.records.length, 2); assert.equal((await (await api('status?summary=true')).json()).records.length, 1);
-    const send = h.calls().find(call => call.args[3] === '+messages-send')!; assert.equal(flag(send, '--user-id'), 'ou_owner'); assert.match(send.input, /飞书对话已连通/);
+    const send = h.calls().find(call => call.args[3] === '+messages-send')!; assert.equal(flag(send, '--user-id'), 'ou_http_login'); assert.match(send.input, /飞书对话已连通/);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); await h.close(); }
+});
+
+test('HTTP login reports 409 when lark-cli is missing', async () => {
+  const h = await setup({}, { executable: '/nonexistent/fixture-lark-cli' });
+  const server = createHttpServer({ manager: h.manager, feishu: h.chat, token: 'feishu-fixture', version: 'test', webDir: null });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/feishu/login`, { method: 'POST', headers: { Authorization: 'Bearer feishu-fixture' } });
+    assert.equal(response.status, 409); assert.equal((await response.json()).error, 'lark-cli is not installed');
+    assert.deepEqual((await h.chat.status()).setup, idleSetup);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); await h.close(); }
 });
 
@@ -296,9 +380,9 @@ test('manual connection test without an owner records owner_missing and never se
 
 test('QR setup timeout terminates its process and clears the authorization link', async () => {
   const h = await setup({ configured: false, setupWait: true }, { setupTimeoutMs: 350 }); try {
-    assert.equal((await h.chat.startSetup()).setup.state, 'waiting');
+    assert.deepEqual((await h.chat.startSetup()).setup, { state: 'waiting', url: createUrl, reason: null, kind: 'create' });
     await wait(async () => (await h.chat.status()).setup.state === 'failed', 'setup timeout');
-    assert.equal((await h.chat.status()).setup.url, null);
+    assert.deepEqual((await h.chat.status()).setup, { state: 'failed', url: null, reason: 'cli_failed', kind: 'create' });
     const child = h.calls().find(call => call.args[0] === 'config')!; await wait(() => !alive(child.pid));
     assert.equal((await h.chat.status()).configured, false);
   } finally { await h.close(); }
