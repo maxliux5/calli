@@ -797,6 +797,10 @@ export function createHttpServer(deps: HttpDeps): Server {
     if (method === 'GET' && path === '/api/config') return sendJson(res, 200, manager.workdirsConfig());
 
     // Browse candidate project folders without widening file access or allowed working directories.
+    if (method === 'POST' && path === '/api/context-references') {
+      return sendJson(res, 201, manager.references.create((await readJson(req)) ?? {}));
+    }
+
     if (method === 'GET' && path === '/api/project-directories') {
       return sendJson(res, 200, listProjectDirectories(manager.allowedWorkdirs, url.searchParams.get('path') ?? undefined));
     }

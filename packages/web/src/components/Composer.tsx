@@ -1,3 +1,5 @@
+import { referencePreview, mergeReferences, splitReferences, withReferences, type ContextReference } from '../context-references';
+import { ReferenceChips, ReferencePicker, type ReferenceSource } from './ContextReferences';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import { ApiError, MAX_QUEUED, type AgentMention, type ModelQueue, type OutgoingImage, type QueuedMessage, type SlashCommand } from '../api';
@@ -8,7 +10,7 @@ import { sizeLabel } from '../files';
 import { mentionAt } from '../mentions';
 import { takeoverMention } from '../handover';
 import { MAX_IMAGES, prepareImage, restoreImage, type PreparedImage } from '../images';
-import { channelRows, withNotes, type Note } from '../timeline';
+import { channelRows, splitNotes, withNotes, type Note } from '../timeline';
 import { Popover } from './Popover';
 import { ComposerMenu, goalMenuActions, type GoalAction, type GoalCapability, type WritingMode } from './ComposerMenu';
 import { GoalCard } from './GoalCard';
@@ -57,6 +59,7 @@ export interface DraftNote extends Note {
 /** What is left unsent in a box: the words, noted passages and pictures. */
 interface Draft {
   mentions?: AgentMention[];
+  references?: ContextReference[];
   text: string;
   notes: DraftNote[];
   images: PreparedImage[];
@@ -68,7 +71,7 @@ interface Draft {
 }
 
 /** A box's content as the one text it is sent as: the notes, numbered, then the words. */
-const asMessage = (text: string, notes: Note[]) => (notes.length ? withNotes(notes, text) : text.trim());
+const asMessage = (text: string, notes: Note[], references: ContextReference[] = []) => withNotes(notes, withReferences(references, text));
 
 /** How long a send may take before the button says it is still going. */
 const SLOW_SEND_MS = 400;
@@ -104,11 +107,11 @@ function loadDraft(key: string): Draft | undefined {
   if (inMemory) return inMemory;
   const store = storage();
   const stored = store ? readDrafts(store)[key] : undefined;
-  return stored && { text: stored.text, mentions: stored.mentions, notes: stored.notes.map((n) => ({ ...n, id: noteId() })), images: [], sending: stored.sending };
+  return stored && { text: stored.text, references: stored.references, mentions: stored.mentions, notes: stored.notes.map((n) => ({ ...n, id: noteId() })), images: [], sending: stored.sending };
 }
 
 function keepDraft(key: string, draft: Draft | null): void {
-  if (draft && (draft.text.trim() || draft.notes.length || draft.images.length || draft.videos?.length || draft.mentions?.length)) drafts.set(key, draft);
+  if (draft && (draft.text.trim() || draft.notes.length || draft.images.length || draft.videos?.length || draft.mentions?.length || draft.references?.length)) drafts.set(key, draft);
   else drafts.delete(key);
   const store = storage();
   if (store) writeDraft(store, key, draft);
@@ -123,6 +126,9 @@ export function prefillComposerDraft(key: string, text: string): void {
 const SAVE_DELAY_MS = 400;
 
 interface Props {
+  referenceSource?: ReferenceSource;
+  reference?: { value: ContextReference; nonce: number } | null;
+  onReferenceConsumed?: (id: string) => void;
   /**
    * Whose draft the box holds: a thread's id, or one key for the new thread being started. Without
    * one the box keeps nothing once it is gone, as for a side chat, which is new each time.
@@ -263,9 +269,15 @@ export function Composer({
   onBrowseMentionDir,
   mentionIcon,
   mentionExtra,
+  referenceSource,
+  reference,
+  onReferenceConsumed,
 }: Props) {
   const narrow = useIsNarrow();
   const [text, setText] = useState('');
+  const [references, setReferences] = useState<ContextReference[]>([]);
+  const [referenceSignal, setReferenceSignal] = useState(0);
+  const [referenceQuery, setReferenceQuery] = useState('');
   const [mentions, setMentions] = useState<AgentMention[]>([]);
   const [mentionActive, setMentionActive] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
@@ -361,6 +373,7 @@ export function Composer({
       return searchCommands(query, catalog === 'actions' ? actions.filter(a => !['help', 'skills'].includes(a.id)) : [], entries, [...hiddenCommands, ...(goal ? ['goal'] : [])]);
     }
     const additions: HubAction[] = [{ id: 'composer:attach', label: t('composerMenu.attach'), hint: '', keywords: ['attach', 'image', 'video', 'file', '附件', '文件'] }];
+    if (referenceSource) additions.push({ id: 'composer:reference', label: t('references.add'), hint: '', keywords: ['reference', '引用', '目录', '会话'] });
     if (collaboration) additions.push({ id: 'composer:collaboration', label: t('app.collab'), hint: '', keywords: ['collaboration', 'agents', '协作'] });
     if (planMode) additions.push({ id: 'composer:plan', label: t('composerMenu.planMode'), hint: planMode.disabled ? t('composer.planAfterTurn') : planMode.active ? t('composer.planActive') : t('composerMenu.planOn'), keywords: ['plan', '计划'], disabled: planMode.disabled });
     if (writingMode) additions.push({ id: 'composer:writing', label: t('writing.mode'), hint: writingMode.active ? t('writing.off') : t('writing.modeHint'), keywords: ['writing', 'write', '写作', '文章'], disabled: writingMode.disabled });
@@ -375,14 +388,40 @@ export function Composer({
       ...(!narrow ? group(t('composer.add'), additions) : []),
       ...searchCommands(query, actions, commands, hiddenCommands),
     ];
-  }, [addOpen, addQuery, catalog, text, narrow, actions, commands, hiddenCommands, planMode, writingMode, goal, running, collaboration]);
+  }, [addOpen, addQuery, catalog, text, narrow, actions, commands, hiddenCommands, planMode, writingMode, goal, running, collaboration, referenceSource]);
   const selectable = useMemo(() => rows.filter((r): r is Selectable => r.type !== 'heading' && !(r.type === 'action' && r.action.disabled)), [rows]);
   const menuOpen = addOpen || (rows.length > 0 && !dismissed);
 
   const readSelection = (el: HTMLTextAreaElement) => setSelection({ text: el.value, start: el.selectionStart, end: el.selectionEnd });
   const mentionMatch = mentionAt(text, selection.text === text ? selection.start : text.length, selection.text === text ? selection.end : text.length);
   const mentionRows = mentionOptions.filter(m => !mentions.some(v => v.id === m.id && v.kind === m.kind) && (!mentionMatch?.query || `${m.label} ${m.id}`.toLowerCase().includes(mentionMatch.query.toLowerCase())));
-  const mentionOpen = Boolean(mentionMatch && mentionRows.length && !mentionDismissed && !addOpen);
+  const mentionOpen = !referenceSource && Boolean(mentionMatch && mentionRows.length && !mentionDismissed && !addOpen);
+  const openReferences = (query = '') => { setReferenceQuery(query); setReferenceSignal(value => value + 1); setMentionDismissed(true); };
+  const referenceMention = useRef<{ draftKey: string | undefined; prefix: string } | null>(null);
+  useEffect(() => {
+    const previous = referenceMention.current;
+    if (previous && (previous.draftKey !== draftKey || !text.startsWith(previous.prefix))) referenceMention.current = null;
+    if (!referenceSource || !mentionMatch || addOpen) return;
+    const prefix = text.slice(0, mentionMatch.start + 1);
+    // Closing a picker dismisses this @ even if focus/caret events or a parent refresh arrive later.
+    if (referenceMention.current?.prefix === prefix) return;
+    referenceMention.current = { draftKey, prefix };
+    openReferences(mentionMatch.query);
+  }, [referenceSource, text, draftKey, mentionMatch?.start, mentionMatch?.query, addOpen]);
+  const chooseReference = (reference: ContextReference) => {
+    if (references.length >= 12 && !references.some(r => r.id === reference.id)) { onError(t('references.limit', 12)); return; }
+    setReferences(current => mergeReferences(current, [reference]));
+    if (mentionMatch) setText(current => current.slice(0, mentionMatch.start) + current.slice(mentionMatch.end));
+    setMentionDismissed(true);
+    ref.current?.focus();
+  };
+  const restoreMessage = (value: string) => {
+    const noted = splitNotes(value);
+    const referenced = splitReferences(noted.body);
+    setReferences(current => mergeReferences(referenced.references, current));
+    setNotes(current => [...noted.notes.map(n => ({ ...n, id: noteId() })), ...current]);
+    setText(current => [referenced.body, current].filter(s => s.trim()).join('\n\n'));
+  };
   const taskRefs = useRef<Array<HTMLTextAreaElement | null>>([]);
   const mentionListRef = useRef<HTMLDivElement>(null);
   const chooseMention = (mention: AgentMention, replaceQuery = true) => {
@@ -422,6 +461,15 @@ export function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [note?.nonce]);
   useEffect(() => onNotesChange?.(notes), [notes, onNotesChange]);
+  useEffect(() => {
+    if (!reference) return;
+    if (references.length >= 12 && !references.some(value => value.id === reference.value.id)) onError(t('references.limit', 12));
+    else setReferences(current => mergeReferences(current, [reference.value]));
+    onReferenceConsumed?.(reference.value.id);
+    ref.current?.focus();
+    // Delivery is keyed to one action, like a picked note.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reference?.nonce]);
 
   useEffect(() => {
     if (!revealSelection.current) return;
@@ -434,7 +482,7 @@ export function Composer({
   useEffect(() => {
     if (!restore) return;
     if (restore.mentions?.length) setMentions(current => [...restore.mentions!, ...current]);
-    setText((current) => [restore.text, current].filter((s) => s.trim()).join('\n\n'));
+    restoreMessage(restore.text);
     ref.current?.focus();
     // Keyed on the nonce: the same text can be handed back twice.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -445,9 +493,9 @@ export function Composer({
   // A send this page never saw succeed: the page was reloaded meanwhile, or the answer got lost on
   // the way back. The box stays marked for as long as it still holds exactly what was sent.
   const inFlight = useRef<Sending | null>(null);
-  const unsettled = inFlight.current !== null && asMessage(text, notes) === inFlight.current.text;
-  const draftRef = useRef<Draft>({ text, notes, images, videos });
-  draftRef.current = { text, notes, images, videos, mentions, ...(unsettled ? { sending: inFlight.current! } : {}) };
+  const unsettled = inFlight.current !== null && asMessage(text, notes, references) === inFlight.current.text;
+  const draftRef = useRef<Draft>({ text, notes, references, images, videos });
+  draftRef.current = { text, notes, references, images, videos, mentions, ...(unsettled ? { sending: inFlight.current! } : {}) };
   const sendingRef = useRef(false);
   const previousDraftKey = useRef(draftKey);
   useLayoutEffect(() => {
@@ -460,6 +508,7 @@ export function Composer({
     const saved = loadDraft(draftKey) ?? (firstMessage ? draftRef.current : undefined);
     inFlight.current = saved?.sending ?? null;
     setText(saved?.text ?? '');
+    setReferences(saved?.references ?? []);
     setMentions(saved?.mentions ?? []);
     setNotes(saved?.notes ?? []);
     setImages(saved?.images ?? []);
@@ -478,11 +527,12 @@ export function Composer({
   }, [draftKey]);
 
   const takeDraft = () => {
-    const message = asMessage(text, notes);
+    const message = asMessage(text, notes, references);
     setText('');
     setNotes([]);
+    setReferences([]);
     // The box may be gone before it renders again; its last word on the draft must be the empty one.
-    draftRef.current = { ...draftRef.current, text: '', notes: [] };
+    draftRef.current = { ...draftRef.current, text: '', notes: [], references: [] };
     if (draftKey !== undefined) keepDraft(draftKey, draftRef.current);
     return message;
   };
@@ -497,7 +547,7 @@ export function Composer({
       if (keyRef.current !== undefined && !sendingRef.current) keepDraft(keyRef.current, draftRef.current);
     }, SAVE_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [draftKey, text, notes, mentions]);
+  }, [draftKey, text, notes, references, mentions]);
   useEffect(() => {
     if (draftKey === undefined) return;
     const flush = () => {
@@ -528,6 +578,7 @@ export function Composer({
     setImages([]);
     setText('');
     setNotes([]);
+    setReferences([]);
     setMentions([]);
     if (draftKey !== undefined) keepDraft(draftKey, null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -590,7 +641,7 @@ export function Composer({
     try {
       const taken = await onEditQueued(id);
       if (taken.mentions?.length) setMentions(current => [...taken.mentions!, ...current]);
-      setText((current) => [taken.text, current].filter((s) => s.trim()).join('\n\n'));
+      restoreMessage(taken.text);
       const room = MAX_IMAGES - images.length - preparing;
       if (taken.images.length > room) onError(t('composer.maxImagesNotRestored', MAX_IMAGES));
       const back = taken.images.slice(0, Math.max(0, room)).map(restoreImage);
@@ -635,6 +686,7 @@ export function Composer({
       if (!addOpen) setText('');
       const id = row.action.id;
       if (id === 'composer:attach') fileRef.current?.click();
+      else if (id === 'composer:reference') openReferences();
       else if (id === 'composer:collaboration') setCollaborationSignal(value => value + 1);
       else if (id === 'composer:plan') planMode?.onChange(!planMode.active);
       else if (id === 'composer:writing') writingMode?.onChange(!writingMode.active);
@@ -669,7 +721,7 @@ export function Composer({
   const [takeoverOff, setTakeoverOff] = useState(false);
   useEffect(() => { if (!mentions.length) setTakeoverOff(false); }, [mentions.length]);
   const taker = takeover && !takeoverOff ? takeoverMention(mentions, true, takeover.current) : null;
-  const hasContent = !!taker || text.trim() !== '' || images.length > 0 || videos.length > 0 || notes.length > 0 || mentions.some((m) => m.task?.trim());
+  const hasContent = !!taker || text.trim() !== '' || images.length > 0 || videos.length > 0 || notes.length > 0 || references.length > 0 || mentions.some((m) => m.task?.trim());
   // On a phone, a box with nothing being written gives up the room: one line, back to two the
   // moment it is touched. Anything in it, waiting in it, or focus keeps the whole box; so does a
   // new thread's strip of agent and directory, which is the choice being made.
@@ -740,7 +792,7 @@ export function Composer({
   }, []);
   const collapsed = !voiceControls && narrow && !header && !hasContent && queued.length === 0 && !modelQueue && preparing === 0 && !focused;
   const goalControl = text.trim() === '/goal' ? 'show' : text.trim() === '/goal pause' ? 'pause' : text.trim() === '/goal clear' ? 'clear' : null;
-  const immediate = !!goalControl && !!goal?.controls.includes(goalControl) && !images.length && !videos.length && !notes.length && !mentions.length;
+  const immediate = !!goalControl && !!goal?.controls.includes(goalControl) && !images.length && !videos.length && !notes.length && !references.length && !mentions.length;
   const queueFull = running && !immediate && queued.length >= MAX_QUEUED;
   const canSend = hasContent && !busy && !menuBusy && !disabled && preparing === 0 && !queueFull;
   const sendPress = useRef<{ pointerId: number; x: number; y: number; moved: boolean } | null>(null);
@@ -776,12 +828,12 @@ export function Composer({
     if (taker && (images.length || videos.length)) return onError(t('composer.takeoverAttachments'));
     setBusy(true);
     sendingRef.current = true;
-    const message = asMessage(text, notes);
+    const message = asMessage(text, notes, references);
     const mark: Sending = { text: message, after: lastSent?.turnId ?? null };
     const sentFrom = draftKey;
     // On the device the draft now says it is on its way. Should the page be reloaded before the
     // send comes back, it is neither lost nor taken for something still to send.
-    if (sentFrom !== undefined) keepDraft(sentFrom, { text, notes, images, videos, mentions, sending: mark });
+    if (sentFrom !== undefined) keepDraft(sentFrom, { text, notes, references, images, videos, mentions, sending: mark });
     const slowTimer = setTimeout(() => setSlow(true), SLOW_SEND_MS);
     try {
       if (taker) await takeover!.go(taker.id, [message, taker.task?.trim()].filter(Boolean).join('\n\n'));
@@ -793,6 +845,7 @@ export function Composer({
       if (remainingText && keyRef.current !== undefined) keepDraft(keyRef.current, { text: remainingText, notes: [], images: [] });
       inFlight.current = null;
       setNotes([]);
+      setReferences([]);
       images.forEach((img) => URL.revokeObjectURL(img.previewUrl));
       videos.forEach(video => URL.revokeObjectURL(video.previewUrl));
       setVideos([]);
@@ -1043,8 +1096,8 @@ export function Composer({
                 <div key={q.id} className="queue-entry">
                 <div className="queue-item">
                   <span className={`queue-badge${q.error ? ' failed' : ''}`}>{t(q.error ? 'composer.notSent' : 'composer.queue')}</span>
-                  <span className={`queue-text${q.channel?.parts ? ' parts' : ''}`} title={q.text}>
-                    {q.channel?.parts ? channelRows(q.channel, q.text).map((row, index) => <span key={index} className={row.kind === 'note' ? 'muted' : undefined}>{index > 0 && ' · '}{row.text}</span>) : q.text || (q.targets?.length ? t('app.collab') : q.files ? t('uploads.file') : q.videos ? t('videos.video') : t('images.image'))}
+                  <span className={`queue-text${q.channel?.parts ? ' parts' : ''}`} title={referencePreview(q.text)}>
+                    {q.channel?.parts ? channelRows(q.channel, q.text).map((row, index) => <span key={index} className={row.kind === 'note' ? 'muted' : undefined}>{index > 0 && ' · '}{row.text}</span>) : referencePreview(q.text) || (q.targets?.length ? t('app.collab') : q.files ? t('uploads.file') : q.videos ? t('videos.video') : t('images.image'))}
                     {q.images > 0 && q.text && <span className="muted"> · {t('composer.images', q.images)}</span>}
                     {!!q.videos && <span className="muted"> · {t('composer.videos', q.videos!)}</span>}
                     {!!q.files && <span className="muted"> · {t('composer.files', q.files!)}</span>}
@@ -1100,6 +1153,7 @@ export function Composer({
             </div>
           )}
 
+          <ReferenceChips references={references} onRemove={id => setReferences(current => current.filter(r => r.id !== id))} />
           {notes.length > 0 && (
             <div className="notes" aria-label={t('composer.notes', notes.length)}>
               {notes.map((n, i) => (
@@ -1221,10 +1275,16 @@ export function Composer({
                 collaboration={collaboration ? { active: !!collaborationActive, open: () => setCollaborationSignal(value => value + 1) } : undefined}
                 attachDisabled={Boolean(attachmentsBlocked)}
                 attachTitle={attachBlocked ? t('composer.attachBlocked', attachBlocked) : attachNote ?? t('composer.attachHint')}
+                onReference={referenceSource ? () => openReferences() : undefined}
                 onAttach={() => fileRef.current?.click()} onGoal={chooseGoal} onBrowse={browse} />}
             </Popover> : <button ref={addRef} type="button" className={`tool-btn icon-only composer-add${collaborationActive ? ' on' : ''}`}
               aria-label={t('composer.addAndMode')} aria-haspopup="listbox" aria-expanded={addOpen} title={t('composer.addActionsSkills')} disabled={disabled || menuBusy || busy}
               onClick={() => { setCatalog('all'); setAddQuery(''); setAddOpen(!addOpen); setDismissed(true); }}><IconPlus size={20} /></button>}
+            {referenceSource && <Popover label={t('references.add')} triggerLabel={t('references.add')} triggerClassName="tool-btn icon-only"
+              trigger={<span aria-hidden="true">@</span>} openSignal={referenceSignal} panelClassName="context-picker-panel" disabled={disabled || busy}>
+              {close => <ReferencePicker source={referenceSource} initialQuery={referenceQuery} agents={mentionOptions.filter(m => !mentions.some(v => v.id === m.id && v.kind === m.kind))}
+                onAgent={agent => { close(); chooseMention(agent); }} onPick={reference => { close(); chooseReference(reference); }} />}
+            </Popover>}
             {!collapsed && left}
             {/* Only active modes take space; their compact marks can turn them off. */}
             {planMode?.active && (

@@ -1,5 +1,5 @@
 import type { AgentInfo, SlashCommand } from '../api';
-import { IconAgents, IconBolt, IconCheck, IconChevron, IconList, IconPaperclip, IconPen, IconSparkle, IconTarget } from './icons';
+import { IconAgents, IconBolt, IconCheck, IconChevron, IconList, IconPaperclip, IconQuote, IconPen, IconSparkle, IconTarget } from './icons';
 import { t } from '../i18n';
 
 export type GoalCapability = NonNullable<AgentInfo['capabilities']['goal']>;
@@ -21,6 +21,7 @@ interface Props {
   attachTitle: string;
   attachDisabled?: boolean;
   onAttach: () => void;
+  onReference?: () => void;
   onBrowse: (section: 'actions' | 'skills') => void;
   onGoal: (action: GoalAction) => void;
   collaboration?: { active: boolean; open: () => void };
@@ -31,7 +32,7 @@ interface Props {
 export interface WritingMode { active: boolean; disabled: boolean; onChange: (active: boolean) => void }
 
 /** A compact phone menu. Browsing opens the composer's full-width command palette. */
-export function ComposerMenu({ commands, planMode, writingMode, goal, running, attachTitle, attachDisabled, onAttach, onBrowse, onGoal, collaboration, close }: Props) {
+export function ComposerMenu({ commands, planMode, writingMode, goal, running, attachTitle, attachDisabled, onAttach, onReference, onBrowse, onGoal, collaboration, close }: Props) {
   const unknownKinds = commands.some(c => !c.kind);
   const skillTitle = unknownKinds ? t('composerMenu.skillsAndCommands') : t('composerMenu.skills');
   const pick = (action: () => void) => { close(); action(); };
@@ -40,6 +41,7 @@ export function ComposerMenu({ commands, planMode, writingMode, goal, running, a
     <button type="button" role="menuitem" className="pop-item" title={attachTitle} disabled={attachDisabled} onClick={() => pick(onAttach)}>
       <span className="pop-item-icon"><IconPaperclip size={19} /></span><span className="pop-item-label">{t('composerMenu.attach')}</span>
     </button>
+    {onReference && <button type="button" role="menuitem" className="pop-item" onClick={() => pick(onReference)}><span className="pop-item-icon"><IconQuote size={19} /></span><span className="pop-item-label">{t('references.add')}</span></button>}
     {collaboration && <button type="button" role="menuitem" className="pop-item" title={collaboration.active ? t('app.collabOn') : t('app.collab')} onClick={() => pick(collaboration.open)}>
       <span className="pop-item-icon"><IconAgents size={19} /></span><span className="pop-item-label">{t('app.collab')}</span>
       {collaboration.active && <span className="pop-item-check"><IconCheck size={16} /></span>}

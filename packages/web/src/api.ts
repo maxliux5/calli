@@ -1,3 +1,4 @@
+import type { ContextReference } from './context-references';
 import type { ExtensionState, Permission, ExtensionPackagePreview, ExtensionConfiguration, ExtensionDetection, WorkProjection, ProgressReport } from '@calli/extension-api';
 export type WorkMode = 'execute' | 'plan';
 export type AutoArchiveDays = 1 | 3 | 7 | 15 | 30 | null;
@@ -2074,6 +2075,11 @@ export class Api {
   listDirectory(path: string): Promise<DirectoryInfo> {
     const encoded = encodeURIComponent(path);
     return this.request('GET', `/api/directories?path=${encoded}`);
+  }
+
+  createReference(input: { kind: 'thread'; sourceId: string } | { kind: 'directory'; path: string }
+    | { kind: 'message'; text: string; title: string; path: string; sourceId?: string; turnId?: string }): Promise<ContextReference> {
+    return this.request('POST', '/api/context-references', input);
   }
 
   projectDirectories(path?: string): Promise<ProjectDirectoryInfo> {

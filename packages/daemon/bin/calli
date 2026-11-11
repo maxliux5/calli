@@ -3,7 +3,7 @@ import './legacy-env.mjs';
 import { personalMain, personalHelp } from './calli-personal.mjs';
 import { readFileSync } from 'node:fs';
 import { request } from 'node:http';
-import { browserMain, notifyMain, help as toolsHelp, toolsMain } from './calli-tools.mjs';
+import { browserMain, notifyMain, referencesMain, help as toolsHelp, toolsMain } from './calli-tools.mjs';
 const args = process.argv.slice(2);
 if (!args.length || (args[0] !== 'browser' && args.includes('--help'))) {
   console.log(`calli agents | status | result ID | stop NAME
@@ -47,6 +47,7 @@ ${personalHelp}`);
 }
 try {
   if (['todo', 'threads', 'wish', 'quiet', 'review', 'profile', 'settings', 'signals'].includes(args[0])) { await personalMain(args); process.exit(0); }
+  if (args[0] === 'references') { await referencesMain(args.slice(1)); process.exit(0); }
   if (args[0] === 'notify') { await notifyMain(args.slice(1)); process.exit(0); }
   if (args[0] === 'browser') {
     process.exit(await browserMain(args.slice(1)));

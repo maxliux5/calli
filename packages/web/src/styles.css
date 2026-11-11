@@ -14596,3 +14596,56 @@ body:has(.settings-page, .action-sheet) .pet { display: none; }
 
 .thread-peek-status { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .thread-peek .action-sheet { max-height: calc(100% - 76px); overflow-y: auto; }
+
+/* References share the composer with numbered notes, without taking their numbers. */
+.context-references { display: flex; gap: 6px; overflow-x: auto; max-width: 100%; padding: 4px 0; }
+.context-reference { display: flex; align-items: center; flex: 0 0 auto; max-width: 240px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.context-reference button { display: flex; align-items: center; gap: 6px; padding: 6px 8px; min-width: 0; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.context-reference button:hover { background: var(--hover); color: var(--text); }
+.context-reference button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-reference svg { flex-shrink: 0; }
+.pop-panel.context-picker-panel { width: min(440px, calc(100vw - 24px)); }
+.reference-picker { padding: 8px; }
+.reference-search { width: 100%; padding: 10px; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font: inherit; font-size: 13px; }
+.reference-results { height: min(380px, 45dvh); overflow-y: auto; margin-top: 8px; }
+.reference-option { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 10px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text); font: inherit; font-size: 13px; text-align: start; cursor: pointer; }
+.reference-option:hover { background: var(--hover); }
+.reference-option > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reference-option strong, .reference-option small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; }
+.reference-option small { color: var(--muted); font-size: 11px; margin-top: 3px; }
+.reference-option svg { flex-shrink: 0; }
+.reference-directory, .reference-location { display: flex; align-items: center; gap: 6px; }
+.reference-directory .reference-option { flex: 1; }
+.reference-location { padding: 4px 10px; color: var(--muted); font-size: 11px; }
+.reference-location span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reference-location button, .reference-results p button { border: 0; background: var(--surface-2); color: var(--text); border-radius: var(--radius-sm); padding: 6px; cursor: pointer; font: inherit; }
+.reference-state { min-height: 32px; padding: 6px 10px; color: var(--muted); font-size: 12px; }
+.reference-status { min-height: 28px; padding: 8px 4px 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.reference-path { overflow-wrap: anywhere; }
+.reference-detail { max-height: calc(100dvh - 32px); overflow-y: auto; overflow-wrap: anywhere; }
+
+.composer-box > .context-references { margin: 10px 14px 0; max-width: calc(100% - 28px); padding: 0; }
+
+/* Message actions keep the fork visible and share one menu across input methods. */
+.message-action-control { display: inline-flex; position: relative; }
+.message-action-error { color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
+.message-action-control > .message-action-error { position: absolute; top: 100%; left: 0; width: min(280px, 60vw); z-index: 1; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px; }
+.message-menu-anchor { position: fixed; width: 0; height: 0; pointer-events: none; }
+.user-message-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 2px; width: 100%; }
+.user-message-actions:has(.message-edit) { align-items: flex-end; }
+.user-message-actions > .pop { opacity: 0; }
+.row.user:hover .user-message-actions > .pop, .row.user:focus-within .user-message-actions > .pop { opacity: 1; }
+.message-selection-dialog, .message-assistant-dialog { width: min(580px, calc(100vw - 24px)); max-height: calc(var(--vvh, 100dvh) - 24px); overflow-y: auto; }
+.message-selection-text { display: block; width: 100%; height: min(48dvh, 380px); margin-top: 16px; padding: 12px; resize: none; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font: inherit; line-height: 1.7; user-select: text; -webkit-user-select: text; }
+.message-source { margin: 16px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.message-source > button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.message-source > button svg { flex-shrink: 0; }
+.message-source > div { white-space: pre-wrap; max-height: 28dvh; overflow-y: auto; }
+.message-assistant-dialog textarea { display: block; width: 100%; min-height: 110px; resize: vertical; margin-top: 8px; padding: 10px; font: inherit; line-height: 1.6; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.message-assistant-dialog > .muted { font-size: 12px; }
+.message-selection-dialog .dialog-actions { flex-wrap: wrap; }
+@media (hover: none) {
+  .user-message-actions > .pop { opacity: .75; }
+  .user-message-actions .quiet-btn { width: 36px; height: 36px; }
+  [data-message-key] { -webkit-touch-callout: none; }
+}

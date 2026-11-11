@@ -120,7 +120,7 @@ export function MergedHistory({ api, thread, merged, ready, agentLabel, laterOf,
   }, [hasLater, ready, loadingLater, laterFailed, later]);
   const laterBlock = <>
     {later.map(segment => <EarlierSegment key={segment.thread.id} segment={segment} api={api} agentLabel={agentLabel}
-      fork={canFork(segment.thread)} onFork={turn => onSegmentFork(segment.thread, turn)}
+      onQuote={current.onQuote} onMessageContext={current.onMessageContext} onHandToAssistant={current.onHandToAssistant} fork={canFork(segment.thread)} onFork={turn => onSegmentFork(segment.thread, turn)}
       onOpenFile={path => onSegmentFile(segment.thread, path)} onPreview={path => onSegmentPreview(segment.thread, path)}
       older={{ observeOlder: false, chain: true }} prefix={null} />)}
     {laterFailed
@@ -139,7 +139,7 @@ export function MergedHistory({ api, thread, merged, ready, agentLabel, laterOf,
   const beginning = ready && !more ? <div className="row chain-beginning" role="status">{t('handover.chain.beginning')}</div> : null;
   return <div className="merged-history" ref={root}>
     {segments.map((segment, i) => <EarlierSegment key={segment.thread.id} segment={segment} api={api} agentLabel={agentLabel}
-      fork={canFork(segment.thread)} onFork={turn => onSegmentFork(segment.thread, turn)}
+      onQuote={current.onQuote} onMessageContext={current.onMessageContext} onHandToAssistant={current.onHandToAssistant} fork={canFork(segment.thread)} onFork={turn => onSegmentFork(segment.thread, turn)}
       onOpenFile={path => onSegmentFile(segment.thread, path)} onPreview={path => onSegmentPreview(segment.thread, path)}
       older={i === 0 ? olderProps : { observeOlder: false, chain: true }} prefix={i === 0 ? beginning : null} />)}
     <div data-history-thread={thread.id} className="history-segment current-segment">
@@ -151,10 +151,10 @@ export function MergedHistory({ api, thread, merged, ready, agentLabel, laterOf,
   </div>;
 }
 
-function EarlierSegment({ segment, api, agentLabel, fork, onFork, onOpenFile, onPreview, older, prefix }: {
+function EarlierSegment({ segment, api, agentLabel, fork, onFork, onQuote, onMessageContext, onHandToAssistant, onOpenFile, onPreview, older, prefix }: {
   segment: Segment; api: Api; agentLabel: Props['agentLabel']; fork: ReturnType<Props['canFork']>;
   onFork: (id: string) => void; onOpenFile: (path: string) => Promise<void>; onPreview: (path: string) => void;
-  older: Partial<ViewProps>; prefix: ReactNode;
+  older: Partial<ViewProps>; prefix: ReactNode; onQuote?: ViewProps['onQuote']; onMessageContext?: ViewProps['onMessageContext']; onHandToAssistant?: ViewProps['onHandToAssistant'];
 }) {
   const { thread, page } = segment;
   const timeline = useMemo(() => buildTimeline(page.events), [page.events]);
@@ -162,7 +162,7 @@ function EarlierSegment({ segment, api, agentLabel, fork, onFork, onOpenFile, on
   const loadImage = useMemo(() => (id: string) => api.attachment(thread.id, id), [api, thread.id]);
   const loadFile = useMemo(() => (path: string) => api.threadFile(thread.id, path), [api, thread.id]);
   return <div data-history-thread={thread.id} className="history-segment">
-    <ThreadView historyApi={api} historyThreadId={thread.id} items={timeline.items} roots={roots} loadImage={loadImage} loadFile={loadFile}
+    <ThreadView onQuote={onQuote} onMessageContext={onMessageContext} onHandToAssistant={onHandToAssistant} historyApi={api} historyThreadId={thread.id} items={timeline.items} roots={roots} loadImage={loadImage} loadFile={loadFile}
       onOpenFile={onOpenFile} onPreview={onPreview} onFork={fork.enabled ? onFork : undefined} forkAnyTurn={fork.any} {...older}
       beforeItems={<>{prefix}{!page.hasOlder && handedOver(thread) && <HandoverBoundary api={api} thread={thread} agentLabel={agentLabel} turnId={page.events.find(event => event.type === 'turn.started')?.turnId ?? undefined} />}
         {!timeline.items.length && <div className="row chain-beginning">{t('handover.chain.empty')}</div>}</>} />

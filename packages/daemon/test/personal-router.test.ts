@@ -20,6 +20,22 @@ const wait = async (predicate: () => boolean) => {
   for (let i = 0; i < 300; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 20)); }
   throw new Error('Router did not settle');
 };
+
+test('a person can hand a message snapshot to the assistant without granting other history', async () => {
+  const h = await setup();
+  try {
+    const reference = h.manager.references.create({ kind: 'message', title: 'Review this answer', path: 'remote/project', text: 'Selected answer only.' });
+    const text = `<calli-references>\n${JSON.stringify([reference])}\n</calli-references>\n\nReview this reply.`;
+    const { threadId } = await h.say(text);
+    const read = h.manager.references.read(threadId, { id: reference.id }) as { text: string };
+    assert.equal(read.text, 'Selected answer only.');
+    const started = h.store.listEventsOfType(threadId, 'turn.started')[0];
+    assert.match(started.data.text as string, /calli references/);
+    assert.equal(started.data.displayText, text);
+    const privateReference = h.manager.references.create({ kind: 'message', title: 'Unselected', path: '', text: 'Not attached.' });
+    assert.throws(() => h.manager.references.read(threadId, { id: privateReference.id }), /not attached/);
+  } finally { await h.close(); }
+});
 async function setup(configured = true) {
   const dir = mkdtempSync(join(tmpdir(), 'calli-router-'));
   const cwd = join(dir, 'personal'); mkdirSync(cwd);

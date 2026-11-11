@@ -1,3 +1,6 @@
+import { referencePreview, splitReferences, withReferences } from '../context-references';
+import { ReferenceChips } from './ContextReferences';
+import { MessageActionButton, MessageMore, PointMessageMenu, SelectMessage, useMessageGestures, type MessageAction } from './MessageActions';
 import { channelRows, hydrateHistoryFiles } from '../timeline';
 import { ApiError, type Api } from '../api';
 import { hydrateWork, HistoryClient, type HistoryDetail, type HistoryWork, type ResourceKind, type WorkFiles } from '../history';
@@ -30,6 +33,7 @@ import {
   runSummary,
   splitThinking,
   splitNotes,
+  withNotes,
   splitUserQuote,
   stepActive,
   stepCommand,
@@ -51,7 +55,7 @@ import {
 import { VoiceCloud } from './VoiceOrb';
 import { Lightbox } from './Lightbox';
 import { PlanCopyButton, PlanDownloadButton } from './plan-tools';
-import { IconBell, ActivityIcon, IconArrowRight, IconCheck, IconChevron, IconClose, IconCompact, IconCopy, IconEdit, IconExternal, IconFile, IconFork, IconHand, IconHandover, IconQuote, IconTray, IconWorktree } from './icons';
+import { IconBell, ActivityIcon, IconArrowRight, IconCheck, IconChevron, IconClose, IconCompact, IconCopy, IconEdit, IconExternal, IconFile, IconFork, IconHand, IconHandover, IconPaperclip, IconQuote, IconRead, IconSparkle, IconTray, IconWorktree } from './icons';
 import { t } from '../i18n';
 
 // The daemon's confirmation marker is replaced by the localized notice label.
@@ -85,6 +89,9 @@ interface Props {
   onLoadOlder?: () => void;
   /** Copies the thread as it stands and opens the copy. Missing when the agent cannot fork, or there is no session yet. */
   onFork?: (turnId: string) => void;
+  onQuote?: (text: string, turnId: string, threadId?: string) => void;
+  onMessageContext?: (text: string, turnId: string, threadId?: string) => Promise<void>;
+  onHandToAssistant?: (text: string, turnId: string, threadId?: string) => Promise<void>;
   /**
    * When the last turn failed because the agent's plan ran out: hand the thread to another agent.
    * `label` names the quota-aware one-click target when one is available; `choose` opens the handover to pick another.
@@ -123,7 +130,25 @@ const RECENT_TURNS = 30;
 /** Scrolling up to within this distance of the top unfolds or fetches the earlier turns. */
 const NEAR_TOP_PX = 600;
 
-export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, beforeItems, olderLabel, olderError, revealTurnId, historyApi, historyThreadId, items: originalItems, roots, loadImage, loadFile, onOpenFile, onPreview, hasOlder, loadingOlder, onLoadOlder, onFork, forkAnyTurn, onEdit, revision = 0, takeover, resume, memberThreadId, onOpenMemberThread }: Props) {
+export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, beforeItems, olderLabel, olderError, revealTurnId, historyApi, historyThreadId, items: originalItems, roots, loadImage, loadFile, onOpenFile, onPreview, hasOlder, loadingOlder, onLoadOlder, onFork, onQuote, onMessageContext, onHandToAssistant, forkAnyTurn, onEdit, revision = 0, takeover, resume, memberThreadId, onOpenMemberThread }: Props) {
+  const [selection, setSelection] = useState<{ text: string; turnId: string } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ text: string; turnId: string; element: HTMLElement; x: number; y: number; nonce: number } | null>(null);
+  useEffect(() => { setSelection(null); setContextMenu(null); }, [historyThreadId]);
+  const actionsFor = (text: string, turnId: string, element?: HTMLElement): MessageAction[] => [
+    { key: 'copy', label: t('view.copyAnswer'), icon: IconCopy, run: async () => { if (!await copyText(text)) throw new Error(t('view.copyFailed')); } },
+    ...(onQuote ? [{ key: 'quote', label: t('references.quote'), icon: IconQuote, run: () => onQuote(text, turnId, historyThreadId) }] : []),
+    ...(onHandToAssistant ? [{ key: 'assistant', label: t('messageActions.assistant'), icon: IconSparkle, run: () => onHandToAssistant(text, turnId, historyThreadId) }] : []),
+    ...(onMessageContext ? [{ key: 'context', label: t('messageActions.context'), icon: IconPaperclip, run: () => onMessageContext(text, turnId, historyThreadId) }] : []),
+    { key: 'select', label: t('messageActions.select'), icon: IconRead, run: () => setSelection({ text, turnId }) },
+    ...(element?.querySelector('.message-edit-btn') ? [{ key: 'edit', label: t('view.editMessage'), icon: IconEdit, run: () => element.querySelector<HTMLButtonElement>('.message-edit-btn')?.click() }] : []),
+  ];
+  const gestures = useMessageGestures((element, x, y) => {
+    const item = originalItems.find(item => item.key === element.dataset.messageKey);
+    if (!item || (item.kind !== 'user' && item.kind !== 'assistant') || (item.kind === 'assistant' && !item.done)) return;
+    const parsed = splitReferences(item.text);
+    const text = [...parsed.references.map(reference => reference.title), parsed.body].filter(Boolean).join('\n\n');
+    setContextMenu({ text, turnId: item.turnId, element, x, y, nonce: Date.now() });
+  });
   const [loadedFiles, setLoadedFiles] = useState<{ client?: HistoryClient; files: Map<string, WorkFiles> }>({ files: new Map() });
   const historyClient = useMemo(() => {
     if (!historyApi || !historyThreadId) return undefined;
@@ -285,9 +310,10 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
           if (item.coordination) return <DeliveredNote key={item.key} turnId={item.turnId} note={item.coordination} text={item.text} memberThreadId={memberThreadId} onOpenMemberThread={onOpenMemberThread} />;
           // Notes (and the older single quote) ride in the message text; drawn apart here.
           const noted = splitNotes(item.text);
-          const { quote, body } = noted.notes.length ? { quote: null, body: noted.body } : splitUserQuote(item.text);
+          const referenced = splitReferences(noted.body);
+          const { quote, body } = noted.notes.length ? { quote: null, body: referenced.body } : splitUserQuote(referenced.body);
           return (
-            <div key={item.key} className={`row user${item.voice ? ' voice' : ''}${item.streaming ? ' draft' : ''}`} data-turn={item.turnId}>
+            <div key={item.key} className={`row user${item.voice ? ' voice' : ''}${item.streaming ? ' draft' : ''}`} data-turn={item.turnId} data-message-key={item.key}>
               {item.images.length > 0 && (
                 <div className="sent-images">
                   {item.images.map((img) => (
@@ -295,6 +321,7 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
                   ))}
                 </div>
               )}
+              <ReferenceChips references={referenced.references} />
               {noted.notes.length > 0 && <SentNotes notes={noted.notes} />}
               {item.videos?.map(video => <SentVideo key={video.id} video={video} load={loadImage} />)}
               {quote !== null && (
@@ -316,7 +343,8 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
                   {item.scheduled && <span className="term-chip" title={t('view.fromSchedule')}>{t('view.scheduled')}</span>}
                 </div>
               )}
-              {onEdit && (body || item.images.length > 0) && !item.voice && !item.fromTerminal && !item.scheduled && !item.coordination && (
+              <div className="user-message-actions">
+              {onEdit && (body || item.images.length > 0 || referenced.references.length > 0) && !item.voice && !item.fromTerminal && !item.scheduled && !item.coordination && (
                 <EditMessage
                   text={item.text}
                   imageIds={item.images.map((img) => img.id)}
@@ -324,6 +352,8 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
                   onSend={(edit) => onEdit(item.turnId, edit)}
                 />
               )}
+              {!item.streaming && item.text.trim() && <MessageMore actions={actionsFor(referencePreview(item.text), item.turnId)} />}
+              </div>
             </div>
           );
         }
@@ -345,7 +375,7 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
           return <ProposalCard key={item.key} text={item.text} streaming={!item.done} />;
         case 'assistant':
           if (!item.text) return null;
-          return <AssistantMessage key={item.key} text={item.text} done={item.done} roots={roots} loadFile={loadFile} onOpen={show} />;
+          return <AssistantMessage key={item.key} messageKey={item.key} text={item.text} done={item.done} roots={roots} loadFile={loadFile} onOpen={show} />;
         case 'plan':
           return <PlanCard key={item.key} item={item} />;
         case 'work':
@@ -368,6 +398,8 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
           return (
             <div key={item.key} className="row message-actions">
               <CopyButton text={item.text} label={t('view.copyAnswer')} />
+              {onQuote && <button type="button" className="quiet-btn" aria-label={t('references.quote')} title={t('references.quote')} onClick={() => onQuote(item.text, item.turnId, historyThreadId)}><IconQuote size={15} /></button>}
+              {actionsFor(item.text, item.turnId).filter(action => action.key === 'assistant' || action.key === 'context').map(action => <MessageActionButton key={action.key} action={action} />)}
               {onFork && (forkAnyTurn || item.key === lastKey) && (
                 <button
                   type="button"
@@ -379,6 +411,7 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
                   <IconFork size={15} />
                 </button>
               )}
+              <MessageMore actions={actionsFor(item.text, item.turnId)} />
               {item.at && (
                 <time className="message-time" dateTime={item.at} title={new Date(item.at).toLocaleString('zh-CN')}>
                   {clockLabel(item.at)}
@@ -431,7 +464,7 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
     });
 
   return (
-    <div className="thread" ref={threadRef}>
+    <div className="thread" ref={threadRef} {...gestures}>
       <HistoryContext.Provider key={historyClient?.identity ?? historyThreadId} value={historyClient}>
       <Pictures.Provider value={pictures}>
         {/* Scrolling up loads these on its own; the buttons stay for keyboards and screen readers. */}
@@ -459,6 +492,8 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
       </Pictures.Provider>
       </HistoryContext.Provider>
       {lightbox && <Lightbox url={lightbox.url} name={lightbox.name} onClose={closeLightbox} />}
+      {contextMenu && <PointMessageMenu key={contextMenu.nonce} point={contextMenu} actions={actionsFor(contextMenu.text, contextMenu.turnId, contextMenu.element)} />}
+      {selection && <SelectMessage text={selection.text} onClose={() => setSelection(null)} onQuote={onQuote ? text => onQuote(text, selection.turnId, historyThreadId) : undefined} />}
     </div>
   );
 }
@@ -614,13 +649,16 @@ function DeferredFileDiff({ detail, path }: { detail: DetailRef; path: string })
  */
 function EditMessage({ text, imageIds, revision, onSend }: { text: string; imageIds: string[]; revision: number; onSend: (edit: { text: string; images: string[]; revision: number; requestId: string }) => Promise<void> }) {
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState(text);
+  const parsed = splitReferences(text);
+  const [references, setReferences] = useState(parsed.references);
+  const [draft, setDraft] = useState(parsed.body);
   const [kept, setKept] = useState(imageIds);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const area = useRef<HTMLTextAreaElement | null>(null);
   const start = () => {
-    setDraft(text);
+    setDraft(parsed.body);
+    setReferences(parsed.references);
     setKept(imageIds);
     setError('');
     setOpen(true);
@@ -633,11 +671,12 @@ function EditMessage({ text, imageIds, revision, onSend }: { text: string; image
     });
   };
   const send = async () => {
-    if (busy || !draft.trim()) return;
+    if (busy || (!draft.trim() && !references.length)) return;
     setBusy(true);
     setError('');
     try {
-      await onSend({ text: draft, images: kept, revision, requestId: editRequestId() });
+      const noted = splitNotes(draft);
+      await onSend({ text: withNotes(noted.notes, withReferences(references, noted.body)), images: kept, revision, requestId: editRequestId() });
       setOpen(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -652,6 +691,7 @@ function EditMessage({ text, imageIds, revision, onSend }: { text: string; image
   );
   return (
     <div className="message-edit">
+      <ReferenceChips references={references} onRemove={id => setReferences(current => current.filter(r => r.id !== id))} />
       <textarea
         ref={area}
         value={draft}
@@ -679,7 +719,7 @@ function EditMessage({ text, imageIds, revision, onSend }: { text: string; image
       {error && <div className="message-edit-error" role="alert">{error}</div>}
       <div className="message-edit-actions">
         <button type="button" className="ghost" onClick={() => setOpen(false)} disabled={busy}>{t('common.cancel')}</button>
-        <button type="button" className="primary" onClick={() => void send()} disabled={busy || !draft.trim()}>
+        <button type="button" className="primary" onClick={() => void send()} disabled={busy || (!draft.trim() && !references.length)}>
           {busy ? t('view.editing') : t('view.editSend')}
         </button>
       </div>
@@ -962,6 +1002,7 @@ const MARKDOWN_PLUGINS = [remarkGfm, trimAutolinkJunk];
 const keepUrl = (url: string) => url;
 
 interface AssistantProps {
+  messageKey?: string;
   text: string;
   done: boolean;
   roots: string[];
@@ -973,7 +1014,7 @@ interface AssistantProps {
  * Parsing Markdown is the costly part of rendering a thread, and every streamed event re-renders
  * the list. Memoising on the props means only the message being written is parsed again.
  */
-const AssistantMessage = memo(function AssistantMessage({ text, done, roots, loadFile, onOpen }: AssistantProps) {
+const AssistantMessage = memo(function AssistantMessage({ text, done, roots, loadFile, onOpen, messageKey }: AssistantProps) {
   // Looked for once the message is complete: a path that is still being typed would not be found.
   const plugins = useMemo(() => {
     const places = done ? imagePlaces(text, roots) : [];
@@ -981,7 +1022,7 @@ const AssistantMessage = memo(function AssistantMessage({ text, done, roots, loa
   }, [done, text, roots]);
   const images = useMemo(() => ({ roots, load: loadFile, onOpen }), [roots, loadFile, onOpen]);
   return (
-    <div className="row assistant">
+    <div className="row assistant" data-message-key={messageKey}>
       <div className="markdown">
         <FileImages.Provider value={images}>
           <Markdown remarkPlugins={plugins} components={MARKDOWN_COMPONENTS} urlTransform={keepUrl}>
