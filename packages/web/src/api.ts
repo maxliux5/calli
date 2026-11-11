@@ -78,7 +78,8 @@ export interface WorkdirsConfig {
 }
 
 export interface AgentMention { id: string; label: string; kind: 'agent' | 'member'; cwd?: string; /** What the user asks of this one alone. */ task?: string;
-  /** An instance on another machine: its id there is `agent@host`, and its folders are that machine's. */ host?: string; directories?: string[] }
+  /** An instance on another machine: its id there is `agent@host`, and its folders are that machine's. */ host?: string; directories?: string[];
+  /** For an instance on another machine: its own name and the machine's, which `label` joins for the protocol line. */ name?: string; machine?: string }
 /** One turn a search found: where it is, who said it, and the words around the match. */
 export interface SearchHit {
   threadId: string;

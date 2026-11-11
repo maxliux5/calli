@@ -10469,12 +10469,31 @@ div.file-card:hover { background: var(--surface); }
 .talk-thread .talk-mark { width: 26px; height: 26px; }
 /* One line per agent brought into the message: its name, then what is asked of it alone. */
 .coord-rows { display: flex; flex-direction: column; gap: 4px; margin: 4px 10px 2px; }
-.coord-row { display: flex; align-items: flex-start; gap: 6px; padding: 3px 4px 3px 10px; border-radius: var(--radius-sm); background: var(--surface-2); }
-.coord-row > .pop, .coord-row > .coord-row-name { flex: none; min-width: 0; max-width: 45%; }
-.coord-row-name { display: block; max-width: 100%; padding: 0; border: 0; background: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: inherit; font-size: 13px; font-weight: 600; line-height: 30px; color: var(--text); }
-button.coord-row-name { cursor: pointer; }
-.composer-box .coord-row textarea { flex: 1; min-width: 0; min-height: 30px; max-height: 96px; padding: 5px 0; font-size: 14px; line-height: 1.45; }
+.coord-row { display: grid; grid-template-columns: fit-content(28%) fit-content(34%) minmax(96px, 1fr) auto auto; grid-template-areas: "name where task tools close"; align-items: center; column-gap: 6px; padding: 3px 4px 3px 10px; border-radius: var(--radius-sm); background: var(--surface-2); }
+.coord-row-name { grid-area: name; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; line-height: 30px; color: var(--text); }
+.coord-row > .pop { grid-area: where; min-width: 0; }
+.coord-row-where { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-height: 26px; padding: 0 8px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--faint); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.coord-row-where:hover, .coord-row-where[aria-expanded='true'] { background: var(--hover); color: var(--text); }
+.coord-row-where.set { color: var(--muted); }
+.coord-row-where svg { flex: none; }
+.coord-row-machine, .coord-row-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The machine gives way first: for a member over there, the folder is the part that decides. */
+.coord-row-machine { flex: 0 100 auto; }
+.coord-row-dir { flex: 0 1 auto; }
+.coord-row-machine + .coord-row-dir::before { content: '/'; margin-right: 5px; color: var(--faint); }
+.coord-row-tools { grid-area: tools; display: inline-flex; align-items: center; }
+.coord-row-close { grid-area: close; }
+.coord-row-tools .member-model { max-width: 170px; }
+.composer-box .coord-row textarea { grid-area: task; min-width: 0; min-height: 30px; max-height: 96px; padding: 5px 0; font-size: 14px; line-height: 1.45; }
 .coord-row .icon-btn { flex: none; width: 30px; height: 30px; color: var(--muted); }
+/* A phone has no room for a name, a place, two settings and a close on the same line as the task:
+   the first four stay on one line, the task gets the whole width under them. */
+@media (max-width: 640px) {
+  .coord-row { grid-template-columns: fit-content(46%) minmax(0, 1fr) auto auto; grid-template-areas: "name where tools close" "task task task task"; row-gap: 0; padding-left: 12px; }
+  .coord-row-name { max-width: 100%; }
+  .coord-row > .pop { justify-self: start; max-width: 100%; }
+  .composer-box .coord-row textarea { padding: 4px 0 8px; }
+}
 
 /* What another agent of the team sent in: a card, folded until asked for. */
 /* A delivery from a teammate: no frame of its own, one quiet line that folds out in place. The
