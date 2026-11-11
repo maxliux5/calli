@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { startDaemon, launchBrowser, openUi, api } from '../harness.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-const identity = cwd => { git(cwd, 'config', 'user.name', 'Test'); git(cwd, 'config', 'user.email', 'test@example.test'); };
+const identity = cwd => { git(cwd, 'config', 'user.name', 'Test'); git(cwd, 'config', 'user.email', 'test@example.com'); };
 const commit = (cwd, message) => { git(cwd, 'add', '.'); git(cwd, 'commit', '-m', message); };
 
 for (const width of [1440, 390]) for (const colorScheme of ['light', 'dark']) {

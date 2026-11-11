@@ -15,7 +15,7 @@ import { PiRpcAdapter } from '../src/adapters/pi.js';
 import { createHttpServer } from '../src/http.js';
 
 const run = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-const configure = (cwd: string) => { run(cwd, 'config', 'user.name', 'Test'); run(cwd, 'config', 'user.email', 'test@example.test'); };
+const configure = (cwd: string) => { run(cwd, 'config', 'user.name', 'Test'); run(cwd, 'config', 'user.email', 'test@example.com'); };
 const commit = (cwd: string, message = 'change') => { run(cwd, 'add', '.'); run(cwd, 'commit', '-m', message); };
 const refusal = (code: string) => (error: unknown) => error instanceof HttpError && error.details?.gitCode === code;
 function setup() {
@@ -109,7 +109,6 @@ test('Git fetch keeps the checkout, pull fast-forwards only, and refuses dirty, 
     writeFileSync(join(h.repo, 'local'), 'local\n'); commit(h.repo);
     writeFileSync(join(peer, 'other'), 'remote\n'); commit(peer); run(peer, 'push'); await h.service.operate('t', 'fetch');
     const before = run(h.repo, 'rev-parse', 'HEAD'); await assert.rejects(h.service.operate('t', 'pull'), refusal('diverged')); assert.equal(run(h.repo, 'rev-parse', 'HEAD'), before);
-    run(h.repo, 'remote', 'set-url', 'origin', 'https://user:secret@example.invalid/repo');
     // A local non-repository failure is immediate, and still must not leak any remote details.
     run(h.repo, 'remote', 'set-url', 'origin', join(h.dir, 'missing-secret'));
     await assert.rejects(h.service.operate('t', 'fetch'), error => error instanceof HttpError && !JSON.stringify(error).includes('missing-secret'));
