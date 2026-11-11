@@ -1323,6 +1323,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     if (!el) return;
     const topbar = el.querySelector<HTMLElement>(':scope > .topbar');
     const composer = el.querySelector<HTMLElement>(':scope > .composer-slot');
+    const box = composer?.querySelector<HTMLElement>(':scope > .composer');
     const read = () => {
       // What the column's lean toward the middle of the screen is worked out from (see styles.css).
       // clientWidth includes the padding the lean adds, so the two do not chase each other.
@@ -1333,12 +1334,15 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       const top = composer && topbar?.nextElementSibling?.classList.contains('scroller') && !el.closest('.in-titlebar') ? topbar.offsetHeight : 0;
       el.style.setProperty('--chat-top-overlap', `${top}px`);
       el.style.setProperty('--chat-bottom-overlap', `${composer?.offsetHeight ?? 0}px`);
+      // The edge wash under the composer is as tall as the box with its queue, not the notes stacked above it.
+      el.style.setProperty('--chat-composer-h', `${box?.offsetHeight ?? 0}px`);
     };
     read();
     const watch = new ResizeObserver(read);
     watch.observe(el);
     if (topbar) watch.observe(topbar);
     if (composer) watch.observe(composer);
+    if (box) watch.observe(box);
     return () => watch.disconnect();
   });
   const [agentsStart, setAgentsStart] = useState<string | null>(null);

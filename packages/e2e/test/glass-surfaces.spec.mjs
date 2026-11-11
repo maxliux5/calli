@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { startDaemon, launchBrowser, openUi, api } from '../harness.mjs';
 
 test('glass chrome has scrolling content behind it without hiding either end of the conversation', { timeout: 90000 }, async () => {
@@ -33,7 +35,7 @@ test('glass chrome has scrolling content behind it without hiding either end of 
       const measure = () => page.evaluate(() => {
         const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height }; };
         const slot = document.querySelector('.composer-slot');
-        const blur = slot.getBoundingClientRect().top + Number.parseFloat(getComputedStyle(slot, '::before').top);
+        const blur = slot.getBoundingClientRect().bottom - Number.parseFloat(getComputedStyle(slot, '::before').height);
         return { scroller: rect('.main > .scroller'), top: rect('.topbar'), input: rect('.composer-box'), thread: rect('.thread'), blur };
       });
       let bounds = await measure();
@@ -142,4 +144,69 @@ test('focusing the composer keeps its glass edge, and floating buttons share the
     await browser.close();
     await daemon.stop();
   }
+});
+
+test('the phone edges wash only where text scrolls out, and the read-only handover note is a small glass chip', { timeout: 90000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'calli-glass-chain-'));
+  const daemon = await startDaemon({ CALLI_AGENTS_JSON: JSON.stringify({ agents: ['first', 'next'].map((id, i) => ({ id, adapter: 'claude', label: `Agent ${i + 1}`, command: ['fake-claude'], env: { CLAUDE_CONFIG_DIR: join(dir, id), FAKE_SESSION_ROOT: join(dir, id) } })) }) });
+  const browser = await launchBrowser();
+  try {
+    const post = async (path, body) => { const response = await api(daemon, path, { method: 'POST', body: JSON.stringify(body) }); if (!response.ok) assert.fail(await response.text()); return response.json(); };
+    const source = await post('/api/threads', { agent: 'first', cwd: daemon.workdir, title: '玻璃边缘交接' });
+    await post(`/api/threads/${source.id}/turns`, { text: '先说一句' });
+    for (let attempt = 0; ; attempt++) {
+      if ((await (await api(daemon, `/api/threads/${source.id}`)).json()).status === 'idle') break;
+      assert.ok(attempt < 100, 'the fixture answer finishes'); await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    await post(`/api/threads/${source.id}/handover-thread`, { agent: 'next', mode: 'continue' });
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const page = await context.newPage(); page.setDefaultTimeout(10000);
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 59, right: 0, bottom: 34, left: 0 } });
+    await openUi(page, daemon);
+    await page.addStyleTag({ content: '*,*::before,*::after{transition:none!important;animation:none!important}' });
+    await page.getByRole('button', { name: '打开线程列表', exact: true }).click();
+    await page.locator('.handover-group > .thread-row .thread-item').click();
+    await page.locator('.composer-box').waitFor();
+    const edges = () => page.evaluate(() => {
+      const px = value => Number.parseFloat(value);
+      const slot = document.querySelector('.composer-slot'), composer = slot.querySelector(':scope > .composer');
+      const wash = getComputedStyle(slot, '::after'), blur = getComputedStyle(slot, '::before');
+      const bar = document.querySelector('.main > .topbar'), barWash = getComputedStyle(bar, '::after');
+      return {
+        slot: slot.getBoundingClientRect().height, composer: composer.getBoundingClientRect().height,
+        washHeight: px(wash.height), washBottom: px(wash.bottom), washTint: wash.backgroundImage, blurFilter: blur.backdropFilter,
+        bar: bar.getBoundingClientRect().height, barWashHeight: px(barWash.height),
+      };
+    });
+    const plain = await edges();
+    assert.equal(plain.washBottom, 0, 'the bottom wash runs down to the screen edge');
+    assert.ok(Math.abs(plain.washHeight - (plain.composer + 40)) <= 1, 'the bottom wash is the composer plus 40px of fade above its box');
+    assert.ok(!/rgba\(0, 0, 0, 0\.\d*[1-9]/.test(plain.washTint), 'the bottom wash is the page colour, not a grey scrim');
+    assert.notEqual(plain.blurFilter, 'none', 'the fade above the composer is blurred');
+    assert.ok(Math.abs(plain.barWashHeight - (plain.bar + 30)) <= 1, 'the top wash eases out 30px below the bar');
+    // Open the earlier segment: its note joins the slot, but the wash still follows the composer alone.
+    await page.getByLabel('这个线程的更多操作').click();
+    await page.getByRole('menuitem', { name: '分叉与交接' }).click();
+    await page.getByRole('menuitem', { name: '交接记录', exact: true }).click();
+    await page.getByRole('dialog', { name: '交接记录', exact: true }).waitFor();
+    await page.getByRole('menuitem').filter({ hasText: '原始会话' }).click();
+    await page.locator('.handover-readonly').waitFor();
+    const note = await page.locator('.handover-readonly').evaluate(el => {
+      const box = el.getBoundingClientRect(), style = getComputedStyle(el), composer = document.querySelector('.composer-slot > .composer').getBoundingClientRect();
+      return { width: box.width, height: box.height, bottom: box.bottom, gap: composer.top - box.bottom, filter: style.backdropFilter, z: style.zIndex, radius: style.borderTopLeftRadius };
+    });
+    assert.notEqual(note.filter, 'none', 'the note is a glass chip, not bare text over the thread');
+    assert.equal(note.z, '1', 'the chip sits above the wash like the rest of the slot, and the box keeps its menus on top of it');
+    assert.ok(note.height < 90 && note.gap >= 4 && note.gap <= 16, 'a small chip just above the box, not a block');
+    assert.ok(note.width <= 390 - 32, 'the chip stays inside the page margins');
+    const withNote = await edges();
+    assert.ok(withNote.slot > withNote.composer + 60, 'the slot now holds the note as well as the box');
+    assert.ok(Math.abs(withNote.washHeight - (withNote.composer + 40)) <= 1, 'the wash does not grow with the note stacked above the box');
+    mkdirSync('/tmp/calli-glass-surfaces', { recursive: true });
+    await page.screenshot({ path: '/tmp/calli-glass-surfaces/handover-phone.png' });
+    await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }] });
+    assert.equal(await page.locator('.handover-readonly').evaluate(el => getComputedStyle(el).backdropFilter), 'none', 'reduced transparency draws the chip solid');
+    await context.close();
+  } finally { await browser.close(); await daemon.stop(); }
 });

@@ -16,15 +16,14 @@
   --glass-shadow: var(--glass-rim), var(--glass-lift);
   --glass-pop-shadow: var(--glass-rim), var(--shadow-pop);
   --glass-filter: blur(24px) saturate(180%);
-  /* Behind the top bar and the composer: how much of the page colour washes out what scrolls under
-     them, and how far that is blurred. Low on purpose, so edges stay readable. */
-  --glass-fade: 32%;
-  --glass-fade-blur: 8px;
+  /* The screen's top and bottom edges. Where text scrolls out under the top bar or the composer, the
+     page colour closes over it: thickest at the very edge, gone a short way in. --glass-edge is how much of
+     it covers the text behind the controls, --glass-edge-blur how far that stretch is blurred. */
+  --glass-edge: 92%;
+  --glass-edge-blur: 8px;
   /* The top bar on a wide screen: frosted, but far less see-through than the phone's bands. */
   --glass-bar: 80%;
   --glass-bar-blur: 14px;
-  /* Under the composer: a darker, blurred band so the box stands out from the text behind it. */
-  --glass-scrim: 0.07;
   /* On a wide screen the composer's own soft shadow does the same job, following its round corners. */
   --glass-halo: 0 10px 40px rgba(31, 30, 28, 0.11), 0 2px 8px rgba(31, 30, 28, 0.05);
   --thread-peek-width: min(560px, 44vw);
@@ -187,7 +186,6 @@
     --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 20px rgba(0, 0, 0, 0.25);
     --glass-rim: inset 0 0 0 1px rgba(255, 255, 255, 0.066), inset 0 1px 1px rgba(255, 255, 255, 0.12);
     --glass-lift: 0 2px 10px rgba(0, 0, 0, 0.2);
-    --glass-scrim: 0.28;
     --glass-halo: 0 10px 40px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
     color-scheme: dark;
   }
@@ -252,7 +250,6 @@
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 20px rgba(0, 0, 0, 0.25);
   --glass-rim: inset 0 0 0 1px rgba(255, 255, 255, 0.066), inset 0 1px 1px rgba(255, 255, 255, 0.12);
   --glass-lift: 0 2px 10px rgba(0, 0, 0, 0.2);
-  --glass-scrim: 0.28;
   --glass-halo: 0 10px 40px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
   color-scheme: dark;
 }
@@ -12353,13 +12350,10 @@ button.trace-step-head:hover { background: var(--hover); }
 .handover-card-empty { padding: 2px 0 6px; color: var(--faint); font-size: 12.5px; text-align: center; }
 .chain-later { min-height: 28px; padding: 6px 0; color: var(--muted); font-size: 12px; text-align: center; }
 .chain-beginning { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 0; }
-.handover-readonly { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; max-width: var(--content-w); margin: 0 auto; padding: 8px 16px; color: var(--muted); font-size: 12px; }
-.handover-readonly-actions { display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-shrink: 0; }
+.handover-readonly { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 2px 16px; width: fit-content; max-width: calc(100% - 32px); margin: 0 auto 8px; padding: 6px 16px; color: var(--muted); font-size: 12px; text-align: center; }
+.handover-readonly.glass-control { --glass-bg: color-mix(in srgb, var(--surface) 88%, transparent); --glass-filter: blur(12px) saturate(180%); border-radius: var(--radius-lg); }
+.handover-readonly-actions { display: flex; align-items: center; justify-content: center; gap: 14px; flex-shrink: 0; }
 .handover-mode { border-bottom: 1px solid var(--border); margin-bottom: 4px; }
-@media (max-width: 600px) {
-  .handover-readonly { align-items: flex-start; flex-direction: column; }
-  .handover-readonly-actions { width: 100%; justify-content: space-between; }
-}
 
 /* Handover details expand per instance; the default view remains a compact list. */
 .auto-settings { width: min(720px, calc(100vw - 32px)); }
@@ -14164,53 +14158,63 @@ body:has(.settings-page, .action-sheet) .pet { display: none; }
 .main:has(> .composer-slot) > .scroller {
   margin-top: calc(-1 * var(--chat-top-overlap, 0px));
   margin-bottom: calc(-1 * var(--chat-bottom-overlap, 0px));
-  padding-top: calc(var(--chat-top-overlap, 0px) + 14px);
+  padding-top: calc(var(--chat-top-overlap, 0px) + 20px);
   padding-bottom: calc(var(--chat-bottom-overlap, 0px) + var(--composer-clear));
-  scroll-padding-top: calc(var(--chat-top-overlap, 0px) + 14px);
+  scroll-padding-top: calc(var(--chat-top-overlap, 0px) + 20px);
   scroll-padding-bottom: calc(var(--chat-bottom-overlap, 0px) + var(--composer-clear));
 }
 .main:has(> .composer-slot) > .topbar { position: relative; z-index: 4; }
 .main:has(> .composer-slot) > .topbar::before,
-.main:has(> .composer-slot) > .topbar::after { content: ''; position: absolute; inset: 0 0 -16px; height: auto; z-index: -1; pointer-events: none; }
-/* Blur, then the wash. Both end at the band's bottom edge with nothing left to cut off: a blur that stops
-   where the box stops reads as a line across the text. */
+.main:has(> .composer-slot) > .topbar::after { content: ''; position: absolute; inset: 0 0 -30px; height: auto; z-index: -1; pointer-events: none; }
+/* The two edges are one effect, drawn twice: a wash of the page colour over what scrolls out, and a blur that
+   fades with it. Neither is a block with a boundary; both are thickest at the screen's edge and gone a few
+   tens of pixels in, so the bar and the composer read as floating over the text, not as frosted slabs.
+   The top: the wash stays close to opaque behind the title row, so no line of text runs through the title,
+   then eases out below it. */
 .main:has(> .composer-slot) > .topbar::before {
-  -webkit-backdrop-filter: blur(var(--glass-fade-blur)); backdrop-filter: blur(var(--glass-fade-blur));
-  -webkit-mask-image: linear-gradient(#000 calc(env(safe-area-inset-top) + 20px), rgba(0, 0, 0, 0.5) calc(env(safe-area-inset-top) + 40px), rgba(0, 0, 0, 0.18) calc(env(safe-area-inset-top) + 58px), transparent calc(env(safe-area-inset-top) + 76px));
-  mask-image: linear-gradient(#000 calc(env(safe-area-inset-top) + 20px), rgba(0, 0, 0, 0.5) calc(env(safe-area-inset-top) + 40px), rgba(0, 0, 0, 0.18) calc(env(safe-area-inset-top) + 58px), transparent calc(env(safe-area-inset-top) + 76px));
+  -webkit-backdrop-filter: blur(var(--glass-edge-blur)); backdrop-filter: blur(var(--glass-edge-blur));
+  -webkit-mask-image: linear-gradient(#000 calc(100% - 66px), rgba(0, 0, 0, 0.6) calc(100% - 30px), rgba(0, 0, 0, 0.2) calc(100% - 14px), transparent);
+  mask-image: linear-gradient(#000 calc(100% - 66px), rgba(0, 0, 0, 0.6) calc(100% - 30px), rgba(0, 0, 0, 0.2) calc(100% - 14px), transparent);
 }
-/* Starts as the system status area's own colour and eases down to --glass-fade, so no line shows where the two meet. */
+/* Starts as the system status area's own colour and eases down to --glass-edge, so no line shows where the two meet. */
 .main:has(> .composer-slot) > .topbar::after {
   background: linear-gradient(var(--bg), var(--bg) calc(env(safe-area-inset-top) + 8px),
-    color-mix(in srgb, var(--bg) 72%, transparent) calc(env(safe-area-inset-top) + 18px),
-    color-mix(in srgb, var(--bg) 48%, transparent) calc(env(safe-area-inset-top) + 29px),
-    color-mix(in srgb, var(--bg) var(--glass-fade), transparent) calc(env(safe-area-inset-top) + 40px),
-    color-mix(in srgb, var(--bg) calc(var(--glass-fade) * 0.7), transparent) calc(env(safe-area-inset-top) + 52px),
-    color-mix(in srgb, var(--bg) calc(var(--glass-fade) * 0.3), transparent) calc(env(safe-area-inset-top) + 66px), transparent calc(env(safe-area-inset-top) + 76px));
+    color-mix(in srgb, var(--bg) var(--glass-edge), transparent) calc(env(safe-area-inset-top) + 22px),
+    color-mix(in srgb, var(--bg) var(--glass-edge), transparent) calc(100% - 56px),
+    color-mix(in srgb, var(--bg) 62%, transparent) calc(100% - 30px),
+    color-mix(in srgb, var(--bg) 36%, transparent) calc(100% - 22px),
+    color-mix(in srgb, var(--bg) 16%, transparent) calc(100% - 14px),
+    color-mix(in srgb, var(--bg) 5%, transparent) calc(100% - 7px), transparent);
 }
-/* Under the composer on a phone, two bands. The tint is as tall as the gap kept below the last line,
-   so at rest it falls on empty space and the newest output stays sharp; the blur is only a short fade
-   at the box's top edge, for what scrolls behind it. The slot's other children sit above both.
-   A wide screen draws neither: a band there reads as a grey bar with square corners around a round
-   box, so the box gets a soft shadow of its own instead. */
+/* The bottom, on a phone: the same wash and blur, over the composer's own height plus 40px of fade above
+   its box, down to the screen's edge. Under the box and the home indicator it stays the page colour, so
+   nothing smears there; above it, it fades. The height is the composer's, not the slot's (App.tsx measures
+   it): a notice or the read-only handover note stacked over the box takes no part. The slot's children
+   sit above both layers, and a menu opening upward from the box still covers what is above it. The wide
+   screen draws neither: a band there reads as a grey bar with square corners around a round box, so the
+   box gets a soft shadow of its own instead. */
 .main:has(> .composer-slot) { --composer-clear: 48px; }
 .composer-slot > :not(.action-sheet) { position: relative; z-index: 1; }
-.composer-slot::before, .composer-slot::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; pointer-events: none; }
+.composer-slot::before, .composer-slot::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--chat-composer-h, 0px) + 40px); pointer-events: none; }
 .composer-slot::before {
-  top: -16px;
-  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
-  -webkit-mask-image: linear-gradient(to top, #000 calc(100% - 16px), transparent); mask-image: linear-gradient(to top, #000 calc(100% - 16px), transparent);
+  -webkit-backdrop-filter: blur(var(--glass-edge-blur)); backdrop-filter: blur(var(--glass-edge-blur));
+  -webkit-mask-image: linear-gradient(transparent, #000 40px); mask-image: linear-gradient(transparent, #000 40px);
 }
 .composer-slot::after {
-  top: calc(-1 * var(--composer-clear));
-  background: linear-gradient(to top, rgba(0, 0, 0, var(--glass-scrim)) 0, rgba(0, 0, 0, calc(var(--glass-scrim) * 0.6)) calc(100% - var(--composer-clear)), transparent 100%);
+  background: linear-gradient(transparent,
+    color-mix(in srgb, var(--bg) 7%, transparent) 8px,
+    color-mix(in srgb, var(--bg) 24%, transparent) 16px,
+    color-mix(in srgb, var(--bg) 50%, transparent) 25px,
+    color-mix(in srgb, var(--bg) 72%, transparent) 33px,
+    color-mix(in srgb, var(--bg) 84%, transparent) 40px,
+    color-mix(in srgb, var(--bg) var(--glass-edge), transparent) 72px);
 }
 @media (min-width: 900px) {
   .composer-slot::before, .composer-slot::after { display: none; }
   .composer-box { box-shadow: var(--glass-rim), var(--glass-halo); }
 }
 /* The docked selection menu hides the box but not the slot, which stays as tall as the box with its
-   notes: its bands would blur a bare stretch of the thread above the menu. The menu is glass itself. */
+   notes: the edge would wash a bare stretch of the thread above the menu. The menu is glass itself. */
 .app:has(.selection-menu.docked) .composer-slot::before, .app:has(.selection-menu.docked) .composer-slot::after { display: none; }
 .in-titlebar .main > .topbar::before, .in-titlebar .main > .topbar::after { display: none; }
 
@@ -14250,20 +14254,23 @@ body:has(.settings-page, .action-sheet) .pet { display: none; }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .glass-control, .topbar .menu-btn, .topbar-actions, .composer-box, .menu-panel, .pop-panel.anchored-pop, .selection-menu, .settings-actions, .round-btn, .jump-btn, .pet-summon, .command-menu, .coord-mention-menu, .action-sheet-card { background: var(--surface); }
   .main:has(> .composer-slot) > .topbar::before { display: none; }
-  .main:has(> .composer-slot) > .topbar::after { background: var(--bg); }
-  .composer-slot::before, .composer-slot::after { display: none; }
+  .main:has(> .composer-slot) > .topbar::after { background: linear-gradient(var(--bg) calc(100% - 30px), transparent); }
+  .composer-slot::before { display: none; }
+  .composer-slot::after { background: linear-gradient(transparent, var(--bg) 40px); }
 }
 @media (prefers-reduced-transparency: reduce) {
   .glass-control, .topbar .menu-btn, .topbar-actions, .composer-box, .menu-panel, .pop-panel.anchored-pop, .selection-menu, .settings-actions, .round-btn, .jump-btn, .pet-summon, .command-menu, .coord-mention-menu, .action-sheet-card { background: var(--surface); -webkit-backdrop-filter: none; backdrop-filter: none; }
   .main:has(> .composer-slot) > .topbar::before { display: none; }
-  .main:has(> .composer-slot) > .topbar::after { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
-  .composer-slot::before, .composer-slot::after { display: none; }
+  .main:has(> .composer-slot) > .topbar::after { background: linear-gradient(var(--bg) calc(100% - 30px), transparent); -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .composer-slot::before { display: none; }
+  .composer-slot::after { background: linear-gradient(transparent, var(--bg) 40px); }
 }
 /* A wide screen draws the composer solid: an opaque card with its soft halo, and the conversation
    ends above it instead of sliding under a translucent box. With no status area above it, the top bar
    is frosted across its whole row: mostly the page's colour over a strong blur, so what scrolls
    under it shows only as a soft shadow and never runs into the title, fading out below the row. */
 @media (min-width: 900px) {
+  .main:has(> .composer-slot) > .topbar::before, .main:has(> .composer-slot) > .topbar::after { inset: 0 0 -16px; }
   .main:has(> .composer-slot) > .topbar::after { background: linear-gradient(color-mix(in srgb, var(--bg) var(--glass-bar), transparent) calc(100% - 16px), transparent); }
   .main:has(> .composer-slot) > .topbar::before { -webkit-backdrop-filter: blur(var(--glass-bar-blur)); backdrop-filter: blur(var(--glass-bar-blur)); -webkit-mask-image: linear-gradient(#000 calc(100% - 16px), transparent); mask-image: linear-gradient(#000 calc(100% - 16px), transparent); }
   .main:has(> .composer-slot) > .scroller {
