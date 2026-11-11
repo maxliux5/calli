@@ -8184,20 +8184,6 @@ div.file-card:hover { background: var(--surface); }
   min-width: 96px;
 }
 
-/* What ssh itself said, for whoever has to fix it. */
-.host-error {
-  display: block;
-  max-width: 100%;
-  padding: 6px 10px;
-  border-radius: var(--radius-sm);
-  background: var(--code-bg);
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.5;
-  text-align: left;
-  overflow-wrap: anywhere;
-}
 
 .host-row {
   align-items: flex-start;
@@ -8221,21 +8207,9 @@ div.file-card:hover { background: var(--surface); }
   line-height: 1.55;
 }
 
-.host-problem .host-error,
-.host-failure .host-error {
-  margin-top: 6px;
-}
-
 .host-failure {
   margin: 8px 0 0;
   line-height: 1.55;
-}
-
-.host-failure .host-error {
-  background: transparent;
-  padding: 0;
-  color: inherit;
-  opacity: 0.8;
 }
 
 .host-add-label {
@@ -8276,52 +8250,38 @@ div.file-card:hover { background: var(--surface); }
   opacity: 0.45;
 }
 
-.host-candidates-hint {
-  margin: 16px 0 8px;
-  color: var(--muted);
+.host-add-name input {
+  font-family: var(--font);
+}
+
+.host-join p {
+  margin: 0 0 10px;
+  line-height: 1.55;
+}
+
+.host-join-lines {
+  margin: 0 0 4px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--hover);
+  font-family: var(--mono);
   font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
 }
 
-.host-candidates {
+.host-join-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
 }
 
-.host-candidate {
+.host-join-actions .ghost {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  max-width: 100%;
-  min-height: 32px;
-  padding: 0 12px 0 9px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  transition:
-    background 0.12s,
-    color 0.12s;
-}
-
-.host-candidate .host-target {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text);
-}
-
-.host-candidate:hover:not(:disabled) {
-  background: var(--hover);
-}
-
-.host-candidate:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.host-candidate-note {
-  font-size: 12px;
 }
 
 .host-foot {

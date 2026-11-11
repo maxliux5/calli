@@ -1,6 +1,6 @@
-# 远程协作：交接文件与 SSH 读写
+# 远程协作：交接文件与 relay 文件读写
 
-状态：第一版已实现；假 SSH 与无头 Chromium 验收完成，真实 devbox 部署待验收。2026-11-09。
+状态：使用真实 RelayClient 的本机双 daemon 测试；实体节点部署待验收。2026-11-11。
 
 ## 要解决的问题
 
@@ -10,7 +10,7 @@
 - 结果被收尾文字限制在 16000 字符，无法交回报告、补丁或其他文件；
 - 本机主控或 review 成员不能直接读写 devbox 上的代码，只能等远端成员用文字描述。
 
-这个设计补上三件事：交接文件、结果文件、直接 SSH 读写远端成员工作目录里的代码。
+这个设计补上三件事：交接文件、结果文件、直接 relay 文件读写远端成员工作目录里的代码。
 
 ## 参考
 
@@ -18,15 +18,13 @@
 |---|---|---|
 | [agent-deck Conductor](https://github.com/asheshgoplani/agent-deck/blob/main/docs/conductor/README.md) | 协作目录里放 `CLAUDE.md`、`POLICY.md`、`state.json`、`task-log.md`，会话每次启动或恢复时读取；完成通知落盘后由主控取回 | 借鉴「任务与状态写成 agent 能直接读的 Markdown」；不引入常驻主控会话、tmux 或它自己的目录管理 |
 | [A2A 1.0](https://a2a-protocol.org/latest/specification/) | Artifact 是任务的输出，由 Part 组成，Part 可以是文本、文件引用或结构化数据；任务可流式更新 artifact | 借鉴「结果不只一段文字，可以是文件」；不引入 A2A 的 AgentCard、任务状态机和 HTTP 协议 |
-| [ssh-mcp-server](https://github.com/classfang/ssh-mcp-server) | 通过 SFTP 提供 `read-file` / `write-file`，读支持按字节偏移分页、拒绝二进制；另有 upload/download 和命令黑白名单 | 借鉴直接读写、分页、拒绝二进制；不引入 MCP 服务、SFTP 依赖或命令白名单（这里只开放读写，不开 shell） |
 | [OpenAI Agents SDK Handoffs](https://openai.github.io/openai-agents-python/handoffs/) | handoff 是模型可调用的工具，默认把对话历史一起交给下一个 agent，可用 input filter 裁剪 | 借鉴「交接有明确边界和内容」；它的 handoff 在同一进程内传消息，不解决跨机器和文件产物 |
-| [VS Code Remote SSH](https://code.visualstudio.com/docs/remote/ssh)、[Mutagen](https://mutagen.io/) | Remote SSH 在远端跑一个 server 组件做文件与扩展操作；Mutagen 做持续双向同步，sshfs 挂载远端目录 | 都不采用：前者要额外常驻组件，后两者有同步延迟、FUSE 依赖和整树暴露；这里用 OpenSSH 单次操作，按需读写 |
 
-一句话结论：跨机器交接用「远端可读的 Markdown 文件」，结果用「文件 artifact」，读写用「按成员工作目录收口的直接 SSH 操作」，与 agent-deck、A2A、ssh-mcp-server 的做法一致，同时不引入新的常驻组件或挂载。
+一句话结论：跨机器交接用「远端可读的 Markdown 文件」，结果用「文件 artifact」，读写用「按成员工作目录收口的relay exec 操作」，借鉴 agent-deck 与 A2A 的做法，同时不引入新的常驻组件或挂载。
 
 ## 交接文件
 
-远端成员每次收到任务前，hub 先经 SSH 在**那台机器**上写一份交接 Markdown：
+远端成员每次收到任务前，hub 先经 relay exec 在**那台机器**上写一份交接 Markdown：
 
 ```text
 /tmp/calli-exchange/<主线程 ID>/<消息 ID>/
@@ -38,7 +36,7 @@
 - 目录和文件权限 `0700` / `0600`。路径只由两个 UUID 组成，不接受用户输入。`/tmp` 是共享的：写入前检查交换目录及其父目录不是软链接、属于当前用户，结果文件也不能是软链接，防止别的本机用户抢先放置。
 - 投给成员的消息只给路径、首行摘要和完成要求，完整任务在 `handoff.md` 里。成员要重新核对要求时直接再读文件。
 - 显式交接：`calli spawn/send ... --handoff-file FILE` 把本地文件内容作为 `handoff.md` 正文；`--message-file` 仍作为消息文本。两者都给时，消息文本是简短说明，文件是任务正文。
-- SSH 写不进去时回退为现有的内联消息，不阻断协作；成员照常在回复里给出结果。
+- 远端命令写不进去时回退为现有的内联消息，不阻断协作；成员照常在回复里给出结果。
 
 `handoff.md` 的结构是协议文字，不翻译：
 
@@ -62,9 +60,9 @@
 
 ## 结果文件
 
-- 成员在轮次结束前把完整结果写到 `result.md`。hub 在轮次结束后经 SSH 读回，存到主 hub 的数据目录 `coordination/files/<主线程 ID>/<消息 ID>.md`。
+- 成员在轮次结束前把完整结果写到 `result.md`。hub 在轮次结束后经 relay exec 读回，存到主 hub 的数据目录 `coordination/files/<主线程 ID>/<消息 ID>.md`。
 - 文件写进投递给发送者的结果消息：`calli result` 返回 `resultFile.localPath`，主控可以直接用自己的文件工具打开；界面在结果下面显示一个文件按钮，可下载。
-- 结果文件最多 1 MB，超出部分截断并标明。成员没写文件、SSH 读不到或轮次失败时，沿用原来的文字结果，不把协作标成失败。
+- 结果文件最多 1 MB，超出部分截断并标明。成员没写文件、远端命令读不到或轮次失败时，沿用原来的文字结果，不把协作标成失败。
 - 结果文件是远端成员写的内容，按纯文本下载，不在浏览器里当 HTML 渲染。
 
 ## `calli remote`
@@ -82,13 +80,13 @@ calli remote write MEMBER PATH --file FILE|- [--expect-hash SHA256]
 - 读默认 256 KB、最多 1 MB，返回 `text`、`hash`、`size` 和 `truncated`。
 - 写最多 1 MB，先写同目录临时文件再 `mv` 原子替换，保留原文件权限；`--expect-hash` 与当前文件不一致时返回 409，避免覆盖别人刚写的内容。
 - 权限：主控可读可写；其他协作成员只读。写操作不因为协作自动放宽 agent 自己的权限。
-- 直接走 OpenSSH，不经过目标 daemon 的 HTTP 接口，所以目标 daemon 版本较旧或暂时离线时仍可读写；SSH 认证沿用主 hub 的 `~/.ssh/config` 与主机密钥策略（`BatchMode=yes`，不交互）。
+- 通过已登记节点的 relay exec 执行，需要节点在线且两端支持 relay；离线时读写失败，协作消息仍按原有规则等待重连或回退内联。
 
 ## 接口与文件
 
 | 位置 | 职责 |
 |---|---|
-| `packages/daemon/src/hosts.ts` | `HostRegistry.exec`：复用已登记的 SSH 目标和 `SSH_OPTIONS` 执行一次远端命令，超时与输出上限 |
+| `packages/daemon/src/hosts.ts` | `HostRegistry.exec`：通过节点的 relay 连接执行一次远端命令，超时与输出上限 |
 | `packages/daemon/src/remote-files.ts` | 路径校验、`ls/read/write`、交接文件与结果文件的读写；脚本从标准输入取路径，避免 shell 转义 |
 | `packages/daemon/src/coordination.ts` | 投递前写 `handoff.md`；轮次结束后读 `result.md`、存本地副本、结果消息附 `resultFile`；`remote` 命令与成员权限 |
 | `packages/daemon/bin/calli` | `--handoff-file`、`calli remote ls/read/write` |
@@ -100,15 +98,15 @@ Delivery 新增可选字段 `handoffPath`、`resultPath`、`resultFile: { name, 
 
 ## 不做
 
-- 不开放任意远端 shell、`exec` 或端口转发；只做读、写、列目录。
+- 协作成员不开放任意远端 shell 或端口转发；只做读、写、列目录。hub 操作者的运维 exec 是单独的认证接口。
 - 不开放成员工作目录以外的路径（用户已选「仅成员工作目录」）。
 - 不在网页里编辑远端文件；文件面板维持只读。
-- 不做 sshfs / Mutagen 挂载或持续同步，不做二进制和大文件分块传输。
-- 不做远端 daemon 的协议升级依赖：本期功能只要求两端都有 `ssh` 客户端和 POSIX shell（`realpath`、`find -printf`、`sha256sum`，Linux 默认具备）。
+- 不做远端目录挂载或持续同步，不做二进制和大文件分块传输。
+- 要求两端 daemon 支持 relay；节点文件命令仍依赖 POSIX shell 与 `realpath`、`find -printf`、`sha256sum`。
 
 ## 验证
 
-- 单元：`remote-files` 的读写、分页、二进制拒绝、大小上限、原子写、hash 冲突、`..` 与软链接越界；`HostRegistry.exec` 经假 ssh 验证参数、标准输入、退出码和超时。
-- 协作：假远端机器（本地 sh 模拟）验证投递前生成 `handoff.md`、消息带路径、显式 `--handoff-file`、轮次结束读回 `result.md` 并生成 `resultFile`；远端不可用时回退内联。
+- 单元：`remote-files` 的读写、分页、二进制拒绝、大小上限、原子写、hash 冲突、`..` 与软链接越界；`HostRegistry.exec` 经真实 RelayClient 验证参数、标准输入、退出码和超时。
+- 协作：两个本机 daemon 经真实 relay验证投递前生成 `handoff.md`、消息带路径、显式 `--handoff-file`、轮次结束读回 `result.md` 并生成 `resultFile`；远端不可用时回退内联。
 - 接口：结果文件下载需要 token，越权与不存在分别 403/404。
 - 浏览器：真实无头 Chromium 桌面/手机 × 亮/暗看结果文件按钮；实体手机未测。

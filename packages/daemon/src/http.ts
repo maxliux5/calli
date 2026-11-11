@@ -57,7 +57,7 @@ export interface HttpDeps {
   pets?: PetService;
   /**
    * Requests need no token: the server listens on a socket only this user can open, and a hub
-   * reaches it over SSH. Such a server shows this machine only, never the machines added to it.
+   * reaches it through the local relay client. Such a server shows this machine only, never the machines added to it.
    */
   trusted?: boolean;
   token: string;
@@ -301,6 +301,8 @@ export function createHttpServer(deps: HttpDeps): Server {
     }
 
     if (path === '/api/health') return sendJson(res, 200, { ok: true, version });
+    // A machine that connects out to this hub, with its own join token rather than the hub's.
+    if (path.startsWith('/api/relay/') && hosts && !trusted) return hosts.relay.handle(req, res, path);
 
     const auth = req.headers.authorization ?? '';
     const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
@@ -435,20 +437,26 @@ export function createHttpServer(deps: HttpDeps): Server {
 
     // Other machines. One level only: a machine reached through its socket does not pass requests on.
     if (parts[1] === 'hosts' && hosts && !trusted) {
-      // GET /api/hosts, POST /api/hosts { target, label? }
+      // GET /api/hosts, POST /api/hosts { label }
       if (path === '/api/hosts') {
         if (method === 'GET') return sendJson(res, 200, hosts.list());
         if (method === 'POST') return sendJson(res, 201, await hosts.add(await readJson(req)));
       }
-      // GET /api/hosts/candidates: aliases in this user's ssh config that could be added
-      if (method === 'GET' && path === '/api/hosts/candidates') return sendJson(res, 200, hosts.candidates());
+      // Operator-only execution for maintenance scripts; node tokens cannot access this route.
+      if (method === 'POST' && parts[2] && parts[3] === 'exec' && !parts[4]) {
+        const body = await readJson(req);
+        if (!body || typeof body.command !== 'string' || !body.command.trim()) throw new HttpError(400, 'command is required');
+        if (body.input !== undefined && typeof body.input !== 'string') throw new HttpError(400, 'input must be a string');
+        const result = await hosts.exec(parts[2], body.command, { input: body.input });
+        return sendJson(res, 200, { stdout: result.stdout.toString('base64'), stderr: result.stderr, code: result.code });
+      }
       // DELETE /api/hosts/:id
       if (method === 'DELETE' && parts[2] && !parts[3]) {
         hosts.remove(parts[2]);
         res.writeHead(204).end();
         return;
       }
-      // POST /api/hosts/:id/reconnect: try now, not when the next retry is due
+      // POST /api/hosts/:id/reconnect: refresh the node connection state
       if (method === 'POST' && parts[2] && parts[3] === 'reconnect' && !parts[4]) {
         return sendJson(res, 200, await hosts.reconnect(parts[2]));
       }
@@ -1513,10 +1521,13 @@ export function createHttpServer(deps: HttpDeps): Server {
   const server = createServer((req, res) => {
     handle(req, res).catch((err) => sendError(res, err));
   });
-  // The one WebSocket: the desktop's VNC stream, here or on another machine through the hub.
-  if (desktop) {
+  // Two kinds of upgrade: machines connecting out to this hub, and the desktop's VNC stream, here
+  // or on another machine through the hub.
+  if (desktop || (hosts && !trusted)) {
     server.on('upgrade', (req: IncomingMessage, socket, head: Buffer) => {
       socket.on('error', () => socket.destroy());
+      if (hosts && !trusted && hosts.relay.upgrade(req, socket, head)) return;
+      if (!desktop) return refuse(socket, 404, 'not found');
       const url = new URL(req.url ?? '/', 'http://localhost');
       const remote = /^\/api\/hosts\/([^/]+)\/proxy\/desktop\/vnc$/.exec(url.pathname);
       if (url.pathname !== '/api/desktop/vnc' && !remote) return refuse(socket, 404, 'not found');

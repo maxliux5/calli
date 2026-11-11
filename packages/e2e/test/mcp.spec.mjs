@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startDaemon, openUi, api, launchBrowser } from '../harness.mjs';
+import { linkDaemon, startDaemon, openUi, api, launchBrowser } from '../harness.mjs';
 
 let root, hub, remote, browser, page;
 const envFor = (home) => ({ HOME: home, CLAUDE_CONFIG_DIR: join(home, '.claude'), CODEX_HOME: join(home, '.codex'), PI_CODING_AGENT_DIR: join(home, '.pi/agent'), CALLI_AGY_HOME: join(home, '.agy') });
@@ -29,11 +29,8 @@ before(async () => {
   seedLocal(localHome);
   seedRemote(remoteHome);
   remote = await startDaemon({ ...envFor(remoteHome), CALLI_SOCKET: join(remoteHome, '.local/state/calli/daemon.sock') });
-  const machines = join(root, 'machines.json');
-  writeFileSync(machines, JSON.stringify({ devbox: { home: remoteHome } }));
-  hub = await startDaemon({ ...envFor(localHome), CALLI_SSH_BIN: 'fake-ssh', FAKE_SSH_HOSTS: machines });
-  const added = await api(hub, '/api/hosts', { method: 'POST', body: JSON.stringify({ target: 'devbox', label: '开发机' }) });
-  assert.equal(added.status, 201);
+  hub = await startDaemon({ ...envFor(localHome) });
+  await linkDaemon(hub, remote);
   browser = await launchBrowser();
   page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
   page.on('pageerror', (err) => console.error('browser error:', err));
@@ -60,8 +57,8 @@ async function openMcp(p, phone = false, shot) {
 
 test('the scan spans machines and agents, and the page has an address of its own', async () => {
   await page.getByRole('button', { name: 'botmux 的操作' }).waitFor();
-  assert.deepEqual((await page.locator('.skills-grid-head .skills-cell-machine').allInnerTexts()).sort(), ['开发机', '本机'].sort());
-  // botmux and github on 本机, playwright on 开发机: one row each, marks in the right cells.
+  assert.deepEqual((await page.locator('.skills-grid-head .skills-cell-machine').allInnerTexts()).sort(), ['devbox', '本机'].sort());
+  // botmux and github on 本机, playwright on devbox: one row each, marks in the right cells.
   const botmux = page.locator('.skills-row', { hasText: 'botmux' });
   assert.ok(await botmux.locator('.skill-mark').count(), 'botmux shows the agents that have it');
   await page.getByRole('button', { name: 'github 的操作' }).waitFor();
@@ -107,7 +104,7 @@ test('install crosses machines through the proxy and asks before overwriting a d
 
 test('remove takes one server out of one agent on one machine', async () => {
   await page.getByRole('button', { name: 'playwright 的操作' }).click();
-  await page.getByRole('menuitem', { name: '移除（开发机 · pi）' }).click();
+  await page.getByRole('menuitem', { name: '移除（devbox · pi）' }).click();
   await page.getByRole('button', { name: '移除', exact: true }).click();
   await page.getByRole('button', { name: 'botmux 的操作' }).waitFor();
   const doc = JSON.parse(readFileSync(join(root, 'remote/.pi/agent/mcp.json'), 'utf8'));
@@ -129,7 +126,7 @@ test('a manual registration can be installed anywhere', async () => {
   await dialog.waitFor();
   // A server nowhere yet preselects every target; keep only the remote pi.
   while (await dialog.locator('.skill-target[aria-pressed=true]').count()) await dialog.locator('.skill-target[aria-pressed=true]').first().click();
-  await dialog.locator('.skill-target-row', { hasText: '开发机' }).getByRole('button', { name: 'pi', exact: true }).click();
+  await dialog.locator('.skill-target-row', { hasText: 'devbox' }).getByRole('button', { name: 'pi', exact: true }).click();
   await dialog.getByRole('button', { name: '安装到 1 个 agent' }).click();
   await dialog.getByRole('button', { name: '完成', exact: true }).waitFor();
   const doc = JSON.parse(readFileSync(join(root, 'remote/.pi/agent/mcp.json'), 'utf8'));

@@ -10,6 +10,7 @@ import { loadSupportedExternalCatalog } from './external-extensions.js';
 import { Desktop, parseDesktopSetting } from './desktop.js';
 import { createHttpServer, listenPrivate, socketHeld } from './http.js';
 import { HostRegistry } from './hosts.js';
+import { RelayClient } from './relay-client.js';
 import { AgentRegistry, defaultInstances } from './agents.js';
 import { AttachmentStore } from './attachments.js';
 import { LocalSessions } from './local-sessions.js';
@@ -171,9 +172,8 @@ async function main(): Promise<void> {
     });
   }
   const terminals = new TerminalManager({ workdirs: () => dirs.all(), shell: config.termShell ?? undefined });
-  // Other machines, each reached over SSH through its daemon's socket.
-  const hosts = new HostRegistry({ file: join(config.dataDir, 'hosts.json'), ssh: config.sshCommand });
-  hosts.start();
+  // Other machines connect out to this hub through their relay clients.
+  const hosts = new HostRegistry({ file: join(config.dataDir, 'hosts.json') });
   // Collaboration can then run members on the machines the hub reaches.
   coordination.hosts = hosts;
   // Catch-up runs need all thread-scoped sockets and runtime services to be ready.
@@ -202,6 +202,15 @@ async function main(): Promise<void> {
         console.log(ok ? `socket: ${config.socket}` : `socket: ${config.socket} belongs to another daemon, not listening on it`);
       })
       .catch((err) => console.warn(`warning: could not listen on ${config.socket}: ${err instanceof Error ? err.message : err}`));
+  }
+
+  // A hub elsewhere this machine joined: connect out to it and answer its requests from the socket above.
+  let relay: RelayClient | null = null;
+  if (config.hub && !config.socket) console.warn('warning: CALLI_HUB_URL is set but CALLI_SOCKET is off; not joining the hub');
+  else if (config.hub && config.socket) {
+    relay = new RelayClient({ hubUrl: config.hub.url, token: config.hub.token, socket: config.socket, version: VERSION });
+    relay.start();
+    console.log(`hub: connecting out to ${new URL(config.hub.url).origin}`);
   }
 
   server.listen(config.port, config.host, () => {
@@ -234,6 +243,7 @@ async function main(): Promise<void> {
     // that looks does not take a stopped daemon for a running one.
     if (ownsSocket && config.socket) rmSync(config.socket, { force: true });
     hosts.dispose();
+    relay?.stop();
     scheduler.dispose();
     push.dispose();
     feishu.dispose();

@@ -148,22 +148,23 @@ GitHub Pages 通过 `.github/workflows/pages.yml` 发布：推送到 `main` 后�
 
 ## 管理另一台机器
 
-浏览器只连主 hub；主 hub 通过 SSH 隧道访问另一台机器上的 daemon。线程、文件和 agent 都留在各自机器上。
+浏览器只连主 hub，其他机器上的 daemon 主动通过 relay 连到 hub。线程、文件和 agent 都留在各自机器上，节点无需开放入站端口。
 
-1. **目标机器**：运行上面快速开始里的安装命令。保持默认的私有 socket，不必对外开放 HTTP 端口。之后想用 `scripts/update-hosts.sh` 统一更新，在主 hub 的 hosts.json 里给这台机器写 `"repo": "~/.local/share/calli"`。
-2. **主 hub**：以 daemon 的运行用户配置 SSH 别名和凭据，先手动连接、核实主机密钥，再确认 `ssh -o BatchMode=yes <SSH别名> true` 能成功。服务需要能持续免交互认证；只在当前终端可用的 ssh-agent 或临时票据不一定能被服务使用。
-3. **浏览器**：打开「配置 → 机器」，从 SSH 别名列表添加，或输入别名 / `user@host`。成功后在线程列表顶部切换机器。
+1. **浏览器**：打开「配置 → 机器 → 添加机器」，填写机器名称，生成接入配置。
+2. **节点**：安装 Calli，将 `CALLI_HUB_URL` 和 `CALLI_HUB_TOKEN` 写进 `~/.config/calli/.env`。保持私有 socket 开启，安装服务用 `scripts/install-service.sh`，已有服务重启用 `scripts/restart.sh`。
+3. **连接**：节点自动接入，浏览器在线程列表顶部切换机器。断线后节点自动重连。
 
-添加流程读取的是 **hub 所在机器**的 SSH 配置，不是手机或电脑浏览器的配置。目标上的 daemon 要先启动；第一期不自动安装和启动。远端 daemon 负责调用该机器上的 agent、读取会话与文件，浏览器仍只访问主 hub；远端无需单独部署前端或开放 HTTP 端口。
+接入令牌只显示一次，hub 只保存其哈希；丢失后移除再添加。旧 SSH 机器登记会被忽略并提示重新添加，加载时不修改原 hosts.json，节点会话和文件不受影响。
 
-更新主 hub 不会自动更新远端 daemon，但可以用 `scripts/update-hosts.sh` 一次把各台机器带上去：先把代码推到它们能拉取的远端（例如 GitHub），再在主 hub 上运行。脚本对 hosts.json 里的每台机器（或 `scripts/update-hosts.sh 机器ID` 只指定一台）通过 SSH 快进拉取那台机器的仓库克隆，构建一个新快照目录，等那台机器所有线程空闲后（同 `restart.sh`）把服务切过去，健康检查失败自动切回旧快照。全程不强制：连不上、克隆与远端分叉、构建失败都只报告并跳过，那台机器的 daemon 保持原样。加 `--check` 先看每台机器会更新到什么。远端布局与手工部署一致：克隆在 `~/code/calli`（hosts.json 里写 `"repo": "<路径>"` 可改），服务运行在 `~/.local/share/calli-<短sha>` 快照上。涉及新接口的功能（例如新建接手对话）需要目标机器的 daemon 也更新。
-
-| 配置 | 默认与用途 |
+| 配置 | 用途 |
 | --- | --- |
-| `CALLI_SOCKET` | 默认 `~/.local/state/calli/daemon.sock`；`off` 关闭私有监听。自定义路径用于隔离实例，当前远端发现只支持默认路径 |
-| `CALLI_SSH_BIN` | 默认 PATH 中的 `ssh`，用于主 hub 连接其他机器 |
+| `CALLI_HUB_URL` | 节点可访问的 hub 地址，建议 HTTPS |
+| `CALLI_HUB_TOKEN` | hub 为此节点生成的接入令牌，与浏览器登录 token 不同 |
+| `CALLI_SOCKET` | 本机私有 socket，默认 `~/.local/state/calli/daemon.sock`；接入节点不可设为 `off` |
 
-私有 socket 依赖文件权限和 SSH 认证，免 token。主 hub 的 token 因此能操作所有已添加的机器。移除机器只断开连接，远端线程继续保留。连不上时，机器面板会显示原因；常见原因是服务环境缺少 SSH 凭据、未知主机密钥、目标 daemon 没启动或 sshd 不允许 Unix socket 转发。架构与限制见 [多机管理设计](docs/multi-host-design.md)。
+私有 socket 由本机用户文件权限保护。hub token 能操作登记的节点；节点令牌只能领取自己的 relay 任务。移除机器会撤销令牌，不删除节点线程和文件。
+
+`scripts/update-hosts.sh [机器ID] [--check]` 可经 relay 更新在线节点。节点需要 systemd 用户服务与仓库克隆（默认 `~/code/calli`，hosts.json 的 `repo` 可覆盖）。更新任务独立于节点服务运行，构建快照、等待空闲后切换、失败回滚；hub 在重连后读取结果。`--check` 会 fetch 并快进克隆，但不构建或切换服务。真实 systemd 更新与跨网络部署仍待验收，机制和限制见 [多机管理设计](docs/multi-host-design.md)。
 
 ## 开机自启
 
@@ -231,7 +232,7 @@ npm test -w @calli/e2e -- --test-concurrency=1 test/smoke.spec.mjs
 
 ## 安全
 
-- HTTP 监听上的 API 需要 `Authorization: Bearer <CALLI_TOKEN>`，`/api/health` 除外；仅本机用户能访问的私有 Unix socket 免 token，由文件权限和 SSH 认证保护。
+- HTTP 监听上的 API 需要 `Authorization: Bearer <CALLI_TOKEN>`，`/api/health` 除外；仅本机用户能访问的私有 Unix socket 免 token，由本机用户文件权限保护。
 - daemon 等同于远程 shell。只把它暴露在可信网络（VPN）中。
 - 工作目录必须在 `CALLI_WORKDIRS` 白名单内。
 
