@@ -251,6 +251,8 @@
 
 在网页里开一个真的终端（PTY），给自己在这台主机上跑命令：看 git 状态、跑测试、装依赖。不是把 IDE 搬进来：不持久化输出、不进事件日志、不碰 agent 的会话。
 
+- [x] 页面 Git 管理：用户选定并验收 B 侧栏，已从线程「⋯ → Git」接入真实分支状态、按需读取文件差异和提交记录、获取远端及快进拉取。未提交修改、分叉、运行中线程会阻止拉取；跨 worktree 串行网络操作，更新保留读数。Git 专项 6 项、Chromium 桌面／手机 × 亮／暗 4 项通过，用户已验收；全量测试的 3 项 Claude 网关基线失败见设计记录。见 [首版设计](git-management-design.md)。
+
 - [x] 决定：真终端要 PTY。daemon 引入 `node-pty`（常见平台有预编译）；主机上装不上就退回 `script -qfc $SHELL /dev/null` + `stty` 改窗口大小，零原生依赖。PTY 这层抽成小接口，两种实现同壳
 - [x] 传输沿用 HTTP + SSE，不引 WebSocket：输出走 SSE，输入走 POST；xterm.js 在前端把击键按 ~16ms 合并成一批，keep-alive 下延迟够用
 - [x] daemon `terminals.ts` + 接口：

@@ -137,6 +137,7 @@ export class BorrowingService {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new HttpError(400, 'command must be an object');
     const input = raw as Record<string, unknown>;
     switch (input.op) {
+      case 'references.read': return this.manager.references.read(owner, input);
       case 'signals.show': {
         if (owner === 'operator') throw new HttpError(403, 'signals require thread-scoped credentials');
         return this.scopedSignal(owner, signalArchiveKey(input.key));

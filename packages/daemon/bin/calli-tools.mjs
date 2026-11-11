@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 
-export const help = `calli notify --text-file FILE|-
+export const help = `calli references ID [--before CURSOR --turns N | --turn TURN_ID --offset N [--tool TOOL_ID] | --tools TURN_ID --offset N]
+calli notify --text-file FILE|-
 calli tools search [QUERY] [--json]
 calli tools skill
 calli tools describe TOOL [--json]
@@ -147,4 +148,17 @@ export async function notifyMain(args) {
   if (!process.env.CALLI_TOOLS_SOCKET || !process.env.CALLI_TOOLS_KEY) throw new Error('notify requires thread-scoped credentials');
   const text = readFileSync(args[1] === '-' ? 0 : args[1], 'utf8');
   console.log(JSON.stringify(await transport('/command', { op: 'notify', text })));
+}
+
+/** Read only the snapshot explicitly attached by the person to this conversation. */
+export async function referencesMain(args) {
+  const [id, ...rest] = args;
+  if (!id) throw new Error('reference ID is required');
+  const input = { op: 'references.read', id };
+  for (let i = 0; i < rest.length; i += 2) {
+    const key = rest[i].slice(2);
+    if (!['before', 'turns', 'turn', 'offset', 'tool', 'tools'].includes(key) || rest[i + 1] === undefined || !rest[i].startsWith('--')) throw new Error('invalid reference option');
+    input[key] = rest[i + 1];
+  }
+  console.log(JSON.stringify(await transport('/command', input)));
 }

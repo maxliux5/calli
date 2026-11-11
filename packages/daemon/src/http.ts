@@ -809,6 +809,10 @@ export function createHttpServer(deps: HttpDeps): Server {
     if (method === 'GET' && path === '/api/config') return sendJson(res, 200, manager.workdirsConfig());
 
     // Browse candidate project folders without widening file access or allowed working directories.
+    if (method === 'POST' && path === '/api/context-references') {
+      return sendJson(res, 201, manager.references.create((await readJson(req)) ?? {}));
+    }
+
     if (method === 'GET' && path === '/api/project-directories') {
       return sendJson(res, 200, listProjectDirectories(manager.allowedWorkdirs, url.searchParams.get('path') ?? undefined));
     }
@@ -1375,6 +1379,16 @@ export function createHttpServer(deps: HttpDeps): Server {
         const query = new URLSearchParams({ path: file.path, exp: String(grant.exp), sig: grant.sig });
         if (url.searchParams.get('dl') === '1') query.set('dl', '1');
         return sendJson(res, 200, { url: `/api/threads/${threadId}/download?${query}`, name: file.name, size: file.size, mimeType: file.mimeType });
+      }
+
+      // Git is scoped to the authenticated thread's current checkout. Heavy details are separate reads.
+      if (sub === 'git' && !parts[5]) {
+        const action = parts[4];
+        if (method === 'GET' && action === 'status') return sendJson(res, 200, await manager.git.status(threadId));
+        if (method === 'GET' && action === 'log') return sendJson(res, 200, await manager.git.log(threadId, url.searchParams.get('head'), Number(url.searchParams.get('skip') ?? 0)));
+        if (method === 'GET' && action === 'commit') return sendJson(res, 200, await manager.git.commitFiles(threadId, url.searchParams.get('commit') ?? ''));
+        if (method === 'GET' && action === 'diff') return sendJson(res, 200, await manager.git.diff(threadId, url.searchParams.get('path'), url.searchParams.get('staged') === '1', url.searchParams.get('commit')));
+        if (method === 'POST' && (action === 'fetch' || action === 'pull')) return sendJson(res, 200, await manager.git.operate(threadId, action));
       }
 
       // GET /api/threads/:id/roots: the folders the file browser can stand on, for the root switcher

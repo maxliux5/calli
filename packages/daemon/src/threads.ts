@@ -1,3 +1,5 @@
+import { ContextReferences } from './context-references.js';
+import { GitManager, gitWorktreeRoot } from './git.js';
 import { PersonalBriefSchedule } from './personal-brief-schedule.js';
 import { changedFiles, mentionedFiles, checkMissingFiles, MAX_OUTPUT_ITEMS, type ThreadOutputs } from './outputs.js';
 import { LarkChannel } from './channels/lark.js';
@@ -331,6 +333,12 @@ export class ThreadManager {
   /** Threads whose model/effort/speed was changed mid-turn: the setting is stored, the session that
    *  turn still runs in is stale. It is dropped when the turn ends, never interrupted mid-turn. */
   private readonly refreshAfterTurn = new Set<string>();
+  readonly git = new GitManager(
+    id => this.getThread(id).cwd,
+    (id, path) => { this.resolveInThread(id, path, new HttpError(403, 'Git repository is outside the readable roots')); },
+    root => [...this.running.keys(), ...this.startingTurns.keys()].some(id => gitWorktreeRoot(this.getThread(id).cwd) === root),
+  );
+
   /** Turns in flight. `cancelRequested` covers cancels that arrive before the agent session exists. */
   private readonly running = new Map<string, { turnId: string; cancelRequested: boolean; since: string }>();
   readonly inputs = new UserInputs((thread, turn, type, data) => this.emitThreadEvent(thread, turn, type, data));
@@ -373,6 +381,7 @@ export class ThreadManager {
 
   /** Where threads may work; directories can be added from the page while the hub runs. */
   readonly dirs: Workdirs;
+  readonly references: ContextReferences;
   readonly autoHandover: AutoHandover;
   readonly autoCompact: AutoCompact;
   readonly personal: PersonalService;
@@ -390,6 +399,7 @@ export class ThreadManager {
     private readonly agentMeta: () => Array<{ id: string; adapter?: string; account?: string | null; hidden?: boolean }> = () => [],
   ) {
     this.dirs = Array.isArray(workdirs) ? new Workdirs(workdirs) : workdirs;
+    this.references = new ContextReferences(store, this);
     this.injections = new Injections(store);
     this.autoHandover = new AutoHandover(store, this);
     this.quotaResume = new QuotaResume(store, this, this.autoHandover);
@@ -2422,6 +2432,7 @@ export class ThreadManager {
     if (this.changingModes.has(threadId)) throw new HttpError(409, '模式正在切换，请稍后发送');
     if (input.workMode !== undefined) thread.workMode = this.validateWorkMode(thread.agent, input.workMode);
     const originalText = typeof input.text === 'string' ? input.text.trim() : '';
+    const reference = this.references.prepare(threadId, originalText, input.fromUser === true, input.handoverFrom);
     if (thread.workMode === 'plan' && /^\/goal(?:\s|$)/.test(originalText) && !['/goal', '/goal pause', '/goal clear'].includes(originalText)) throw new HttpError(409, '请切到执行模式后启动目标');
     const mentions = Array.isArray(input.mentions) && input.mentions.length ? input.mentions : undefined;
     if ((mentions || input.collaboration) && !this.coordination) throw new HttpError(400, '协作不可用');
@@ -2468,6 +2479,7 @@ export class ThreadManager {
       if (queue.length >= MAX_QUEUED) throw new HttpError(409, `at most ${MAX_QUEUED} messages can wait in a thread`);
       this.attachments.check(rawImages); // a bad image is refused now, not when its turn comes
       const queued: QueuedTurn = { voiceSummary: input.voiceSummary, workMode: thread.workMode ?? 'execute', id: randomUUID(), text: originalText, displayText: input.displayText, channel: input.channel, ...(input.coalesce ? { coalesce: input.coalesce } : {}), images: rawImages, videos: videoIds, ...(mentions ? { mentions } : {}), ...(input.collaboration ? { collaboration: input.collaboration } : {}), ...(input.fromUser ? { fromUser: true } : {}) };
+      this.references.grant(threadId, reference.references);
       this.queues.set(threadId, [...queue, queued]);
       this.emitThreadEvent(threadId, null, 'thread.updated', {});
       return { queued: true, id: queued.id };
@@ -2477,7 +2489,7 @@ export class ThreadManager {
       if (!this.coordination) throw new HttpError(400, '协作不可用');
       await this.coordination.enable(threadId, input.collaboration);
     }
-    rawText = this.coordination?.mentionText(threadId, originalText, mentions) ?? originalText;
+    rawText = this.coordination?.mentionText(threadId, reference.text, mentions) ?? reference.text;
     // Slash commands have their own argument grammar; hidden instructions become unwanted arguments.
     const slashCommand = /^\/\S+/.test(rawText);
     // A collaboration member spoken to by the person directly answers the person, not the lead.
@@ -2505,17 +2517,19 @@ export class ThreadManager {
       if (this.running.has(threadId)) throw new HttpError(409, 'a turn is already running in this thread');
       if (this.changingModes.has(threadId) || input.workMode === undefined && this.getThread(threadId).workMode !== thread.workMode) throw new HttpError(409, '工作模式已变化，请重新发送');
     }
+    this.git.assertTurnAllowed(thread.cwd);
     const { stored, images } = this.attachments.save(threadId, rawImages);
     const promptText = text + this.attachments.videoNote(threadId, storedVideos);
     // Internal callers may attach protocol context. Only the person's words (or a channel
     // summary) belong in the conversation, its queue, and later replay/continuation views.
-    const displayText = delivery?.displayText ?? input.displayText ?? rawText.split('\n\n[指定协作对象]')[0];
+    const displayText = delivery?.displayText ?? input.displayText ?? originalText.split('\n\n[指定协作对象]')[0];
 
     const turnId = delivery?.turnId ?? reservedTurnId ?? randomUUID();
     if (askProgress) this.reportTurns.add(turnId);
     try {
       this.store.transaction(() => {
         delivery?.claim();
+        this.references.grant(threadId, reference.references);
         beforeStart?.(turnId);
         // New work reopens a thread the person had marked done.
         if (thread.doneAt && !slashCommand) this.store.setThreadProgress(threadId, { doneAt: null });

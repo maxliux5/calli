@@ -1,3 +1,4 @@
+import { GitPanel } from './components/GitPanel';
 import { SettingsPage, type SettingsGroup } from './components/SettingsPage';
 import { AssistantSettingsPage, assistantTitle } from './components/AssistantSettingsPage';
 import { PageNavigation, SettingsSection, usePageNavigation } from './components/PageNavigation';
@@ -49,6 +50,8 @@ import { AppearancePanel } from './components/AppearancePanel';
 import { ActionSheet, type SheetTarget } from './components/ActionSheet';
 import { ArchivePanel } from './components/ArchivePanel';
 import { Composer, prefillComposerDraft, type DraftNote } from './components/Composer';
+import { HandToAssistant, type MessageSnapshot } from './components/MessageActions';
+import type { ContextReference } from './context-references';
 import { CollaborationMenu } from './components/CollaborationMenu';
 import { DirectoryPicker } from './components/DirectoryPicker';
 import { Dialog } from './components/Dialog';
@@ -922,6 +925,13 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   // Text quoted out of a message by selecting it.
   const composerDraftKey = hostId ? `host:${hostId}:${selectedId ?? (draftTeam ? `new:team:${draftTeam}` : 'new')}` : selectedId ?? (draftTeam ? `new:team:${draftTeam}` : 'new');
   const [noteSignal, setNoteSignal] = useState<{ draftKey: string; note: DraftNote & { nonce: number } } | null>(null);
+  const [messageReference, setMessageReference] = useState<{ draftKey: string; value: ContextReference; nonce: number } | null>(null);
+  const [assistantMessage, setAssistantMessage] = useState<MessageSnapshot | null>(null);
+  const messageAssistantApi = useMemo(() => hostId === null ? api : new Api(token), [api, hostId, token]);
+  const messageSnapshot = async (text: string, turnId: string, threadId?: string): Promise<MessageSnapshot> => {
+    const source = await api.thread(threadId ?? selectedId!);
+    return { text, turnId, sourceId: source.id, title: host ? `${host.label} · ${source.title}` : source.title, path: source.cwd };
+  };
   const consumeNote = useCallback((id: string) => {
     setNoteSignal((current) => current?.note.id === id ? null : current);
   }, []);
@@ -1887,6 +1897,9 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const filesThread = threads.find(thread => thread.id === filesThreadId) ?? selected;
   /** The thread's trace, beside the conversation on a desktop, a page of its own on a phone. */
   const [traceOpen, setTraceOpen] = useState(false);
+  const [gitOpen, setGitOpen] = useState(false);
+  useLayoutEffect(() => { setGitOpen(false); }, [selectedId, api]);
+  useEffect(() => { if (files || traceOpen || agentsOpen) setGitOpen(false); }, [files, traceOpen, agentsOpen]);
   const filesSeq = useRef(0);
   useEffect(() => { setFiles(null); setFilesThreadId(null); setTraceOpen(false); }, [selectedId]);
 
@@ -1906,7 +1919,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   };
   /** A side panel takes the same edge as the overview, so the panel steps aside while one is open —
    *  but the person's own switch is left alone: it comes back when the side panel closes. */
-  const sideOpen = Boolean(agentsOpen && coordination) || Boolean(files) || traceOpen;
+  const sideOpen = Boolean(agentsOpen && coordination) || Boolean(files) || traceOpen || gitOpen;
   const overviewShown = overviewDock && overviewOpen && !sideOpen && !activeOverviewDetail && Boolean(selected) && hostUp;
   /** Only the person turns the standing panel off; the switch above remembers it. */
   const closeOverview = useCallback(() => { if (overviewDock) setOverviewOpen(false); }, [overviewDock, setOverviewOpen]);
@@ -2022,6 +2035,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       void refreshThreads();
     },
     onOpenTerminal: () => (demo ? askToConnect() : openTerminal()),
+    onOpenGit: () => { setFiles(null); setTraceOpen(false); setAgentsOpen(false); setGitOpen(true); },
     onOpenFiles: (thread) => {
       setAgentsOpen(false);
       setTraceOpen(false);
@@ -3388,6 +3402,17 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
               }}
               onSegmentPreview={(thread, path) => setPreview({ threadId: thread.id, path })}
               historyApi={api ?? undefined}
+              onQuote={(quote, turnId, threadId) => {
+                const id = `note-${Date.now()}`;
+                setNoteSignal({ draftKey: composerDraftKey, note: { id, quote, comment: '', nonce: Date.now(), ...(threadId && threadId !== selectedId ? { source: { threadId, turnId } } : {}) } });
+              }}
+              onMessageContext={!demo && !voice.state.active && !writing ? async (text, turnId, threadId) => {
+                const draftKey = composerDraftKey;
+                const source = await messageSnapshot(text, turnId, threadId);
+                const value = await api.createReference({ kind: 'message', ...source });
+                setMessageReference({ draftKey, value, nonce: Date.now() });
+              } : undefined}
+              onHandToAssistant={!demo ? async (text, turnId, threadId) => setAssistantMessage(await messageSnapshot(text, turnId, threadId)) : undefined}
               historyThreadId={selected.id}
               items={threadItems}
               revealTurnId={jump?.threadId === selected.id ? jump.turnId : undefined}
@@ -3498,6 +3523,9 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
             try { await voice.appendText(text, images.map(img => ({ data: img.data, mimeType: img.mimeType })), await Promise.all(videos.map(async video => (await api.uploadVideo(selectedId!, video.file)).id))); }
             catch (error) { handleError(error); throw error; }
           } : send}
+          referenceSource={!demo && !voice.state.active ? { api, cwd: activeCwd, threadId: selected?.id } : undefined}
+          reference={messageReference?.draftKey === composerDraftKey ? messageReference : null}
+          onReferenceConsumed={id => setMessageReference(current => current?.value.id === id ? null : current)}
           mentionOptions={collaborationOptions}
           mentionIcon={collaborationIcon}
           collaboration={!draftTeam && !selected?.coordination?.team && (activeCaps?.coordination || selected?.coordination) ? collaborationControl : undefined}
@@ -3600,6 +3628,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           permission={a.capabilities.permissionModes.length ? thread.permissionMode : undefined} onPermission={(permissionMode) => { void api.updateThread(thread.id, { permissionMode }).then(() => refreshThreads()).catch(handleError); }} /> : null;
       }} leadAgent={threads.find((t) => t.id === coordination.rootId)?.agent} phone={compact} onClose={() => setAgentsOpen(false)} onOpen={thread => { openThread(thread); setAgentsOpen(false); }} onAdjust={(name, draft) => { setAgentsOpen(false); setSelectedId(coordination.rootId); setRestore({ text: t('app.adjustTask', name) + draft, nonce: Date.now() }); }} onRefresh={() => { void refreshThreads(); }} onError={handleError} />}
       {files && filesThread && api && <FilesPanel api={api} threadId={filesThread.id} target={files} phone={compact} revision={filesThread.updatedAt} writingStage={filesThread.writing?.stage ?? null} writingHabits={filesThread.writing?.habits ?? null} noted={{ count: noteCount, nonce: filesNotePulse }} onClose={() => setFiles(null)} />}
+      {gitOpen && selected && api && <GitPanel key={`${hostId ?? ''}:${selected.id}`} api={api} threadId={selected.id} phone={compact} running={selected.status === 'running'} onClose={() => setGitOpen(false)} />}
       {traceOpen && selected && (
         <ThreadTracePanel
           api={api}
@@ -3747,6 +3776,12 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
         onRemove={id => setElsewhere(sources => sources.map(source => source.hostId === remoteMenu.machine ? { ...source, threads: source.threads.filter(t => t.id !== id) } : source))}
         onError={handleError} />}
       <NoteMarks marks={noteMarks} scrollerRef={scrollerRef} />
+      {assistantMessage && <HandToAssistant key={`${hostId}:${assistantMessage.sourceId}:${assistantMessage.turnId}`} api={messageAssistantApi} source={assistantMessage}
+        draftKey={`${hostId}:${assistantMessage.sourceId}:${assistantMessage.turnId}`} onClose={() => setAssistantMessage(null)} onSent={threadId => {
+          setAssistantMessage(null);
+          if (hostId !== null) onHost?.(null, { thread: threadId });
+          else { setRouterThreadId(threadId); void api.thread(threadId).then(openThread).catch(handleError); }
+        }} />}
       <SelectionMenu
         onNote={(quote, comment, range, file) => {
           const id = `note-${Date.now()}`;

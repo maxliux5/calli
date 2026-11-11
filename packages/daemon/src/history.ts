@@ -479,8 +479,8 @@ export class HistoryStore {
   }
 
   /** Complete rounds are page boundaries; only unusually long answers need a separate text read. */
-  handoverPage(thread: string, before?: number, count = 10) {
-    const snapshotSeq = this.latest(thread);
+  handoverPage(thread: string, before?: number, count = 10, snapshot?: number) {
+    const snapshotSeq = snapshot ?? this.latest(thread);
     const starts = this.db.prepare(`SELECT thread_id, turn_id, seq, type, ts,
       json_object('text', COALESCE(json_extract(data, '$.displayText'), json_extract(data, '$.text')),
         'handover', json_extract(data, '$.handover')) AS data

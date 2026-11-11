@@ -14568,3 +14568,110 @@ body:has(.settings-page, .action-sheet) .pet { display: none; }
 
 .thread-peek-status { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .thread-peek .action-sheet { max-height: calc(100% - 76px); overflow-y: auto; }
+
+/* References share the composer with numbered notes, without taking their numbers. */
+.context-references { display: flex; gap: 6px; overflow-x: auto; max-width: 100%; padding: 4px 0; }
+.context-reference { display: flex; align-items: center; flex: 0 0 auto; max-width: 240px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.context-reference button { display: flex; align-items: center; gap: 6px; padding: 6px 8px; min-width: 0; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.context-reference button:hover { background: var(--hover); color: var(--text); }
+.context-reference button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-reference svg { flex-shrink: 0; }
+.pop-panel.context-picker-panel { width: min(440px, calc(100vw - 24px)); }
+.reference-picker { padding: 8px; }
+.reference-search { width: 100%; padding: 10px; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font: inherit; font-size: 13px; }
+.reference-results { height: min(380px, 45dvh); overflow-y: auto; margin-top: 8px; }
+.reference-option { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 10px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text); font: inherit; font-size: 13px; text-align: start; cursor: pointer; }
+.reference-option:hover { background: var(--hover); }
+.reference-option > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reference-option strong, .reference-option small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; }
+.reference-option small { color: var(--muted); font-size: 11px; margin-top: 3px; }
+.reference-option svg { flex-shrink: 0; }
+.reference-directory, .reference-location { display: flex; align-items: center; gap: 6px; }
+.reference-directory .reference-option { flex: 1; }
+.reference-location { padding: 4px 10px; color: var(--muted); font-size: 11px; }
+.reference-location span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reference-location button, .reference-results p button { border: 0; background: var(--surface-2); color: var(--text); border-radius: var(--radius-sm); padding: 6px; cursor: pointer; font: inherit; }
+.reference-state { min-height: 32px; padding: 6px 10px; color: var(--muted); font-size: 12px; }
+.reference-status { min-height: 28px; padding: 8px 4px 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.reference-path { overflow-wrap: anywhere; }
+.reference-detail { max-height: calc(100dvh - 32px); overflow-y: auto; overflow-wrap: anywhere; }
+
+.composer-box > .context-references { margin: 10px 14px 0; max-width: calc(100% - 28px); padding: 0; }
+
+/* Message actions keep the fork visible and share one menu across input methods. */
+.message-action-control { display: inline-flex; position: relative; }
+.message-action-error { color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
+.message-action-control > .message-action-error { position: absolute; top: 100%; left: 0; width: min(280px, 60vw); z-index: 1; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px; }
+.message-menu-anchor { position: fixed; width: 0; height: 0; pointer-events: none; }
+.user-message-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 2px; width: 100%; }
+.user-message-actions:has(.message-edit) { align-items: flex-end; }
+.user-message-actions > .pop { opacity: 0; }
+.row.user:hover .user-message-actions > .pop, .row.user:focus-within .user-message-actions > .pop { opacity: 1; }
+.message-selection-dialog, .message-assistant-dialog { width: min(580px, calc(100vw - 24px)); max-height: calc(var(--vvh, 100dvh) - 24px); overflow-y: auto; }
+.message-selection-text { display: block; width: 100%; height: min(48dvh, 380px); margin-top: 16px; padding: 12px; resize: none; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font: inherit; line-height: 1.7; user-select: text; -webkit-user-select: text; }
+.message-source { margin: 16px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.message-source > button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.message-source > button svg { flex-shrink: 0; }
+.message-source > div { white-space: pre-wrap; max-height: 28dvh; overflow-y: auto; }
+.message-assistant-dialog textarea { display: block; width: 100%; min-height: 110px; resize: vertical; margin-top: 8px; padding: 10px; font: inherit; line-height: 1.6; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.message-assistant-dialog > .muted { font-size: 12px; }
+.message-selection-dialog .dialog-actions { flex-wrap: wrap; }
+@media (hover: none) {
+  .user-message-actions > .pop { opacity: .75; }
+  .user-message-actions .quiet-btn { width: 36px; height: 36px; }
+  [data-message-key] { -webkit-touch-callout: none; }
+}
+
+/* Git opens beside the conversation; file patches and history are loaded on demand. */
+.git-panel { width: 410px; max-width: 44vw; flex: none; min-width: 320px; height: 100%; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--surface); }
+.git-panel.phone { position: fixed; inset: 0; width: 100%; max-width: none; min-width: 0; z-index: 60; border-left: 0; padding-top: var(--safe-top); padding-bottom: var(--safe-bottom); }
+.git-head { display: flex; flex: none; align-items: center; gap: 6px; height: 60px; padding: 0 16px; border-bottom: 1px solid var(--border); }
+.git-head strong { flex: 1; font-size: 14px; font-weight: 600; }
+.git-body { flex: 1; min-height: 0; overflow: auto; padding: 22px; overscroll-behavior: contain; }
+.git-body[hidden] { display: none; }
+.git-repo { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-branch { font-family: ui-monospace, monospace; font-size: 20px; font-weight: 500; margin: 7px 0; overflow-wrap: anywhere; }
+.git-tracking { display: flex; gap: 12px; align-items: center; color: var(--muted); font-size: 11px; }
+.git-tracking span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-tracking span:last-child { flex: none; white-space: nowrap; }
+.git-actions { display: flex; gap: 8px; margin: 20px 0 10px; }
+.git-actions button { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font-family: inherit; cursor: pointer; flex: 1; min-width: 0; height: 36px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+.git-actions .primary-btn { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.git-actions button:hover:not(:disabled) { filter: brightness(.96); }
+.git-actions button:disabled { opacity: .45; cursor: default; }
+.git-hint { font-size: 11px; color: var(--muted); line-height: 1.7; margin: 0; }
+.git-block { margin: 16px 0 0; padding: 10px 12px; font-size: 12px; line-height: 1.7; border-radius: var(--radius-sm); background: var(--writing-todo-bg); color: var(--warn); }
+.git-error { flex: none; padding: 12px 18px; font-size: 12px; line-height: 1.7; background: var(--danger-bg); color: var(--danger); overflow-wrap: anywhere; }
+.git-error .text-btn { margin-left: 8px; color: inherit; }
+.git-tabs { display: flex; gap: 22px; border-bottom: 1px solid var(--border); margin-top: 26px; }
+.git-tabs button { border: 0; border-bottom: 2px solid transparent; padding: 10px 0; background: none; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
+.git-tabs button[aria-selected=true] { color: var(--text); border-bottom-color: var(--text); }
+.git-section { display: flex; justify-content: space-between; gap: 12px; margin: 22px 0 6px; font-size: 11px; color: var(--muted); }
+.git-file { display: flex; align-items: center; gap: 10px; width: 100%; border: 0; border-bottom: 1px solid var(--border); background: none; color: var(--text); padding: 13px 0; text-align: left; cursor: pointer; }
+.git-file:hover, .git-commit:hover { background: var(--hover); }
+.git-file-name { flex: 1; min-width: 0; }
+.git-file-name strong { display: block; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-file-name small { display: block; min-height: 16px; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-status-code { flex: none; width: 15px; font: 11px ui-monospace, monospace; color: var(--muted); }
+.git-commit { display: block; width: 100%; padding: 15px 0; text-align: left; border: 0; border-bottom: 1px solid var(--border); background: none; color: var(--text); cursor: pointer; }
+.git-commit strong { display: block; font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.git-commit small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.git-empty { padding: 45px 0; text-align: center; font-size: 13px; color: var(--muted); line-height: 1.8; }
+.git-foot { flex: none; height: 54px; padding: 8px 22px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); line-height: 18px; }
+.git-foot span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.git-load-more { display: block; width: 100%; margin-top: 16px; }
+.git-detail h2 { font-size: 17px; line-height: 1.5; font-weight: 600; overflow-wrap: anywhere; margin: 0 0 8px; }
+.git-detail-progress { height: 28px; padding-top: 8px; color: var(--muted); font-size: 11px; }
+.git-diff { margin: 12px -10px 0; padding: 12px 10px; overflow: auto; font: 12px/1.8 ui-monospace, monospace; background: var(--code-bg); border-radius: var(--radius-sm); tab-size: 2; }
+.git-diff > span { display: block; min-width: max-content; white-space: pre; }
+.git-diff .git-added { background: var(--positive-bg); color: var(--positive); }
+.git-diff .git-removed { background: var(--danger-bg); color: var(--danger); }
+.git-diff .git-hunk { color: var(--muted); }
+.git-skeleton i { display: block; height: 18px; background: var(--hover); border-radius: var(--radius-sm); margin-bottom: 16px; }
+.git-skeleton i:first-child { width: 45%; }
+.git-skeleton i:nth-child(2) { height: 30px; width: 80%; }
+.git-skeleton i:nth-child(4) { height: 36px; margin-top: 25px; }
+.git-skeleton i:nth-child(5) { height: 160px; margin-top: 60px; }
+.git-spinning svg { animation: git-spin 1s linear infinite; }
+@keyframes git-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .git-spinning svg { animation: none; } }
