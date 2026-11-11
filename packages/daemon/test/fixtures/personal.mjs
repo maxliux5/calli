@@ -15,6 +15,14 @@ export function personalFixture(text) {
     if (text.includes('advance-external')) return JSON.stringify({ phase: 'blocked', on: 'external', line: '等 CI', wait: { what: 'CI 结束', then: '检查结果', checkMinutes: 10 } });
     return JSON.stringify({ phase: 'unsure', line: '' });
   }
+  if (command === '由 Calli 发起的事前核对。') {
+    // Cites the session titled "precheck-evidence" when the matter asks for a done or doing verdict.
+    const data = JSON.parse(text.slice(text.lastIndexOf('\n{') + 1));
+    const evidence = data.sessions.find(session => session.title === 'precheck-evidence');
+    if (data.matter.includes('precheck-bogus')) return JSON.stringify({ state: 'done', evidence: '编造的证据', source: 'session:missing' });
+    for (const state of ['done', 'doing']) if (data.matter.includes(`precheck-${state}`) && evidence) return JSON.stringify({ state, evidence: `会话 ${evidence.title} 已处理`, source: `session:${evidence.id}` });
+    return JSON.stringify({ state: 'todo', evidence: '' });
+  }
   const proactive = ['由 Calli 发起的提前准备。', '由 Calli 发起的沙盒动手。'].includes(command);
   const explore = command === '由 Calli 发起的一键配置探索。';
   const clarification = process.env.FAKE_PERSONAL_DELEGATE_CLARIFY === '1' && command.startsWith('这是一件新交给你的事，不是交接');

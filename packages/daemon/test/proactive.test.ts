@@ -499,7 +499,8 @@ test('a worker thread whose turn never starts is removed when the run fails', as
     const work = await h.manager.createThread({ agent: 'claude', cwd: repo }); h.store.linkTodoThread(todo.id, work.id);
     await h.service.save({ mode: 'auto', repos: [repo] });
     const original = h.manager.createThread.bind(h.manager);
-    h.manager.createThread = async input => { const thread = await original(input); h.store.updateThread(work.id, { status: 'running' }); return thread; };
+    // Only the worker's own thread, not the archived one a pre-proposal check asks in.
+    h.manager.createThread = async input => { const thread = await original(input); if (!input.scratch) h.store.updateThread(work.id, { status: 'running' }); return thread; };
     await h.service.tick(now);
     h.manager.createThread = original;
     const run = h.service.runs().at(-1)!;
@@ -907,5 +908,48 @@ test('repo cards name the main repository for a worktree, skip the personal dire
     for (let i = 0; i < 4; i++) await h.service.tick(new Date(now.getTime() + i * 60_000));
     const cards = h.service.runs().filter(run => run.needsRepo);
     assert.deepEqual(cards.map(card => card.repo), [repo]);
+  } finally { await h.close(); }
+});
+
+test('before proposing, it checks recent sessions: done offers to close the matter, doing stays quiet, invented evidence does not count', async () => {
+  for (const [text, expected] of [['precheck-done 给看板加团队', 'done'], ['precheck-doing 给看板加团队', 'doing'], ['precheck-bogus 给看板加团队', 'todo'], ['precheck-none 给看板加团队', 'todo']] as const) {
+    const h = await setup(); try {
+      await h.manager.createThread({ agent: 'claude', cwd: h.cwd, title: 'precheck-evidence' });
+      const todo = h.todo({ text, dueAt: null });
+      await h.service.save({ mode: 'observe' }); await h.service.tick(now);
+      const check = h.service.runs().find(run => run.precheck);
+      if (expected === 'todo') assert.ok(!check && h.store.hubSetting<Record<string, string>>('personalProactivePrechecks', {})[todo.id], 'nothing found is remembered, not recorded as a run');
+      else assert.equal(check?.precheck, expected, text);
+      const plans = () => h.service.runs().filter(run => run.kind === 'prepare' && run.variant === 'plan');
+      if (expected === 'done' && check) {
+        assert.deepEqual([check.status, check.reason, check.matterId], ['asking', 'done', todo.id]);
+        assert.match(check.summary!, /看起来已经做过了/);
+        await h.service.tick(new Date(now.getTime() + 2 * 3600_000));
+        assert.equal(plans().length, 0, 'no breakdown is proposed for work already done');
+        // "Not done yet" lets the proposal through, without asking again.
+        assert.equal((await h.api(`/api/personal/proactive/runs/${check.id}/dismiss`, 'POST')).status, 200);
+        await h.service.tick(new Date(now.getTime() + 4 * 3600_000));
+        assert.equal(plans().length, 1);
+        assert.equal(h.service.runs().filter(run => run.precheck).length, 1, 'checked once a week');
+      } else if (expected === 'doing') {
+        assert.equal(check?.status, 'discarded');
+        await h.service.tick(new Date(now.getTime() + 2 * 3600_000));
+        assert.equal(plans().length, 0, 'work under way elsewhere is left alone');
+      } else {
+        assert.equal(plans().length, 1, 'no evidence: the proposal goes ahead');
+      }
+    } finally { await h.close(); }
+  }
+});
+
+test('a precheck done card closes the matter without any work turn', async () => {
+  const h = await setup(); try {
+    await h.manager.createThread({ agent: 'claude', cwd: h.cwd, title: 'precheck-evidence' });
+    const todo = h.todo({ text: 'precheck-done 收尾', dueAt: null });
+    await h.service.save({ mode: 'observe' }); await h.service.tick(now);
+    const check = h.service.runs().find(run => run.precheck)!;
+    const closed = await h.api(`/api/personal/proactive/runs/${check.id}/close-matter`, 'POST');
+    assert.equal(closed.status, 200); assert.equal((await closed.json()).status, 'closed');
+    assert.equal(h.store.getTodo(todo.id)?.done, true);
   } finally { await h.close(); }
 });

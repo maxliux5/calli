@@ -9,7 +9,7 @@ import { HttpError } from './errors.js';
 import type { StoredEvent } from './events.js';
 import { turnOutcome } from './lifecycle.js';
 import type { PersonalService } from './personal.js';
-import { advancePrompt, parseAdvance, transientError, type AdvanceDecision } from './proactive-advance.js';
+import { advancePrompt, parseAdvance, parsePrecheck, precheckPrompt, transientError, type AdvanceDecision, type PrecheckContext } from './proactive-advance.js';
 import { ProactiveSandbox, type SandboxChanges } from './proactive-sandbox.js';
 import { urgencyOf, type Store, type ThreadRecord, type TodoRecord } from './store.js';
 import type { ThreadManager } from './threads.js';
@@ -29,6 +29,10 @@ export interface ProactiveRun {
   matterId: string;
   /** The session's title when the run was recorded, for cards that have no matter to name them. */
   threadTitle?: string;
+  /** A check of recent sessions and commits made before proposing anything for the matter. */
+  precheck?: 'done' | 'doing' | 'todo';
+  /** What the check cited: `session:<id>` or `commit:<id>`. */
+  source?: string;
   kind: 'prepare' | 'sandbox' | 'advance';
   variant?: 'deadline' | 'plan';
   needsRepo?: true;
@@ -58,6 +62,8 @@ const SETTINGS = 'personalProactiveSettings';
 /** Shared with the review's watchdog, which reads the same record. */
 export const PROACTIVE_RUNS_KEY = 'personalProactiveRuns';
 const RUNS = PROACTIVE_RUNS_KEY;
+/** Matters a check found no trace of, by when: no proposal is held back for them this week. */
+const PRECHECKS = 'personalProactivePrechecks';
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
 /** How far back advance looks: the sessions the person is working in now, not ones long left alone. */
@@ -243,7 +249,7 @@ export class ProactiveService {
       if (canOpen && today.filter(run => run.kind === 'prepare').length < 5) {
         const todo = todos.find(todo => !observed(todo, 'prepare') && !runs.some(run => run.matterId === todo.id && run.kind === 'prepare' && run.status === 'ready')
           && preparationCandidate(todo, this.store.todoNote(todo.id).text, now));
-        if (todo) { await this.prepareOrObserve(todo, 'prepare', now, undefined, 'deadline'); return; }
+        if (todo) { if (!await this.handledAlready(todo, '提前准备材料', now)) await this.prepareOrObserve(todo, 'prepare', now, undefined, 'deadline'); return; }
       }
       if (await this.advance(now)) return;
       if (today.filter(run => run.kind === 'sandbox').length < 2) {
@@ -258,11 +264,12 @@ export class ProactiveService {
             if (!this.settings().repos.includes(repo)) {
               // One question per matter a week: a matter's many worktrees are one repository, and one "no" is enough.
               if (runs.some(run => run.needsRepo && run.matterId === todo.id && now.getTime() - Date.parse(run.startedAt) < 7 * DAY)) continue;
+              if (await this.handledAlready(todo, '在沙盒里继续', now)) return;
               this.saveRun({ id: randomUUID(), matterId: todo.id, kind: 'sandbox', needsRepo: true, repo, threadId: '', startedAt: now.toISOString(), status: 'observed',
                 summary: `这件事的线程在 ${repo.split('/').pop()} 里，允许它在沙盒里继续吗？` });
               return;
             }
-            if (canOpen && !observed(todo, 'sandbox')) { await this.prepareOrObserve(todo, 'sandbox', now, repo); return; }
+            if (canOpen && !observed(todo, 'sandbox')) { if (!await this.handledAlready(todo, '在沙盒里继续', now)) await this.prepareOrObserve(todo, 'sandbox', now, repo); return; }
           }
         }
       }
@@ -270,9 +277,76 @@ export class ProactiveService {
         const todo = todos.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).find(todo => this.store.todoThreadIds(todo.id).length === 0
           && [...todo.text].length >= 6 && !this.store.todoNote(todo.id).text.includes('已备好')
           && !runs.some(run => run.matterId === todo.id && run.kind === 'prepare' && (run.status === 'ready' || now.getTime() - Date.parse(run.startedAt) < 7 * DAY)));
-        if (todo) await this.prepareOrObserve(todo, 'prepare', now, undefined, 'plan');
+        if (todo && !await this.handledAlready(todo, '拆解步骤、写第一步方案', now)) await this.prepareOrObserve(todo, 'prepare', now, undefined, 'plan');
       }
     } finally { this.ticking = false; }
+  }
+
+  /** What the person did lately, for a check to cite: recent sessions and the commits of their repositories. */
+  private async recentContext(now: Date): Promise<PrecheckContext> {
+    const router = this.personal.router.status().threadId;
+    const threads = this.store.listThreads().filter(thread => thread.id !== router && !this.runs().some(run => run.kind !== 'advance' && run.threadId === thread.id)
+      && now.getTime() - Date.parse(thread.updatedAt) < 14 * DAY).slice(0, 40);
+    const sessions = threads.map(thread => ({ id: thread.id, title: thread.title, preview: clip(thread.preview ?? '', 120),
+      progress: thread.report ? `${thread.report.stage}: ${clip(thread.report.note, 120)}` : '', updatedAt: thread.updatedAt }));
+    const repos: string[] = [];
+    for (const thread of threads) {
+      if (repos.length >= 6 || !thread.cwd || !isWithinWorkdirs(thread.cwd, this.manager.allowedWorkdirs)) continue;
+      const repo = await mainRepository(thread.cwd);
+      if (repo && !repos.includes(repo) && !isWithinWorkdirs(repo, [this.personal.directory()])) repos.push(repo);
+    }
+    const commits: PrecheckContext['commits'] = [];
+    for (const repo of repos) {
+      try {
+        const log = (await exec('git', ['log', '--all', '--no-merges', '--since=30.days', '-n', '60', '--format=%h%x09%cs%x09%s'], { cwd: repo, timeout: 5000 })).stdout;
+        for (const line of log.split('\n').filter(Boolean)) {
+          const [id, date, ...subject] = line.split('\t');
+          commits.push({ id, repo: basename(repo), date, subject: clip(subject.join('\t'), 160) });
+        }
+      } catch { /* A repository that cannot be read adds no evidence. */ }
+    }
+    return { sessions, commits };
+  }
+
+  /**
+   * Before proposing anything for a matter, look at what was done lately. Done: a card offers to close
+   * it, citing the evidence. Doing: leave it alone. Either is remembered for a week, and so is "go
+   * ahead"; a "not done yet" on the card lets the proposal through. True means: do not propose now.
+   */
+  private async handledAlready(todo: TodoRecord, action: string, now: Date): Promise<boolean> {
+    const checks = this.runs().filter(run => run.precheck && run.matterId === todo.id && now.getTime() - Date.parse(run.startedAt) < 7 * DAY);
+    const last = checks.at(-1);
+    if (last) return last.precheck === 'doing' || (last.precheck === 'done' && last.status === 'asking');
+    // "Nothing found" is kept apart from the run history: it is no event, only a reason not to ask again this week.
+    const clear = this.store.hubSetting<Record<string, string>>(PRECHECKS, {});
+    if (clear[todo.id] && now.getTime() - Date.parse(clear[todo.id]) < 7 * DAY) return false;
+    const settings = await this.personal.resolvedSettings();
+    if (!settings.agent || this.budget(now).models >= 30) return true;
+    const budget = this.budget(now); budget.models++;
+    this.store.saveHubSetting('personalProactiveBudget', budget);
+    const context = await this.recentContext(now);
+    let decision = parsePrecheck('', context);
+    try {
+      decision = parsePrecheck(await this.manager.askOnce(settings.agent, precheckPrompt(todo.text, this.store.todoNote(todo.id).text, action, context, now),
+        { model: settings.model, title: '事前核对', recordPrompt: false, timeoutMs: 60_000 }), context);
+    } catch { /* No answer is no evidence: the proposal goes ahead as before. */ }
+    const sourceThread = decision.source?.startsWith('session:') ? decision.source.slice(8) : '';
+    const run: ProactiveRun = { id: randomUUID(), matterId: todo.id, kind: 'advance', threadId: sourceThread, startedAt: now.toISOString(), precheck: decision.state,
+      ...(decision.source ? { source: decision.source } : {}), status: 'discarded', line: decision.evidence };
+    if (decision.state === 'done') Object.assign(run, { status: 'asking', reason: 'done', phase: 'done', summary: `看起来已经做过了：${decision.evidence}` });
+    else if (decision.state === 'doing') Object.assign(run, { summary: `正在别处进行：${decision.evidence}`, discardReason: '已有会话在做' });
+    const current = this.store.getTodo(todo.id);
+    if (!current || current.done || current.state === 'done' || current.proposed || this.settings().mode === 'off') return true;
+    if (decision.state === 'todo') {
+      const kept = Object.fromEntries(Object.entries(this.store.hubSetting<Record<string, string>>(PRECHECKS, {})).filter(([, at]) => now.getTime() - Date.parse(at) < 7 * DAY));
+      this.store.saveHubSetting(PRECHECKS, { ...kept, [todo.id]: now.toISOString() });
+      return false;
+    }
+    this.saveRun(run);
+    // Said in her own conversation, not typed into the session the evidence came from.
+    const router = this.personal.router.status().threadId;
+    if (run.status === 'asking' && router && this.store.getThread(router)) this.manager.notice(router, `需要你：${todo.text}`, false, true);
+    return true;
   }
 
   private async prepareOrObserve(todo: TodoRecord, kind: 'prepare' | 'sandbox', now: Date, repo?: string, variant?: ProactiveRun['variant']): Promise<void> {
@@ -298,7 +372,7 @@ export class ProactiveService {
 
   private invalidate(threadId?: string): void {
     for (const run of this.runs()) {
-      if (!['waiting', 'asking'].includes(run.status) || threadId && run.threadId !== threadId) continue;
+      if (!['waiting', 'asking'].includes(run.status) || run.precheck || threadId && run.threadId !== threadId) continue;
       if (threadId || this.store.recentLifecycle(run.threadId, 1)[0]?.turnId !== run.turnId) {
         this.update(run.id, { status: 'discarded', discardReason: '线程已继续' });
       }
@@ -406,6 +480,10 @@ export class ProactiveService {
   private checkAdvance(run: ProactiveRun, now: Date, automatic: boolean): void {
     const current = this.get(run.id), thread = this.store.getThread(run.threadId), todo = this.store.getTodo(run.matterId);
     if (!['waiting', 'asking'].includes(current.status)) throw new HttpError(409, '这张卡片已失效，请刷新');
+    if (run.precheck) {
+      if (!todo || todo.done || todo.state === 'done' || todo.proposed) throw new HttpError(409, '事项已结束或尚未确认');
+      return;
+    }
     if (!thread || thread.archivedAt) throw new HttpError(409, '线程已归档或不存在');
     if (thread.status === 'running' || (run.matterId && this.busy(run.matterId))) throw new HttpError(409, '线程正在运行');
     if (this.latest(run.threadId)?.turnId !== run.turnId) throw new HttpError(409, '线程已继续');
