@@ -9,14 +9,15 @@ import type { AddressInfo } from 'node:net';
 import { PiRpcAdapter } from '../src/adapters/pi.js';
 import type { AgentAdapter } from '../src/adapters/types.js';
 import { AttachmentStore } from '../src/attachments.js';
-import { LEGACY_SOCKET_IN_HOME, SOCKET_IN_HOME } from '../src/config.js';
+import { SOCKET_IN_HOME } from '../src/config.js';
 import WebSocket from 'ws';
 import { Desktop } from '../src/desktop.js';
 import { ExtensionHost } from '../src/extension-host.js';
 import { loadCatalog } from '../src/extensions.js';
 import { AUTOTITLE_ID, AutoTitle } from '../src/autotitle.js';
 import { createHttpServer, listenPrivate, socketHeld } from '../src/http.js';
-import { HostRegistry, sshConfigHosts, sshFailure, type HostInfo } from '../src/hosts.js';
+import { HostRegistry, type HostInfo } from '../src/hosts.js';
+import { RelayClient } from '../src/relay-client.js';
 import { Store } from '../src/store.js';
 import { ThreadManager } from '../src/threads.js';
 import { Workdirs } from '../src/workdirs.js';
@@ -31,6 +32,14 @@ let root: string;
 let hubBase: string;
 let hubServer: Server;
 let hosts: HostRegistry;
+let client: RelayClient;
+let joinToken: string;
+
+async function connectNode() {
+  client = new RelayClient({ hubUrl: hubBase, token: joinToken, socket: nodeSocket, version: 'node-test', retryMs: 50 });
+  client.start();
+  await waitFor(() => hosts.list().some(h => h.id === 'devbox' && h.status === 'online'));
+}
 /** The other machine: a daemon of its own, answering on the socket in its home. */
 let nodeHome: string;
 let nodeSocket: string;
@@ -99,39 +108,14 @@ before(async () => {
   hubDesktop = new Desktop({ targets: null });
   assert.equal(await startNode(), true);
 
-  // A machine that can be signed in to but runs no daemon, and ones ssh cannot get into.
-  mkdirSync(join(root, 'bare'));
-  const machines = {
-    devbox: { home: nodeHome },
-    'me@devbox': { home: nodeHome },
-    bare: { home: join(root, 'bare') },
-    legacy: { home: join(root, 'legacy') },
-    locked: { fail: 'me@locked: Permission denied (publickey,gssapi-with-mic).' },
-    stranger: { fail: 'Host key verification failed.' },
-  };
-  process.env.FAKE_SSH_HOSTS = join(root, 'machines.json');
-  writeFileSync(process.env.FAKE_SSH_HOSTS, JSON.stringify(machines));
-
-  // The hub user's ssh config: what the page offers to add.
-  const hubHome = join(root, 'hub-home');
-  mkdirSync(join(hubHome, '.ssh', 'conf.d'), { recursive: true });
-  writeFileSync(join(hubHome, '.ssh', 'config'), ['Include conf.d/*.conf', 'Host devbox bare', '  HostName 192.0.2.1', 'Host *.internal !bastion', '  User me', 'host = locked', '# Host commented'].join('\n'));
-  writeFileSync(join(hubHome, '.ssh', 'conf.d', 'work.conf'), 'Host stranger\n  User me\n');
-  writeFileSync(join(hubHome, '.ssh', 'conf.d', 'ignored.txt'), 'Host nope\n');
-
-  hosts = new HostRegistry({
-    file: join(root, 'hub-data', 'hosts.json'),
-    ssh: [process.execPath, join(here, 'fixtures', 'fake-ssh.mjs')],
-    home: hubHome,
-    retryMs: 50,
-    healthMs: 100,
-  });
+  hosts = new HostRegistry({ file: join(root, 'hub-data', 'hosts.json') });
   hubServer = createHttpServer({ manager: hub.manager, hosts, desktop: hubDesktop, token: TOKEN, webDir: null, version: 'hub-test' });
   await new Promise<void>((r) => hubServer.listen(0, '127.0.0.1', () => r()));
   hubBase = `http://127.0.0.1:${(hubServer.address() as AddressInfo).port}`;
 });
 
 after(async () => {
+  client?.stop();
   nodeExtensions?.dispose();
   nodeDesktop.dispose();
   hubDesktop.dispose();
@@ -145,22 +129,22 @@ after(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-test('ssh config: aliases named outright are offered, patterns are not, included files are read', () => {
-  const config = join(root, 'hub-home', '.ssh', 'config');
-  assert.deepEqual(sshConfigHosts(config), ['stranger', 'devbox', 'bare', 'locked']);
-  assert.deepEqual(sshConfigHosts(join(root, 'no-such-config')), []);
-});
-
-test('what ssh says is sorted into the kind of failure the page explains', () => {
-  assert.deepEqual(sshFailure("Warning: Permanently added 'x' (ED25519) to the list of known hosts.\nme@x: Permission denied (publickey)."), {
-    code: 'auth',
-    error: 'me@x: Permission denied (publickey).',
-  });
-  assert.equal(sshFailure('Host key verification failed.').code, 'host_key');
-  assert.equal(sshFailure('ssh: Could not resolve hostname nope: Name or service not known').code, 'unreachable');
-  assert.equal(sshFailure('ssh: connect to host x port 22: Connection timed out').code, 'unreachable');
-  assert.equal(sshFailure('kex_exchange_identification: read: Connection reset by peer').code, 'ssh_failed');
-  assert.equal(sshFailure('').error, 'ssh exited without saying why');
+test('legacy registrations are skipped once without rewriting the file; relay registrations survive', (t) => {
+  const file = join(root, 'migration.json');
+  const original = JSON.stringify({ hosts: [
+    { id: 'old', label: 'old', target: 'old', socket: '/old.sock' },
+    { id: 'older', target: 'older', socket: '/older.sock' },
+    { transport: 'relay', id: 'saved', label: 'Saved', tokenHash: 'hash' },
+    { id: 'current', label: 'Current', tokenHash: 'hash2' },
+  ] });
+  writeFileSync(file, original);
+  const warn = t.mock.method(console, 'warn', () => {});
+  const loaded = new HostRegistry({ file });
+  assert.deepEqual(loaded.list().map(h => h.id), ['saved', 'current']);
+  assert.equal(warn.mock.callCount(), 1);
+  assert.match(warn.mock.calls[0].arguments[0], /add them again/);
+  assert.equal(readFileSync(file, 'utf8'), original);
+  loaded.dispose();
 });
 
 test('socketHeld tells a live daemon from a leftover socket file, so a second daemon can be turned away before it writes', async () => {
@@ -202,7 +186,7 @@ test("a daemon's socket is for its user alone, is left to a daemon that holds it
   assert.equal(existsSync(leftover), false, 'gone when the daemon stops');
 });
 
-/** A GET on a unix socket, with no token: what a hub's tunnel ends in. */
+/** A GET on a unix socket, with no token: what the node's relay client uses. */
 async function fetchSocket(socketPath: string, path: string): Promise<any> {
   const { request } = await import('node:http');
   return new Promise((resolve, reject) => {
@@ -227,39 +211,28 @@ test('the socket needs no token, and shows that machine only', async () => {
   await new Promise((r) => chained.close(r));
 });
 
-test('the page is offered the aliases in the ssh config', async () => {
-  const res = await hubApi('/api/hosts/candidates');
-  assert.deepEqual(await res.json(), ['stranger', 'devbox', 'bare', 'locked']);
-  assert.equal((await fetch(hubBase + '/api/hosts')).status, 401, 'machines are behind the token like everything else');
-});
-
-test('a machine that cannot be used is turned down with the reason', async () => {
-  const add = async (target: unknown) => {
-    const res = await hubApi('/api/hosts', { method: 'POST', body: JSON.stringify({ target }) });
-    return { status: res.status, ...((await res.json()) as { code?: string; error?: string }) };
-  };
-  assert.deepEqual(await add('locked'), { status: 502, code: 'auth', error: 'me@locked: Permission denied (publickey,gssapi-with-mic).' });
-  assert.equal((await add('stranger')).code, 'host_key');
-  assert.equal((await add('nowhere')).code, 'unreachable');
-  const bare = await add('bare');
-  assert.equal(bare.code, 'daemon_missing');
-  // Never an option to ssh, whatever is typed.
-  for (const bad of ['-oProxyCommand=touch /tmp/x', '', 'a b', 'x;y', 42]) assert.equal((await add(bad)).status, 400, String(bad));
+test('machine registration is authenticated and requires a label', async () => {
+  assert.equal((await fetch(hubBase + '/api/hosts')).status, 401);
+  assert.equal((await hubApi('/api/hosts/candidates')).status, 404);
+  for (const label of ['', '   ', 42, null]) {
+    assert.equal((await hubApi('/api/hosts', { method: 'POST', body: JSON.stringify({ label }) })).status, 400);
+  }
   assert.deepEqual(await listHosts(), []);
-  assert.equal(existsSync(join(root, 'hub-data', 'hosts.json')), false);
 });
 
-test('adding a machine by its ssh name connects it; its daemon answers through the hub', async () => {
-  const res = await hubApi('/api/hosts', { method: 'POST', body: JSON.stringify({ target: 'devbox', label: '开发机' }) });
+test('adding a machine returns join settings and the node connects to the hub', async () => {
+  const res = await hubApi('/api/hosts', { method: 'POST', body: JSON.stringify({ label: 'devbox' }) });
   assert.equal(res.status, 201);
-  const added = (await res.json()) as HostInfo;
-  assert.deepEqual(added, { id: 'devbox', label: '开发机', target: 'devbox', status: 'online', version: 'node-test' });
-  assert.equal((await hubApi('/api/hosts', { method: 'POST', body: JSON.stringify({ target: 'devbox' }) })).status, 409);
-  assert.deepEqual(await (await hubApi('/api/hosts/candidates')).json(), ['stranger', 'bare', 'locked'], 'no longer offered');
-
-  // Kept for the next start: where the socket is, and nothing secret.
+  const added = await res.json() as HostInfo & { token: string };
+  assert.equal(added.status, 'offline');
+  assert.equal(added.code, 'not_joined');
+  joinToken = added.token;
+  await connectNode();
   const file = join(root, 'hub-data', 'hosts.json');
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { hosts: [{ id: 'devbox', label: '开发机', target: 'devbox', socket: nodeSocket }] });
+  const saved = JSON.parse(readFileSync(file, 'utf8'));
+  assert.deepEqual(Object.keys(saved.hosts[0]).sort(), ['id', 'label', 'tokenHash']);
+  assert.equal(saved.hosts[0].id, 'devbox');
+  assert.ok(!readFileSync(file, 'utf8').includes(joinToken));
   assert.equal(statSync(file).mode & 0o077, 0);
 
   // The same API, answered over there: its directories, its threads.
@@ -290,9 +263,7 @@ test('adding a machine by its ssh name connects it; its daemon answers through t
   await assert.rejects(hosts.call('other', 'GET', '/api/threads'), (err: { status?: number }) => err.status === 404);
 });
 
-test('a command runs on the machine over ssh, with its input on stdin and its exit code kept', async () => {
-  // Alone, this file's earlier tests have not run; the machine is added the way the page adds it.
-  if (!(await hostNamed('devbox'))) await hubApi('/api/hosts', { method: 'POST', body: JSON.stringify({ target: 'devbox' }) });
+test('a command runs on the machine over relay, with its input on stdin and its exit code kept', async () => {
   const echo = await hosts.exec('devbox', 'cat', { input: 'hello\n' });
   assert.equal(echo.code, 0);
   assert.equal(echo.stdout.toString('utf8'), 'hello\n');
@@ -300,13 +271,6 @@ test('a command runs on the machine over ssh, with its input on stdin and its ex
   const failed = await hosts.exec('devbox', 'echo oops >&2; exit 7');
   assert.equal(failed.code, 7);
   assert.match(failed.stderr, /oops/);
-  // This works without the daemon: it is ssh, not the tunnel.
-  const file = join(root, 'direct-hosts.json');
-  writeFileSync(file, JSON.stringify({ hosts: [{ id: 'bare', label: 'bare', target: 'bare', socket: '/nonexistent' }] }));
-  const direct = new HostRegistry({ file, ssh: [process.execPath, join(here, 'fixtures', 'fake-ssh.mjs')], home: root });
-  const bare = await direct.exec('bare', 'echo here');
-  assert.equal(bare.stdout.toString('utf8').trim(), 'here');
-  direct.dispose();
   await assert.rejects(hosts.exec('nope', 'true'), (err: { status?: number }) => err.status === 404);
   await assert.rejects(hosts.exec('devbox', 'head -c 4096 /dev/zero', { maxBytes: 1024 }), (err: { status?: number }) => err.status === 413);
 });
@@ -368,82 +332,64 @@ test("the other machine's desktop opens through the hub, on a ticket the hub sig
   assert.equal(await open('/api/hosts/devbox/proxy/desktop/vnc'), 403, "the hub's ticket is needed");
 });
 
-test('a dropped connection shows as offline and is opened again by itself', async () => {
-  const pid = Number(readFileSync(join(nodeHome, 'ssh.pid'), 'utf8'));
-  rmSync(join(nodeHome, 'ssh.pid'));
-  process.kill(pid);
-  // A new tunnel writes its pid again.
-  await waitFor(() => existsSync(join(nodeHome, 'ssh.pid')));
-  const back = await waitFor(async () => {
-    const h = await hostNamed('devbox');
-    return h?.status === 'online' ? h : null;
-  });
-  assert.equal(back.error, undefined);
+test('maintenance exec requires the hub token and preserves command input and exit status', async () => {
+  const path = '/api/hosts/devbox/exec';
+  assert.equal((await fetch(hubBase + path, { method: 'POST', body: '{}' })).status, 401);
+  assert.equal((await fetch(hubBase + path, { method: 'POST', headers: { Authorization: `Bearer ${joinToken}` }, body: '{}' })).status, 401);
+  for (const body of [null, {}, { command: 4 }, { command: 'cat', input: 5 }]) {
+    assert.equal((await hubApi(path, { method: 'POST', body: JSON.stringify(body) })).status, 400);
+  }
+  const response = await hubApi(path, { method: 'POST', body: JSON.stringify({ command: 'cat; echo problem >&2; exit 7', input: 'hello\n' }) });
+  assert.equal(response.status, 200);
+  const result = await response.json() as { stdout: string; stderr: string; code: number };
+  assert.equal(Buffer.from(result.stdout, 'base64').toString(), 'hello\n');
+  assert.match(result.stderr, /problem/);
+  assert.equal(result.code, 7);
+  assert.equal((await hubApi('/api/hosts/missing/exec', { method: 'POST', body: JSON.stringify({ command: 'true' }) })).status, 404);
+});
+
+test('a dropped relay connection is reopened by the node', async () => {
+  const connections = client.connections;
+  hosts.dispose();
+  await waitFor(() => client.connections > connections);
+  await waitFor(async () => (await hostNamed('devbox'))?.status === 'online');
   assert.equal((await hubApi('/api/hosts/devbox/proxy/threads')).status, 200);
 });
 
-test('a daemon that stops behind a live connection is offline until it is back', async () => {
-  await new Promise((r) => {
-    nodeServer.close(r);
-    nodeServer.closeAllConnections();
-  });
+test('a stopped node is offline until a new client connects', async () => {
+  client.stop();
   const down = await waitFor(async () => {
     const h = await hostNamed('devbox');
     return h?.status === 'offline' ? h : null;
   });
-  assert.equal(down.code, 'daemon_missing');
+  assert.equal(down.code, 'relay_lost');
   const refused = await hubApi('/api/hosts/devbox/proxy/threads');
   assert.equal(refused.status, 502);
   assert.equal(((await refused.json()) as { code: string }).code, 'host_offline');
-
-  assert.equal(await startNode(), true);
-  // "Try again" from the page does not wait for the next check.
-  const retried = (await (await hubApi('/api/hosts/devbox/reconnect', { method: 'POST' })).json()) as HostInfo;
-  assert.equal(retried.status, 'online');
-  assert.equal((await hubApi('/api/hosts/devbox/proxy/threads')).status, 200);
+  await assert.rejects(hosts.exec('devbox', 'true'), (err: { status?: number }) => err.status === 502);
+  await connectNode();
+  const refreshed = await (await hubApi('/api/hosts/devbox/reconnect', { method: 'POST' })).json() as HostInfo;
+  assert.equal(refreshed.status, 'online');
+  assert.equal((await hubApi('/api/hosts/nope/reconnect', { method: 'POST' })).status, 404);
 });
 
-test('machines are kept across a restart, and removing one closes its connection', async () => {
-  // A hub starting later reads the same file and connects by itself.
-  const later = new HostRegistry({ file: join(root, 'hub-data', 'hosts.json'), ssh: [process.execPath, join(here, 'fixtures', 'fake-ssh.mjs')], retryMs: 50, healthMs: 100 });
-  later.start();
-  try {
-    await waitFor(() => later.list()[0]?.status === 'online');
-    assert.equal(later.list()[0].label, '开发机');
-  } finally {
-    later.dispose();
-  }
-
-  // The first hub's tunnel is the one still writing the pid file after `later` went away.
-  await hubApi('/api/hosts/devbox/reconnect', { method: 'POST' });
-  const pid = Number(readFileSync(join(nodeHome, 'ssh.pid'), 'utf8'));
+test('saved machines accept their original token after hub restart; removal revokes it', async () => {
+  client.stop();
+  hosts.dispose();
+  hubServer.closeAllConnections();
+  await new Promise<void>(r => hubServer.close(() => r()));
+  hosts = new HostRegistry({ file: join(root, 'hub-data', 'hosts.json') });
+  assert.equal(hosts.list()[0].label, 'devbox');
+  hubServer = createHttpServer({ manager: hub.manager, hosts, desktop: hubDesktop, token: TOKEN, webDir: null, version: 'hub-test' });
+  await new Promise<void>(r => hubServer.listen(0, '127.0.0.1', r));
+  hubBase = `http://127.0.0.1:${(hubServer.address() as AddressInfo).port}`;
+  await connectNode();
+  assert.equal((await hubApi('/api/hosts/devbox/proxy/threads')).status, 200);
   assert.equal((await hubApi('/api/hosts/devbox', { method: 'DELETE' })).status, 204);
   assert.deepEqual(await listHosts(), []);
   assert.deepEqual(JSON.parse(readFileSync(join(root, 'hub-data', 'hosts.json'), 'utf8')), { hosts: [] });
   assert.equal((await hubApi('/api/hosts/devbox/proxy/threads')).status, 404);
   assert.equal((await hubApi('/api/hosts/devbox', { method: 'DELETE' })).status, 404);
-  await waitFor(() => {
-    try {
-      process.kill(pid, 0);
-      return false;
-    } catch {
-      return true;
-    }
-  });
-});
-
-test('a machine whose daemon predates the rename to Calli is found at the old socket path', async () => {
-  const server = createHttpServer({ manager: node.manager, desktop: nodeDesktop, trusted: true, token: 'never-asked-0123456789', webDir: null, version: 'legacy-test' });
-  const socket = join(root, 'legacy', LEGACY_SOCKET_IN_HOME);
-  assert.equal(await listenPrivate(server, socket), true);
-  try {
-    const res = await hubApi('/api/hosts', { method: 'POST', body: JSON.stringify({ target: 'legacy' }) });
-    assert.equal(res.status, 201);
-    assert.equal(((await res.json()) as HostInfo).version, 'legacy-test');
-    assert.equal(JSON.parse(readFileSync(join(root, 'hub-data', 'hosts.json'), 'utf8')).hosts.find((h: { id: string }) => h.id === 'legacy').socket, socket);
-    assert.equal((await hubApi('/api/hosts/legacy', { method: 'DELETE' })).status, 204);
-  } finally {
-    server.close();
-    server.closeAllConnections();
-  }
+  await waitFor(() => client.status !== 'online');
+  assert.equal((await fetch(`${hubBase}/api/relay/poll`, { method: 'POST', headers: { Authorization: `Bearer ${joinToken}` } })).status, 401);
 });

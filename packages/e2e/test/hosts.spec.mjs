@@ -1,11 +1,10 @@
-// Other machines: adding one by what ssh calls it, switching to it, working there, and what the
-// page says when it drops. The machines are directories and ssh is the fake one from the fixtures.
+// Other machines connect out through real relay clients; agents remain test fixtures.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startDaemon, openUi, api, launchBrowser, closeSettings, openCollaboration } from '../harness.mjs';
+import { linkDaemon, startDaemon, openUi, api, launchBrowser, closeSettings, openCollaboration } from '../harness.mjs';
 
 const SOCKET_IN_HOME = '.local/state/calli/daemon.sock';
 
@@ -15,6 +14,7 @@ let node;
 let hub;
 let browser;
 let page;
+let joinToken;
 
 before(async () => {
   root = mkdtempSync(join(tmpdir(), 'calli-e2e-hosts-'));
@@ -23,13 +23,7 @@ before(async () => {
   nodeSocket = join(nodeHome, SOCKET_IN_HOME);
   node = await startDaemon({ CALLI_SOCKET: nodeSocket, CALLI_TERM_SHELL: '/bin/sh' });
 
-  // The hub user's ssh config, and which of its names lead anywhere.
-  const hubHome = join(root, 'hub-home');
-  mkdirSync(join(hubHome, '.ssh'), { recursive: true });
-  writeFileSync(join(hubHome, '.ssh', 'config'), 'Host devbox\n  HostName 192.0.2.10\nHost buildbox\n  HostName 192.0.2.11\nHost *\n  User me\n');
-  const machines = join(root, 'machines.json');
-  writeFileSync(machines, JSON.stringify({ devbox: { home: nodeHome }, buildbox: { fail: 'me@buildbox: Permission denied (publickey).' } }));
-  hub = await startDaemon({ HOME: hubHome, CALLI_SSH_BIN: 'fake-ssh', FAKE_SSH_HOSTS: machines });
+  hub = await startDaemon();
 
   await api(node, '/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'pi', cwd: node.workdir, title: '开发机上的线程' }) });
   await api(hub, '/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'pi', cwd: hub.workdir, title: '本机的线程' }) });
@@ -60,23 +54,20 @@ test('with no other machine, the list has no switcher', async () => {
   assert.equal(await page.locator('.host-switch').count(), 0);
 });
 
-test('a machine is added by its name in the ssh config; one ssh cannot get into says why', async () => {
+test('a machine gets join settings once and appears online when the node connects', async () => {
   const panel = await openMachines();
-  // What the hub's ssh config names outright; the pattern is not a machine.
-  await panel.getByRole('button', { name: '添加 buildbox' }).waitFor();
-  assert.deepEqual(await panel.locator('.host-candidate .host-target').allInnerTexts(), ['devbox', 'buildbox']);
-
-  await panel.getByRole('button', { name: '添加 buildbox' }).click();
-  const failure = panel.getByRole('alert');
-  await failure.waitFor();
-  assert.match(await failure.innerText(), /没能添加 buildbox：hub 登录不上这台机器/);
-  assert.match(await failure.innerText(), /Permission denied \(publickey\)/, "ssh's own words are there too");
-
-  await panel.getByRole('button', { name: '添加 devbox' }).click();
+  await panel.getByRole('textbox', { name: '机器名称，如 开发机' }).fill('devbox');
+  await panel.getByRole('button', { name: '生成接入配置', exact: true }).click();
+  const settings = panel.locator('.host-join-lines');
+  await settings.waitFor();
+  joinToken = (await settings.innerText()).match(/CALLI_HUB_TOKEN=(.+)/)[1];
   const row = panel.locator('.host-row', { hasText: 'devbox' });
-  await row.getByText('在线').waitFor({ timeout: 15_000 });
-  assert.equal(await failure.count(), 0, 'the earlier failure is cleared');
-  assert.deepEqual(await panel.locator('.host-candidate .host-target').allInnerTexts(), ['buildbox'], 'no longer offered');
+  await row.getByText('离线', { exact: true }).waitFor();
+  assert.match(await row.innerText(), /还没连上来/);
+  await node.connectRelay(hub, joinToken);
+  await row.getByText('在线', { exact: true }).waitFor({ timeout: 15_000 });
+  await panel.getByRole('button', { name: '完成', exact: true }).click();
+  assert.equal(await settings.count(), 0);
   await closeSettings(page);
 
   // Now there is a choice to make, so the list says which machine it is of.
@@ -188,6 +179,7 @@ test('handover creates and persists a draft only on the selected remote machine'
   const beforeLocal=await (await api(hub,'/api/threads')).json();
   const beforeRemote=await (await api(node,'/api/threads')).json();
   await page.getByLabel('这个线程的更多操作').click();
+  await page.getByRole('menuitem', { name: '分叉与交接', exact: true }).click();
   await page.getByRole('menuitem',{name:'交接',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'交接',exact:true});
   await dialog.locator('.handover-summary').waitFor();
@@ -217,7 +209,7 @@ test('a machine that drops says so in place of its threads, and is back after a 
 
   const down = page.locator('.host-down');
   await down.getByText('连不上 devbox').waitFor({ timeout: 30_000 });
-  assert.match(await down.innerText(), /Calli 没有应答/);
+  assert.match(await down.innerText(), /断开了.*自己重连/);
   assert.equal(await page.locator('.composer').count(), 0, 'nothing can be sent to a machine that is not there');
   assert.equal(await page.locator('.sidebar .thread-row').count(), 0, 'and its threads are not made to look gone');
   await page.getByText('这台机器现在连不上').waitFor();
@@ -226,6 +218,7 @@ test('a machine that drops says so in place of its threads, and is back after a 
 
   node = await startDaemon({ CALLI_SOCKET: nodeSocket });
   await api(node, '/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'pi', cwd: node.workdir, title: '回来以后的线程' }) });
+  await node.connectRelay(hub, joinToken);
   await down.getByRole('button', { name: '重试' }).click();
   await page.getByText('回来以后的线程').waitFor({ timeout: 20_000 });
   assert.equal(await page.locator('.host-down').count(), 0);
@@ -240,7 +233,7 @@ test('removing the machine on screen goes back to the hub, and the switcher goes
   await page.waitForFunction(() => !document.querySelector('.host-switch'));
   await page.getByRole('region', { name: '机器' }).waitFor();
   if (await panel.getByRole('button', { name: '添加机器', exact: true }).getAttribute('aria-expanded') === 'false') await panel.getByRole('button', { name: '添加机器', exact: true }).click();
-  await panel.getByRole('button', { name: '添加 devbox' }).waitFor({ timeout: 10_000 });
+  await panel.getByRole('textbox', { name: '机器名称，如 开发机' }).waitFor();
   await closeSettings(page);
   await page.getByText('本机的线程').waitFor({ timeout: 10_000 });
   assert.equal(await page.locator('.host-switch').count(), 0);
@@ -249,8 +242,7 @@ test('removing the machine on screen goes back to the hub, and the switcher goes
 
 test('a remote member leaves a result file, and the page downloads it', async () => {
   // This runs last, after the test above took the machine away; it comes back for this check.
-  const added = await api(hub, '/api/hosts', { method: 'POST', body: JSON.stringify({ target: 'devbox' }) });
-  if (!added.ok) assert.equal((await api(hub, '/api/hosts')).status, 200, await added.clone().text());
+  await linkDaemon(hub, node);
   const root = await (await api(hub, '/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'pi', cwd: hub.workdir, title: '远程交接验收' }) })).json();
   assert.equal((await api(hub, `/api/threads/${root.id}/coordination`, { method: 'POST', body: '{}' })).status, 200);
   const directive = Buffer.from(JSON.stringify({
@@ -295,3 +287,33 @@ test('a remote member leaves a result file, and the page downloads it', async ()
     rmSync(exchange, { recursive: true, force: true });
   }
 });
+
+for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark']) {
+  test(`relay settings remain usable: ${mobile ? 'phone' : 'desktop'} ${colorScheme}`, async () => {
+    const context = await browser.newContext({ viewport: mobile ? { width: 390, height: 844 } : { width: 1440, height: 960 }, isMobile: mobile, hasTouch: mobile, colorScheme });
+    const label = `preview-${mobile ? 'phone' : 'desktop'}-${colorScheme}`;
+    try {
+      const p = await context.newPage();
+      await openUi(p, hub);
+      if (mobile) await p.locator('.menu-btn').click();
+      const panel = await openMachines(p);
+      await panel.getByRole('textbox', { name: '机器名称，如 开发机' }).fill(label);
+      const submit = panel.getByRole('button', { name: '生成接入配置', exact: true });
+      const box = await submit.boundingBox();
+      assert.ok(box && box.x >= 0 && box.x + box.width <= p.viewportSize().width);
+      await submit.click();
+      await panel.locator('.host-join-lines').waitFor();
+      assert.match(await panel.locator('.host-join-lines').innerText(), /CALLI_HUB_URL=.*\nCALLI_HUB_TOKEN=/);
+      await p.evaluate(() => Promise.all(document.getAnimations().map(a => a.finished.catch(() => {}))));
+      if (process.env.CALLI_E2E_SHOTS_DIR) {
+        mkdirSync(process.env.CALLI_E2E_SHOTS_DIR, { recursive: true });
+        await p.screenshot({ path: join(process.env.CALLI_E2E_SHOTS_DIR, `${label}.png`) });
+      }
+      await panel.getByRole('button', { name: '完成', exact: true }).click();
+      assert.equal(await panel.locator('.host-join-lines').count(), 0);
+    } finally {
+      await api(hub, `/api/hosts/${label}`, { method: 'DELETE' });
+      await context.close();
+    }
+  });
+}

@@ -1,9 +1,9 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startDaemon, openUi, api, launchBrowser, openCollaboration } from '../harness.mjs';
+import { linkDaemon, startDaemon, openUi, api, launchBrowser, openCollaboration } from '../harness.mjs';
 
 /**
  * Choosing a folder for a collaboration member on another machine: the picker browses that
@@ -19,10 +19,8 @@ before(async () => {
   mkdirSync(added);
   remote = await startDaemon({ HOME: remoteHome, CALLI_SOCKET: join(remoteHome, '.local/state/calli/daemon.sock') });
   mkdirSync(join(remote.workdir, '子目录'));
-  const machines = join(root, 'machines.json');
-  writeFileSync(machines, JSON.stringify({ devbox: { home: remoteHome } }));
-  hub = await startDaemon({ CALLI_SSH_BIN: 'fake-ssh', FAKE_SSH_HOSTS: machines });
-  assert.equal((await api(hub, '/api/hosts', { method: 'POST', body: JSON.stringify({ target: 'devbox', label: '开发机' }) })).status, 201);
+  hub = await startDaemon({  });
+  await linkDaemon(hub, remote);
   browser = await launchBrowser();
 });
 after(async () => {
@@ -60,7 +58,7 @@ async function remoteMention(page, mobile, title) {
   await box.fill('@');
   const list = page.getByRole('listbox', { name: '选择协作智能体' });
   await list.waitFor();
-  await list.getByRole('option', { name: /pi · 开发机/ }).click();
+  await list.getByRole('option', { name: /pi · devbox/ }).click();
   const row = page.locator('.coord-row');
   await row.waitFor();
   return row;
@@ -98,7 +96,7 @@ for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark'])
     try {
       const row = await remoteMention(page, mobile, `远程目录 ${tag}`);
       let dialog = await openPicker(page, row);
-      assert.ok(await dialog.locator('.project-browser-machine', { hasText: '开发机' }).count(), 'the picker names the machine');
+      assert.ok(await dialog.locator('.project-browser-machine', { hasText: 'devbox' }).count(), 'the picker names the machine');
       await shot(page, `rootsview-${tag}`);
       // The tree opens with the first root's children already in place: no separate "enter" step.
       await dialog.locator('.project-browser-folder', { hasText: '子目录' }).waitFor();
@@ -113,7 +111,7 @@ for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark'])
       await dialog.getByRole('button', { name: '手动添加目录…' }).click();
       const roots = page.getByRole('dialog', { name: '可用目录', exact: true });
       await roots.waitFor();
-      assert.ok(await roots.locator('.project-browser-machine', { hasText: '开发机' }).count(), 'the roots dialog names the machine too');
+      assert.ok(await roots.locator('.project-browser-machine', { hasText: 'devbox' }).count(), 'the roots dialog names the machine too');
       await shot(page, `roots-${tag}`);
       await roots.getByLabel('要添加的目录').fill(added);
       await roots.getByRole('button', { name: '添加', exact: true }).click();
@@ -153,7 +151,7 @@ for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark'])
       const row = await remoteMention(page, mobile, `远程模型 ${tag}`);
       // The agent's own name leads; the machine and folder sit in one place chip, not in the name.
       assert.equal((await row.locator('.coord-row-name').innerText()).trim(), '@pi');
-      assert.match(await row.locator('.coord-row-where').innerText(), /开发机/);
+      assert.match(await row.locator('.coord-row-where').innerText(), /devbox/);
       const quiet = row.getByRole('button', { name: /的模型与思考强度$/ });
       await quiet.waitFor();
       await quiet.click();

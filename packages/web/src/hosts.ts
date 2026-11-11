@@ -24,26 +24,12 @@ export function saveHost(id: string | null): void {
 
 export const hostStatus = (status: HostInfo['status']): string => t(`hosts.status.${status}`);
 
-/**
- * Why a machine cannot be reached, said so that it is clear what to do about it. The hub signs in
- * as itself, with nobody to answer a prompt, so most of these are fixed on the hub's machine.
- */
-export function hostProblem(code: HostFailure | undefined, target: string): string {
+/** Explains the node's connection state and how to restore it. */
+export function hostProblem(code: HostFailure | undefined): string {
   switch (code) {
-    case 'no_ssh':
-      return t('hosts.error.noSsh');
-    case 'host_key':
-      return t('hosts.error.hostKey', target);
-    case 'auth':
-      return t('hosts.error.auth', target);
-    case 'unreachable':
-      return t('hosts.error.unreachable');
-    case 'daemon_missing':
-      return t('hosts.error.noHub');
-    case 'forward_denied':
-      return t('hosts.error.noForwarding');
-    default:
-      return t('hosts.error.other');
+    case 'not_joined': return t('hosts.error.notJoined');
+    case 'relay_lost': return t('hosts.error.relayLost');
+    default: return t('hosts.error.other');
   }
 }
 

@@ -36,7 +36,7 @@ FILE may be - for stdin. Reuse the request ID only when retrying the same reques
 Members can message existing teammates; only the lead can spawn or stop members.
 A remote member's task is also written to a handoff markdown file on its machine, and the result it
 writes there comes back as a file; --handoff-file makes a local file the body of that handoff.
-calli remote reads and writes files over ssh inside MEMBER's own folder on that machine; the lead may
+calli remote reads and writes files through relay inside MEMBER's own folder on that machine; the lead may
 write, other members may only read. Paths outside it are refused.
 An agent ID like AGENT@MACHINE runs on another machine: --cwd is required, an absolute path there (calli dirs MACHINE [PATH] lists its folders), and that member cannot use calli; its final reply is its result.
 

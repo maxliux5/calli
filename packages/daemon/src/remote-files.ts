@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { HttpError } from './errors.js';
 
-/** One command run on another machine, through its ssh. stdout is bytes because it may carry any text. */
+/** One command run on another machine, through its relay connection. stdout is bytes because it may carry any text. */
 export interface RemoteRun {
   stdout: Buffer;
   stderr: string;
@@ -15,7 +15,7 @@ export interface RemoteRunOptions {
   maxBytes?: number;
 }
 
-/** Runs a shell script on a machine over ssh. `HostRegistry.exec` is the real one; tests bind a local sh. */
+/** Runs a shell script on a machine on the node. `HostRegistry.exec` is the real one; tests bind a local sh. */
 export type RemoteExec = (command: string, opts?: RemoteRunOptions) => Promise<RemoteRun>;
 
 /** The most text one read returns at once. */
@@ -32,8 +32,7 @@ const SAFE_ID = /^[A-Za-z0-9_-]{1,80}$/;
 /**
  * Reads part of a text file under `root`. The script resolves both paths with `realpath -m` on
  * the machine and refuses anything outside the member's own directory, so `..` and symlinks that
- * leave it do not get through. Paths travel on stdin: OpenSSH joins a remote command's arguments
- * with spaces, so quoting in the command string would not survive.
+ * leave it do not get through. Paths travel on stdin so user-supplied values never become shell syntax.
  */
 const READ_SCRIPT = `set -eu
 IFS= read -r root
@@ -171,7 +170,7 @@ function failed(kind: string, args: string[], run: RemoteRun): never {
     default: break;
   }
   const detail = run.stderr.trim() || run.stdout.subarray(0, 400).toString('utf8').trim();
-  throw new HttpError(502, detail || `远端命令失败（退出码 ${run.code}）`, { code: 'ssh_failed' });
+  throw new HttpError(502, detail || `远端命令失败（退出码 ${run.code}）`, { code: 'remote_failed' });
 }
 
 function textFrom(body: Buffer, truncated: boolean): string {

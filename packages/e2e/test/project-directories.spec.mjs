@@ -1,9 +1,9 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startDaemon, openUi, api, launchBrowser, repoRoot } from '../harness.mjs';
+import { linkDaemon, startDaemon, openUi, api, launchBrowser, repoRoot } from '../harness.mjs';
 
 let root, remoteHome, remote, hub, browser;
 before(async () => {
@@ -18,11 +18,8 @@ before(async () => {
     HOME: remoteHome, CALLI_SOCKET: socket, FAKE_CODEX_RPC_LOG: join(root, 'codex-rpc.jsonl'),
     CALLI_AGENTS_JSON: JSON.stringify({ agents: [{ id: 'codex', adapter: 'codex', command: [process.execPath, join(repoRoot, 'daemon/test/fixtures/fake-codex.mjs')] }] }),
   });
-  const machines = join(root, 'machines.json');
-  writeFileSync(machines, JSON.stringify({ devbox: { home: remoteHome } }));
-  hub = await startDaemon({ HOME: localHome, CALLI_SSH_BIN: 'fake-ssh', FAKE_SSH_HOSTS: machines });
-  const added = await api(hub, '/api/hosts', { method: 'POST', body: JSON.stringify({ target: 'devbox', label: '开发机' }) });
-  assert.equal(added.status, 201);
+  hub = await startDaemon({ HOME: localHome });
+  await linkDaemon(hub, remote);
   browser = await launchBrowser();
 });
 after(async () => {
@@ -51,7 +48,7 @@ async function newPage(mobile = false, colorScheme = 'light') {
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
   await openUi(page, hub);
-  await page.locator('.topbar-sub', { hasText: '开发机' }).waitFor();
+  await page.locator('.topbar-sub', { hasText: 'devbox' }).waitFor();
   return page;
 }
 

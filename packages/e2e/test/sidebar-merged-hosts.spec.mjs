@@ -2,10 +2,10 @@
 // reloads, and a machine that drops out says so instead of its threads silently going away.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startDaemon, openUi, api, launchBrowser } from '../harness.mjs';
+import { linkDaemon, startDaemon, openUi, api, launchBrowser } from '../harness.mjs';
 
 const SOCKET_IN_HOME = '.local/state/calli/daemon.sock';
 
@@ -14,20 +14,15 @@ test('the merged list shows every machine, opens a thread on its own machine, an
   const nodeHome = join(root, 'devbox');
   mkdirSync(nodeHome);
   const node = await startDaemon({ CALLI_SOCKET: join(nodeHome, SOCKET_IN_HOME) });
-  const hubHome = join(root, 'hub-home');
-  mkdirSync(join(hubHome, '.ssh'), { recursive: true });
-  writeFileSync(join(hubHome, '.ssh', 'config'), 'Host devbox\n  HostName 192.0.2.10\n');
-  const machines = join(root, 'machines.json');
-  writeFileSync(machines, JSON.stringify({ devbox: { home: nodeHome } }));
-  const hub = await startDaemon({ HOME: hubHome, CALLI_SSH_BIN: 'fake-ssh', FAKE_SSH_HOSTS: machines });
+  const hub = await startDaemon();
   const shots = process.env.CALLI_E2E_SHOTS_DIR;
   if (shots) mkdirSync(shots, { recursive: true });
   let browser;
   let nodeUp = true;
   try {
-    await (await api(node, '/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'pi', cwd: node.workdir, title: '开发机上的线程' }) })).json();
+    await (await api(node, '/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'pi', cwd: node.workdir, title: 'devbox上的线程' }) })).json();
     await api(hub, '/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'pi', cwd: hub.workdir, title: '本机的线程' }) });
-    assert.equal((await api(hub, '/api/hosts', { method: 'POST', body: JSON.stringify({ target: 'devbox' }) })).ok, true);
+    await linkDaemon(hub, node);
     const devboxId = (await (await api(hub, '/api/hosts')).json())[0].id;
     browser = await launchBrowser();
     const open = async (mobile, colorScheme) => {
@@ -48,23 +43,23 @@ test('the merged list shows every machine, opens a thread on its own machine, an
         const all = page.getByRole('tab', { name: '全部' });
         await all.click();
         assert.equal(await all.getAttribute('aria-selected'), 'true');
-        await row(page, '开发机上的线程').waitFor({ timeout: 10_000 });
+        await row(page, 'devbox上的线程').waitFor({ timeout: 10_000 });
         await row(page, '本机的线程').waitFor();
         // Threads elsewhere are named by their machine; the hub's own are not.
-        const host = row(page, '开发机上的线程').locator('.thread-host');
+        const host = row(page, 'devbox上的线程').locator('.thread-host');
         assert.equal(await host.innerText(), 'devbox');
         assert.equal(await host.evaluate((el) => el.scrollWidth <= el.clientWidth), true, 'the machine name is never cut short');
         assert.equal(await row(page, '本机的线程').locator('.thread-host').count(), 0, 'the hub\'s own machine carries no mark');
-        assert.equal(await row(page, '开发机上的线程').locator('.row-more').count(), 0, 'no menu acting on the wrong machine');
+        assert.equal(await row(page, 'devbox上的线程').locator('.row-more').count(), 1, 'remote actions are available through their own machine proxy');
         if (shots) await page.screenshot({ path: join(shots, `merged-${mobile ? 'phone' : 'desktop'}-${colorScheme}.png`), animations: 'disabled' });
 
         // Opening a thread elsewhere goes to that machine, the list still merged.
-        await row(page, '开发机上的线程').locator('.thread-item').click();
+        await row(page, 'devbox上的线程').locator('.thread-item').click();
         await page.waitForFunction((id) => localStorage.getItem('calli.host') === id, devboxId, { timeout: 15_000 });
         assert.equal(await page.evaluate(() => localStorage.getItem('calli.host')), devboxId, 'the page is on devbox now');
         if (mobile) await page.locator('.menu-btn').click();
         await page.getByRole('tab', { name: '全部', selected: true }).waitFor();
-        assert.equal(await row(page, '开发机上的线程').locator('.row-more').count(), 1, 'on its own machine the thread has its menu again');
+        assert.equal(await row(page, 'devbox上的线程').locator('.row-more').count(), 1, 'on its own machine the thread has its menu again');
         await row(page, '本机的线程').waitFor();
 
         // A reload keeps the merged list.
@@ -77,7 +72,7 @@ test('the merged list shows every machine, opens a thread on its own machine, an
         await page.getByRole('tab', { name: '本机' }).click();
         if (mobile && !(await page.locator('.sidebar .thread-row').first().isVisible())) await page.locator('.menu-btn').click();
         await row(page, '本机的线程').waitFor({ timeout: 10_000 });
-        assert.equal(await row(page, '开发机上的线程').count(), 0);
+        assert.equal(await row(page, 'devbox上的线程').count(), 0);
         assert.deepEqual(errors, []);
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no horizontal overflow');
       } finally { await context.close(); }

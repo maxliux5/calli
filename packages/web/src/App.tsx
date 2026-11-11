@@ -1,3 +1,4 @@
+import { GitPanel } from './components/GitPanel';
 import { SettingsPage, type SettingsGroup } from './components/SettingsPage';
 import { AssistantSettingsPage, assistantTitle } from './components/AssistantSettingsPage';
 import { PageNavigation, SettingsSection, usePageNavigation } from './components/PageNavigation';
@@ -1896,6 +1897,9 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const filesThread = threads.find(thread => thread.id === filesThreadId) ?? selected;
   /** The thread's trace, beside the conversation on a desktop, a page of its own on a phone. */
   const [traceOpen, setTraceOpen] = useState(false);
+  const [gitOpen, setGitOpen] = useState(false);
+  useLayoutEffect(() => { setGitOpen(false); }, [selectedId, api]);
+  useEffect(() => { if (files || traceOpen || agentsOpen) setGitOpen(false); }, [files, traceOpen, agentsOpen]);
   const filesSeq = useRef(0);
   useEffect(() => { setFiles(null); setFilesThreadId(null); setTraceOpen(false); }, [selectedId]);
 
@@ -1915,7 +1919,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   };
   /** A side panel takes the same edge as the overview, so the panel steps aside while one is open —
    *  but the person's own switch is left alone: it comes back when the side panel closes. */
-  const sideOpen = Boolean(agentsOpen && coordination) || Boolean(files) || traceOpen;
+  const sideOpen = Boolean(agentsOpen && coordination) || Boolean(files) || traceOpen || gitOpen;
   const overviewShown = overviewDock && overviewOpen && !sideOpen && !activeOverviewDetail && Boolean(selected) && hostUp;
   /** Only the person turns the standing panel off; the switch above remembers it. */
   const closeOverview = useCallback(() => { if (overviewDock) setOverviewOpen(false); }, [overviewDock, setOverviewOpen]);
@@ -2031,6 +2035,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       void refreshThreads();
     },
     onOpenTerminal: () => (demo ? askToConnect() : openTerminal()),
+    onOpenGit: () => { setFiles(null); setTraceOpen(false); setAgentsOpen(false); setGitOpen(true); },
     onOpenFiles: (thread) => {
       setAgentsOpen(false);
       setTraceOpen(false);
@@ -3623,6 +3628,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           permission={a.capabilities.permissionModes.length ? thread.permissionMode : undefined} onPermission={(permissionMode) => { void api.updateThread(thread.id, { permissionMode }).then(() => refreshThreads()).catch(handleError); }} /> : null;
       }} leadAgent={threads.find((t) => t.id === coordination.rootId)?.agent} phone={compact} onClose={() => setAgentsOpen(false)} onOpen={thread => { openThread(thread); setAgentsOpen(false); }} onAdjust={(name, draft) => { setAgentsOpen(false); setSelectedId(coordination.rootId); setRestore({ text: t('app.adjustTask', name) + draft, nonce: Date.now() }); }} onRefresh={() => { void refreshThreads(); }} onError={handleError} />}
       {files && filesThread && api && <FilesPanel api={api} threadId={filesThread.id} target={files} phone={compact} revision={filesThread.updatedAt} writingStage={filesThread.writing?.stage ?? null} writingHabits={filesThread.writing?.habits ?? null} noted={{ count: noteCount, nonce: filesNotePulse }} onClose={() => setFiles(null)} />}
+      {gitOpen && selected && api && <GitPanel key={`${hostId ?? ''}:${selected.id}`} api={api} threadId={selected.id} phone={compact} running={selected.status === 'running'} onClose={() => setGitOpen(false)} />}
       {traceOpen && selected && (
         <ThreadTracePanel
           api={api}

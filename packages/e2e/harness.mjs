@@ -99,8 +99,6 @@ export async function startDaemon(env = {}, opts = {}) {
     `#!/bin/sh\nFAKE_ACP_FLAVOR=dsh exec "${process.execPath}" "${join(fixtures, 'fake-acp.mjs')}" "$@"\n`,
     { mode: 0o755 },
   );
-  // For the tests of other machines: `CALLI_SSH_BIN: 'fake-ssh'` makes directories stand in for them.
-  shim(binDir, 'fake-ssh', 'fake-ssh.mjs');
   // An extra CLI for the discovery tests: looks like another copy of agy on PATH.
   if (env.CALLI_E2E_DISCOVER_AGY2 === '1') shim(binDir, 'agy2', 'fake-agy.mjs');
   if (env.CALLI_E2E_DISCOVER_DOUBAO2 === '1') shim(binDir, 'doubao2', 'fake-doubao.mjs');
@@ -114,6 +112,8 @@ export async function startDaemon(env = {}, opts = {}) {
     // A test hub's agents are the fakes it was given; the machine's real CLIs and accounts
     // must not auto-join it, however the fakes were configured (inline or agents.json).
     CALLI_AUTO_JOIN: 'off',
+    CALLI_HUB_URL: '',
+    CALLI_HUB_TOKEN: '',
     CALLI_TOKEN: TOKEN,
     CALLI_HOST: '127.0.0.1',
     CALLI_PORT: String(port),
@@ -166,7 +166,21 @@ export async function startDaemon(env = {}, opts = {}) {
     await new Promise((r) => setTimeout(r, 100));
   }
 
+  let relay;
   return {
+    async connectRelay(hub, token) {
+      relay?.stop();
+      const { RelayClient } = await import('../daemon/dist/relay-client.js');
+      relay = new RelayClient({ hubUrl: hub.base, token, socket: daemonEnv.CALLI_SOCKET, version: 'e2e-node', retryMs: 50 });
+      relay.start();
+      const id = token.split('.')[0];
+      for (const deadline = Date.now() + 10_000; ; ) {
+        const hosts = await (await api(hub, '/api/hosts')).json();
+        if (hosts.some(host => host.id === id && host.status === 'online')) return;
+        if (Date.now() > deadline) throw new Error(`Node did not connect: ${relay.error ?? relay.status}`);
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+    },
     base,
     pid: child.pid,
     token: TOKEN,
@@ -176,6 +190,7 @@ export async function startDaemon(env = {}, opts = {}) {
     notesDir: join(dataDir, 'notes'),
     log: () => log,
     async stop() {
+      relay?.stop();
       // Real agent CLIs on PATH (zcode, codex) get probed too, and may still write into dataDir
       // while shutting down; removing it before they are gone leaves it behind in /tmp.
       const below = descendants(child.pid);
@@ -272,4 +287,13 @@ export async function openCollaboration(page) {
   await page.getByRole('button', { name: '添加与模式', exact: true }).click();
   await page.getByRole('menuitem', { name: '协作', exact: true }).or(page.getByRole('option', { name: '协作', exact: true })).click();
   await page.getByRole('menu', { name: '协作', exact: true }).waitFor();
+}
+
+/** Register a node and connect its real relay client to this test hub. */
+export async function linkDaemon(hub, node, label = 'devbox') {
+  const response = await api(hub, '/api/hosts', { method: 'POST', body: JSON.stringify({ label }) });
+  if (response.status !== 201) throw new Error(`Registering node: ${response.status} ${await response.text()}`);
+  const machine = await response.json();
+  await node.connectRelay(hub, machine.token);
+  return machine;
 }

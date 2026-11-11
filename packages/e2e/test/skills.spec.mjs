@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startDaemon, openUi, api, launchBrowser, closeSettings } from '../harness.mjs';
+import { linkDaemon, startDaemon, openUi, api, launchBrowser, closeSettings } from '../harness.mjs';
 
 let root, hub, remote, browser, page;
 const envFor = (home) => ({ HOME: home, CLAUDE_CONFIG_DIR: join(home, '.claude'), CODEX_HOME: join(home, '.codex'), PI_CODING_AGENT_DIR: join(home, '.pi/agent'), CALLI_AGY_HOME: join(home, '.agy') });
@@ -21,11 +21,8 @@ before(async () => {
   seed(localHome, 'echo a');
   seed(remoteHome, 'echo b');
   remote = await startDaemon({ ...envFor(remoteHome), CALLI_SOCKET: join(remoteHome, '.local/state/calli/daemon.sock') });
-  const machines = join(root, 'machines.json');
-  writeFileSync(machines, JSON.stringify({ devbox: { home: remoteHome } }));
-  hub = await startDaemon({ ...envFor(localHome), CALLI_SSH_BIN: 'fake-ssh', FAKE_SSH_HOSTS: machines });
-  const added = await api(hub, '/api/hosts', { method: 'POST', body: JSON.stringify({ target: 'devbox', label: '开发机' }) });
-  assert.equal(added.status, 201);
+  hub = await startDaemon({ ...envFor(localHome) });
+  await linkDaemon(hub, remote);
   browser = await launchBrowser();
   page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
   page.on('pageerror', (err) => console.error('browser error:', err));
@@ -57,7 +54,7 @@ async function openSync(p = page) {
 
 test('machine matrix, search, instructions, and remote selection retain the hub', async () => {
   await page.locator('.skills-differs').waitFor();
-  assert.deepEqual((await page.locator('.skills-grid-head .skills-cell-machine').allInnerTexts()).sort(), ['开发机', '本机'].sort());
+  assert.deepEqual((await page.locator('.skills-grid-head .skills-cell-machine').allInnerTexts()).sort(), ['devbox', '本机'].sort());
   await page.getByLabel('搜索技能').fill('absent');
   await page.getByText('没有匹配的技能。').waitFor();
   await page.getByLabel('清除搜索').click();
@@ -65,10 +62,10 @@ test('machine matrix, search, instructions, and remote selection retain the hub'
   await page.getByRole('heading', { name: '代码审查', exact: true }).waitFor();
   await page.getByRole('dialog').getByLabel('关闭').click();
   await closeSettings(page);
-  await page.getByRole('tab', { name: '开发机' }).click();
+  await page.getByRole('tab', { name: 'devbox' }).click();
   await openSkills(page);
   await page.locator('.skills-differs').waitFor();
-  assert.deepEqual((await page.locator('.skills-grid-head .skills-cell-machine').allInnerTexts()).sort(), ['开发机', '本机'].sort());
+  assert.deepEqual((await page.locator('.skills-grid-head .skills-cell-machine').allInnerTexts()).sort(), ['devbox', '本机'].sort());
 });
 
 test('sync through the proxy preserves scripts and asks before replacing a different version', async () => {
@@ -76,7 +73,7 @@ test('sync through the proxy preserves scripts and asks before replacing a diffe
   await dialog.locator('.skill-source', { hasText: '本机' }).click();
   // Choose only the remote Claude instance; existing copies are not preselected.
   while (await dialog.locator('.skill-target[aria-pressed=true]').count()) await dialog.locator('.skill-target[aria-pressed=true]').first().click();
-  await dialog.locator('.skill-target-row', { hasText: '开发机' }).getByRole('button', { name: 'Claude Code', exact: true }).click();
+  await dialog.locator('.skill-target-row', { hasText: 'devbox' }).getByRole('button', { name: 'Claude Code', exact: true }).click();
   await dialog.getByRole('button', { name: '同步到 1 个 agent' }).click();
   await dialog.getByRole('button', { name: '覆盖 1 处' }).waitFor();
   assert.equal(readFileSync(join(root, 'remote/.claude/skills/review-code/review.sh'), 'utf8'), 'echo b');

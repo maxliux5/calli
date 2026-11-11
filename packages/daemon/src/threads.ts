@@ -1,4 +1,5 @@
 import { ContextReferences } from './context-references.js';
+import { GitManager, gitWorktreeRoot } from './git.js';
 import { PersonalBriefSchedule } from './personal-brief-schedule.js';
 import { changedFiles, mentionedFiles, checkMissingFiles, MAX_OUTPUT_ITEMS, type ThreadOutputs } from './outputs.js';
 import { LarkChannel } from './channels/lark.js';
@@ -332,6 +333,12 @@ export class ThreadManager {
   /** Threads whose model/effort/speed was changed mid-turn: the setting is stored, the session that
    *  turn still runs in is stale. It is dropped when the turn ends, never interrupted mid-turn. */
   private readonly refreshAfterTurn = new Set<string>();
+  readonly git = new GitManager(
+    id => this.getThread(id).cwd,
+    (id, path) => { this.resolveInThread(id, path, new HttpError(403, 'Git repository is outside the readable roots')); },
+    root => [...this.running.keys(), ...this.startingTurns.keys()].some(id => gitWorktreeRoot(this.getThread(id).cwd) === root),
+  );
+
   /** Turns in flight. `cancelRequested` covers cancels that arrive before the agent session exists. */
   private readonly running = new Map<string, { turnId: string; cancelRequested: boolean; since: string }>();
   readonly inputs = new UserInputs((thread, turn, type, data) => this.emitThreadEvent(thread, turn, type, data));
@@ -2510,6 +2517,7 @@ export class ThreadManager {
       if (this.running.has(threadId)) throw new HttpError(409, 'a turn is already running in this thread');
       if (this.changingModes.has(threadId) || input.workMode === undefined && this.getThread(threadId).workMode !== thread.workMode) throw new HttpError(409, '工作模式已变化，请重新发送');
     }
+    this.git.assertTurnAllowed(thread.cwd);
     const { stored, images } = this.attachments.save(threadId, rawImages);
     const promptText = text + this.attachments.videoNote(threadId, storedVideos);
     // Internal callers may attach protocol context. Only the person's words (or a channel

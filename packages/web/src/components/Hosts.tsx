@@ -1,17 +1,33 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Api, ApiError, AuthError, type HostFailure, type HostInfo } from '../api';
+import { Api, AuthError, type HostInfo } from '../api';
 import { hostProblem, hostStatus } from '../hosts';
 import { todayTokens, totalTokens } from '../machine-usage';
 import { compactLabel } from '../observability';
 import { Dialog } from './Dialog';
 import { SettingsSection, usePageDraft } from './PageNavigation';
-import { IconCheck, IconChevron, IconClose, IconComputer, IconGlobe, IconPlus, IconServer, IconSettings } from './icons';
+import { IconCheck, IconChevron, IconComputer, IconCopy, IconGlobe, IconPlus, IconServer, IconSettings } from './icons';
 import { Popover } from './Popover';
+import { copyText } from '../clipboard';
 import { t } from '../i18n';
 
-/** ssh's own words, for whoever has to fix it. When no daemon answered there is nothing of ssh's to quote. */
-const SshSaid = ({ host }: { host: Pick<HostInfo, 'code' | 'error'> }) =>
-  host.error && host.code !== 'daemon_missing' ? <code className="host-error">{host.error}</code> : null;
+/** The lines a machine that connects out needs, shown once: the token is not kept anywhere to show again. */
+function JoinSettings({ label, token, onDone }: { label: string; token: string; onDone: () => void }) {
+  const text = `CALLI_HUB_URL=${window.location.origin}\nCALLI_HUB_TOKEN=${token}`;
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="host-join" role="status">
+      <p>{t('hosts.relayStep', label)}</p>
+      <pre className="host-join-lines">{text}</pre>
+      <p className="host-foot">{t('hosts.relayOnce')}</p>
+      <div className="host-join-actions">
+        <button type="button" className="ghost" onClick={() => void copyText(text).then((ok) => setCopied(ok))}>
+          <IconCopy size={15} />{copied ? t('common.copied') : t('common.copy')}
+        </button>
+        <button type="button" className="primary" onClick={onDone}>{t('hosts.relayDone')}</button>
+      </div>
+    </div>
+  );
+}
 
 /** Every machine's tokens today, one read for the line above the list and each row's number.
  *  A machine that is down cannot answer; its number waits as a dash, not as a zero. */
@@ -149,8 +165,7 @@ export function HostDown({ host, onRetry }: { host: HostInfo; onRetry: () => Pro
     <div className="empty host-down">
       <div className="host-down-body">
         <h2>{connecting ? t('hosts.connectingTo', host.label) : t('hosts.cannotReach', host.label)}</h2>
-        {!connecting && <p>{hostProblem(host.code, host.target)}</p>}
-        {!connecting && <SshSaid host={host} />}
+        {!connecting && <p>{hostProblem(host.code)}</p>}
         <button
           className="ghost"
           disabled={connecting}
@@ -179,10 +194,7 @@ interface PanelProps {
   onError: (e: unknown) => void;
 }
 
-/**
- * The machines this hub shows besides its own. Adding one takes only what ssh calls it: the hub
- * signs in, finds the Calli running there, and keeps a connection to it.
- */
+/** Registered machines, with join settings for nodes that connect out. */
 export function HostsPanel({ api, token, hosts, onOpenUsage, onChanged, onError }: PanelProps) {
   const machines = useMemo(() => [
     { key: 'local', host: null as HostInfo | null, label: t('hosts.local') },
@@ -202,40 +214,32 @@ function HostsList({ api, hosts, machines, todays, onOpenUsage, onChanged, onErr
   onChanged: () => Promise<void>;
   onError: (e: unknown) => void;
 }) {
-  const [candidates, setCandidates] = useState<string[] | null>(null);
-  const [candidatesError, setCandidatesError] = useState('');
   const [showAdd, setShowAdd] = useState(false);
-  const [target, setTarget] = useState('');
-  /** The ssh name being signed in to, while that takes its seconds. */
-  const [adding, setAdding] = useState<string | null>(null);
-  const [failure, setFailure] = useState<{ target: string; code?: HostFailure; error: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [removing, setRemoving] = useState<HostInfo | null>(null);
+  /** The name of a machine that will connect out, and its join settings once created. */
+  const [relayLabel, setRelayLabel] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [joined, setJoined] = useState<{ label: string; token: string } | null>(null);
+  const [relayError, setRelayError] = useState('');
+  // An unread token is as much unsaved as a typed name: leaving would lose it.
+  usePageDraft(Boolean(relayLabel.trim() || joined), busy !== null || creating);
 
-  const loadCandidates = async () => {
-    setCandidatesError('');
-    try { setCandidates(await api.hostCandidates()); }
-    catch (e) { setCandidatesError(String(e)); }
-  };
-
-  useEffect(() => { if (showAdd) void loadCandidates(); }, [showAdd]);
-  usePageDraft(Boolean(target.trim()), adding !== null || busy !== null);
-
-  const add = async (name: string) => {
-    const wanted = name.trim();
-    if (!wanted || adding) return;
-    setFailure(null);
-    setAdding(wanted);
+  const createRelay = async () => {
+    const label = relayLabel.trim();
+    if (!label || creating) return;
+    setRelayError('');
+    setCreating(true);
     try {
-      await api.addHost(wanted);
-      setTarget('');
-      await Promise.all([onChanged(), loadCandidates()]);
+      const host = await api.addHost(label);
+      setJoined({ label: host.label, token: host.token });
+      setRelayLabel('');
+      await onChanged();
     } catch (e) {
-      // Shown here, where the user is looking. Only a bad token goes up.
       if (e instanceof AuthError) onError(e);
-      else setFailure({ target: wanted, code: e instanceof ApiError ? (e.details.code as HostFailure | undefined) : undefined, error: e instanceof Error ? e.message : String(e) });
+      else setRelayError(e instanceof Error ? e.message : String(e));
     } finally {
-      setAdding(null);
+      setCreating(false);
     }
   };
 
@@ -256,7 +260,7 @@ function HostsList({ api, hosts, machines, todays, onOpenUsage, onChanged, onErr
     setBusy(host.id);
     try {
       await api.removeHost(host.id);
-      await Promise.all([onChanged(), loadCandidates()]);
+      await onChanged();
     } catch (e) {
       onError(e);
     } finally {
@@ -293,8 +297,7 @@ function HostsList({ api, hosts, machines, todays, onOpenUsage, onChanged, onErr
                 </div>
                 {h.status === 'offline' && busy !== h.id && (
                   <p className="host-problem">
-                    {hostProblem(h.code, h.target)}
-                    <SshSaid host={h} />
+                    {hostProblem(h.code)}
                   </p>
                 )}
               </div>
@@ -311,51 +314,31 @@ function HostsList({ api, hosts, machines, todays, onOpenUsage, onChanged, onErr
           ))}
 
           <button className="settings-add-row" aria-expanded={showAdd} onClick={() => setShowAdd(value => !value)}><IconPlus size={17} />{t('hosts.add')}</button>
-          {showAdd && <>
+          {showAdd && joined && <JoinSettings label={joined.label} token={joined.token} onDone={() => { setJoined(null); setShowAdd(false); }} />}
+          {showAdd && !joined && <>
           <form
             className="host-add"
             onSubmit={(e) => {
               e.preventDefault();
-              void add(target);
+              void createRelay();
             }}
           >
-            <label className="panel-search host-add-field">
-              <IconPlus size={16} />
+            <label className="panel-search host-add-field host-add-name">
+              <IconServer size={16} />
               <input
-                value={target}
-                onChange={(e) => setTarget(e.target.value)}
-                placeholder={t('hosts.target')}
-                aria-label={t('hosts.target')}
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-                disabled={adding !== null}
+                value={relayLabel}
+                onChange={(e) => setRelayLabel(e.target.value)}
+                placeholder={t('hosts.relayName')}
+                aria-label={t('hosts.relayName')}
+                maxLength={60}
+                disabled={creating}
               />
             </label>
-            <button type="submit" className="primary" disabled={!target.trim() || adding !== null}>
-              {adding !== null && adding === target.trim() ? t('hosts.connecting') : t('hosts.addButton')}
+            <button type="submit" className="primary" disabled={!relayLabel.trim() || creating}>
+              {creating ? t('hosts.relayCreating') : t('hosts.relayCreate')}
             </button>
           </form>
-          {failure && (
-            <p className="panel-error host-failure" role="alert">
-              {t('hosts.addFailed', failure.target, hostProblem(failure.code, failure.target))}
-              <SshSaid host={failure} />
-            </p>
-          )}
-
-          {candidatesError ? <p className="panel-error" role="alert">{candidatesError} <button className="ghost" onClick={() => void loadCandidates()}>{t('common.retry')}</button></p> : candidates === null && <p role="status">{t('common.loading')}</p>}
-          {candidates && candidates.length > 0 && <p className="host-candidates-hint">{t('hosts.candidates')}</p>}
-          {candidates && candidates.length > 0 && (
-            <div className="host-candidates">
-              {candidates.map((alias) => (
-                <button key={alias} type="button" className="host-candidate" aria-label={t('hosts.addAlias', alias)} disabled={adding !== null} onClick={() => void add(alias)}>
-                  <IconPlus size={13} />
-                  <span className="host-target">{alias}</span>
-                  {adding === alias && <span className="host-candidate-note">{t('hosts.connecting')}</span>}
-                </button>
-              ))}
-            </div>
-          )}
+          {relayError && <p className="panel-error host-failure" role="alert">{relayError}</p>}
           <p className="host-foot">{t('hosts.foot')}</p>
           </>}
         </div>
