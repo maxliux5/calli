@@ -528,6 +528,7 @@ export const ja: Messages = {
   "feishu.ownerPlaceholder": "Feishu ユーザーの open_id",
   "feishu.bindOwner": "このアカウントを紐付ける",
   "feishu.pendingOwnerHint": "ボットにメッセージが届きました。自分自身か確認してから紐付けてください",
+  "feishu.ownerEmptyHint": "ボットにメッセージを送ると、ここに「このアカウントを連携」ボタンが表示されます",
   "feishu.recent": "最近：",
   "feishu.none": "履歴なし",
   "feishu.droppedCount": (n: number) => `${n} 件破棄`,

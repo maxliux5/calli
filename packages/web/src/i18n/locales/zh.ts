@@ -530,6 +530,7 @@ export const zh = {
   "feishu.ownerPlaceholder": "飞书用户 open_id",
   "feishu.bindOwner": "绑定这个账号",
   "feishu.pendingOwnerHint": "有人给机器人发了消息，确认是你自己再绑定",
+  "feishu.ownerEmptyHint": "给机器人发一条消息，这里会出现「绑定这个账号」",
   "feishu.recent": "最近：",
   "feishu.none": "暂无记录",
   "feishu.droppedCount": (n: number) => `丢弃 ${n} 条`,

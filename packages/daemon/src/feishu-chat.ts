@@ -88,6 +88,7 @@ export class FeishuChat {
   private dropped = 0;
   private realtime: FeishuRealtime = 'off';
   private pendingOwner: string | null = null;
+  private readonly hinted = new Set<string>();
   private setup: FeishuSetup = { state: 'idle', url: null, reason: null };
   private setupChild: ChildProcess | null = null;
   private consumer: ChildProcess | null = null;
@@ -314,6 +315,11 @@ export class FeishuChat {
     if (!settings.owner) {
       this.pendingOwner = message.sender;
       this.record(message.messageId, 'in', null, '', 'dropped', 'owner_missing');
+      // Say once why nothing happened, so the person knows where to go next.
+      if (!this.hinted.has(message.sender)) {
+        this.hinted.add(message.sender);
+        await this.reply(message.messageId, '[Calli] 还没有绑定主人。请回到 Calli 的「飞书」设置页，点「绑定这个账号」，再发一次。', `${message.messageId}:hint`, null, '');
+      }
       return;
     }
     if (message.sender !== settings.owner) { this.record(message.messageId, 'in', null, '', 'dropped', 'not_owner'); return; }

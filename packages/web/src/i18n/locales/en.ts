@@ -530,6 +530,7 @@ export const en: Messages = {
   "feishu.ownerPlaceholder": "Feishu user open_id",
   "feishu.bindOwner": "Bind this account",
   "feishu.pendingOwnerHint": "Someone messaged the bot; make sure it is you before binding",
+  "feishu.ownerEmptyHint": "Send the bot a message and a “Bind this account” button appears here",
   "feishu.recent": "Recent:",
   "feishu.none": "No records yet",
   "feishu.droppedCount": (n: number) => `${n} ${n === 1 ? 'message dropped' : 'messages dropped'}`,

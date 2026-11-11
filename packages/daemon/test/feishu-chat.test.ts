@@ -117,9 +117,11 @@ test('private rejected messages are recorded; group and non-user noise is ignore
 test('first contact without an owner only proposes pendingOwner; explicit binding enables later messages', async () => {
   const h = await setup(); try {
     h.settings({ owner: '' }); h.deliver(event('om_unbound')); await wait(async () => (await h.chat.status()).pendingOwner === 'ou_owner', 'pending owner');
-    assert.equal(h.chat.getSettings().owner, ''); assert.equal(h.store.listThreads().length, 0); assert.equal((await h.chat.status()).records[0].reason, 'owner_missing');
+    assert.equal(h.chat.getSettings().owner, ''); assert.equal(h.store.listThreads().length, 0); assert.equal((await h.chat.status()).records.find(r => r.direction === 'in')?.reason, 'owner_missing');
+    // The stranger is told once where to go; no thread starts.
+    await h.sent(1); assert.equal(flag(h.replies()[0], '--message-id'), 'om_unbound'); assert.match(h.replies()[0].input, /绑定/); assert.equal(h.store.listThreads().length, 0);
     h.chat.putSettings({ owner: 'ou_owner' }); assert.equal((await h.chat.status()).pendingOwner, null);
-    h.deliver(event('om_unbound'), event('om_bound')); await h.sent(1); assert.equal(h.store.listThreads().length, 1); assert.equal(flag(h.replies()[0], '--message-id'), 'om_bound');
+    h.deliver(event('om_unbound'), event('om_bound')); await h.sent(2); assert.equal(h.store.listThreads().length, 1); assert.equal(flag(h.replies()[1], '--message-id'), 'om_bound');
   } finally { await h.close(); }
 });
 

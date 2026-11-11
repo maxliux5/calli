@@ -110,6 +110,16 @@ export function FeishuSettingsDialog({ api, agents, onClose }: { api: Api; agent
     return () => window.clearInterval(timer);
   }, [api, status?.setup.state, loadSettings, saved]);
 
+  // Until someone is bound, the first message to the bot is what offers the binding; keep looking for it.
+  const waitingForOwner = Boolean(value && !value.owner && status?.configured);
+  useEffect(() => {
+    if (!waitingForOwner) return;
+    const timer = window.setInterval(() => {
+      void api.feishuStatus(true).then(next => setStatus(current => current && current.pendingOwner === next.pendingOwner ? current : { ...(current ?? next), pendingOwner: next.pendingOwner })).catch(() => undefined);
+    }, SETUP_POLL_MS * 2);
+    return () => window.clearInterval(timer);
+  }, [api, waitingForOwner]);
+
   const onStatus = useCallback((next: FeishuStatus) => {
     setStatus(next);
     if (next.setup.state === 'done') void loadSettings().then(nextValue => setValue(current => JSON.stringify(current) === saved ? nextValue : current));
@@ -146,7 +156,7 @@ export function FeishuSettingsDialog({ api, agents, onClose }: { api: Api; agent
         <button className="personal-switch" role="switch" aria-label={t('feishu.enabled')} aria-checked={value.enabled} disabled={busy} onClick={() => setValue({ ...value, enabled: !value.enabled })}><span /></button>
       </div>
       <div className="personal-setting-line">
-        <span>{t('feishu.owner')}{!value.owner && status?.pendingOwner && <small>{t('feishu.pendingOwnerHint')}</small>}</span>
+        <span>{t('feishu.owner')}{!value.owner && status && <small>{t(status.pendingOwner ? 'feishu.pendingOwnerHint' : 'feishu.ownerEmptyHint')}</small>}</span>
         <div className="feishu-owner">
           <input value={value.owner} placeholder={t('feishu.ownerPlaceholder')} aria-label={t('feishu.owner')} spellCheck={false} disabled={busy} onChange={e => setValue({ ...value, owner: e.target.value })} />
           {!value.owner && status?.pendingOwner && <button className="ghost" disabled={busy} onClick={() => void save({ owner: status.pendingOwner! })}>{t('feishu.bindOwner')}</button>}
