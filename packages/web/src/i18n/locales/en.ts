@@ -272,6 +272,7 @@ export const en: Messages = {
   "proactive.allowSandbox": "Allow sandbox work",
   "proactive.looksDone": "Looks finished",
   "proactive.service": "model service to recover",
+  "proactive.untitledSession": "Untitled session",
   "proactive.noneAsking": "Nothing needs your attention right now.",
   "proactive.attentionLoading": "Loading items needing you",
   "proactive.attentionFailed": "Load failed. Retry",

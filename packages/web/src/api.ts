@@ -611,7 +611,10 @@ export type ProactiveStatus = 'running' | 'observed' | 'approved' | 'ready' | 'm
 /** One thing she did unasked: materials prepared for a matter, or code changed in a sandbox. */
 export interface ProactiveRun {
   id: string;
+  /** Empty for an advance on a session that belongs to no matter. */
   matterId: string;
+  /** The session's title, for a card that has no matter to name it. */
+  threadTitle?: string;
   kind: 'prepare' | 'sandbox' | 'advance';
   variant?: 'deadline' | 'plan';
   needsRepo?: true;

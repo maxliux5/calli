@@ -57,6 +57,14 @@ test('the filter lists each matter once, by the run still open to a decision', (
   assert.equal(matters.find(item => item.matterId === 'gone')!.todo, null);
 });
 
+test('sessions that belong to no matter are listed one row each, by session', () => {
+  const first = run({ kind: 'advance', matterId: '', threadId: 't1', status: 'asking', reason: 'user' });
+  const second = run({ kind: 'advance', matterId: '', threadId: 't2', status: 'asking', reason: 'user' });
+  const rows = proactiveMatters([first, second], []);
+  assert.deepEqual(rows.map(row => row.matterId).sort(), ['thread:t1', 'thread:t2']);
+  assert.ok(rows.every(row => row.todo === null));
+});
+
 test('the filter count comes from the plans, without reading the runs', () => {
   assert.equal(proactiveCount([todo('a', 2), todo('b', 0), todo('c')]), 1);
 });

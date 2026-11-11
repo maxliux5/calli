@@ -861,3 +861,51 @@ test('model result is discarded if the person continues or completes the matter 
     } finally { await h.close(); }
   }
 });
+
+test('advance starts from recent sessions, newest first, and reads the agent\'s own [进度] line before any model', async () => {
+  const h = await setup(); try {
+    const session = async (title: string, minutesAgo: number, stage: 'blocked' | 'review', note: string) => {
+      const thread = await h.manager.createThread({ agent: 'claude', cwd: h.cwd, title });
+      const turnId = `turn-${thread.id}`, ended = new Date(now.getTime() - minutesAgo * 60_000).toISOString();
+      h.store.appendEvent(thread.id, turnId, 'turn.started', { text: title });
+      h.store.appendEvent(thread.id, turnId, 'message.delta', { text: `${note}\n[进度] ${stage === 'blocked' ? '需要你' : '待验收'}：${note}` });
+      h.store.appendEvent(thread.id, turnId, 'turn.done', {});
+      h.store.db.prepare('UPDATE events SET ts=? WHERE thread_id=?').run(ended, thread.id);
+      h.store.setThreadProgress(thread.id, { report: { stage, note, at: ended } });
+      return thread;
+    };
+    const old = await session('上周的会话', 4 * 24 * 60, 'blocked', '要不要合入？');
+    const reviewed = await session('两小时前的会话', 120, 'review', '修复已完成');
+    const newest = await session('刚才的会话', 20, 'blocked', '先部署到预发还是生产？');
+    await h.service.save({ mode: 'observe' });
+    await h.service.tick(now);
+    const first = h.service.runs().at(-1)!;
+    assert.equal(first.threadId, newest.id, 'the newest session comes first');
+    assert.deepEqual([first.status, first.reason, first.matterId, first.threadTitle, first.question?.text], ['asking', 'user', '', '刚才的会话', '先部署到预发还是生产？']);
+    assert.equal(h.store.listThreads({ archived: true }).length, 0, 'the [进度] line decided it; no model was asked');
+    assert.deepEqual((await (await h.api('/api/personal/proactive?summary=true')).json()).asking, { '': 1 });
+    await h.service.tick(new Date(now.getTime() + 60_000));
+    const second = h.service.runs().at(-1)!;
+    assert.equal(second.threadId, reviewed.id);
+    assert.equal(second.status, 'discarded', 'a finished session with no matter raises no card');
+    await h.service.tick(new Date(now.getTime() + 120_000));
+    assert.equal(h.service.runs().some(run => run.threadId === old.id), false, 'sessions left alone for days are not swept up');
+    const answered = await h.api(`/api/personal/proactive/runs/${first.id}/answer`, 'POST', { answer: '先到预发' });
+    assert.equal(answered.status, 200); assert.equal((await answered.json()).status, 'answered');
+  } finally { await h.close(); }
+});
+
+test('repo cards name the main repository for a worktree, skip the personal directory and ask once per matter', async () => {
+  const h = await setup(); try {
+    const repo = await h.repository();
+    const tree = join(h.dir, 'tree'); await h.git(repo, 'worktree', 'add', '-q', '-b', 'side', tree);
+    await h.git(h.cwd, 'init', '-q', '-b', 'main');
+    const todo = h.todo({ dueAt: null });
+    for (const cwd of [h.cwd, tree, repo]) h.store.linkTodoThread(todo.id, (await h.manager.createThread({ agent: 'claude', cwd })).id);
+    h.store.saveHubSetting('personalProactiveRuns', [{ ...historical('plan', 'prepare', now.toISOString()), matterId: todo.id, status: 'ready' }]);
+    await h.service.save({ mode: 'observe' });
+    for (let i = 0; i < 4; i++) await h.service.tick(new Date(now.getTime() + i * 60_000));
+    const cards = h.service.runs().filter(run => run.needsRepo);
+    assert.deepEqual(cards.map(card => card.repo), [repo]);
+  } finally { await h.close(); }
+});

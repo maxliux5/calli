@@ -160,7 +160,7 @@ export function DeskPage(props: Props) {
         <div className="desk-segment" role="group" aria-label={t('desk.title')}>{ORDERS.map(value => <button key={value} aria-pressed={!proactiveOnly && !askingOnly && order === value} onClick={() => { setProactiveOnly(false); setAskingOnly(false); setOrder(value); try { localStorage.setItem(ORDER_KEY, value); } catch { /* Keep the choice for this visit. */ } }}>{t(`desk.${value}`)}</button>)}</div></div>
     </header>
     {loading ? <p className="desk-state" role="status">{t('common.loading')}</p> : error ? <p className="desk-state" role="alert">{t('desk.loadFailed')} <button className="ghost" onClick={onReload}>{t('common.retry')}</button></p> : <div className="desk-board">
-      {proactiveOnly || askingOnly ? <ProactiveList api={api} todos={todos} state={proactive} askingOnly={askingOnly} canOpen={id => piles.some(pile => pile.todo.id === id)} onOpen={show} /> : <><div className={`desk-top${desk.inbox.length ? ' has-inbox' : ''}`}>
+      {proactiveOnly || askingOnly ? <ProactiveList api={api} todos={todos} state={proactive} askingOnly={askingOnly} canOpen={id => piles.some(pile => pile.todo.id === id)} onOpen={show} onOpenThread={onOpenThread} /> : <><div className={`desk-top${desk.inbox.length ? ' has-inbox' : ''}`}>
         <WeekCard week={desk.week} done={desk.doneThisWeek} />
         <section className="desk-first desk-paper"><h2>{t('desk.first')}</h2>
           {desk.first.length ? <ol>{desk.first.map(pile => <li key={pile.todo.id}><button onClick={e => showMatter(pile, e.currentTarget)}>{pile.todo.text}</button></li>)}</ol> : <p className="desk-empty">{t('desk.firstEmpty')}</p>}

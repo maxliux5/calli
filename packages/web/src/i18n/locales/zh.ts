@@ -272,6 +272,7 @@ export const zh = {
   "proactive.allowSandbox": "允许沙盒",
   "proactive.looksDone": "看起来做完了",
   "proactive.service": "模型服务恢复",
+  "proactive.untitledSession": "未命名会话",
   "proactive.noneAsking": "暂时没有需要你处理的卡片。",
   "proactive.attentionLoading": "正在读取待处理事项",
   "proactive.attentionFailed": "读取失败，重试",

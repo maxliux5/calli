@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { basename, dirname, isAbsolute } from 'node:path';
 import { promisify } from 'node:util';
 import type { AgentAdapter } from './adapters/types.js';
 import { turnAnswer } from './coordination.js';
@@ -11,7 +11,7 @@ import { turnOutcome } from './lifecycle.js';
 import type { PersonalService } from './personal.js';
 import { advancePrompt, parseAdvance, transientError, type AdvanceDecision } from './proactive-advance.js';
 import { ProactiveSandbox, type SandboxChanges } from './proactive-sandbox.js';
-import { urgencyOf, type Store, type TodoRecord } from './store.js';
+import { urgencyOf, type Store, type ThreadRecord, type TodoRecord } from './store.js';
 import type { ThreadManager } from './threads.js';
 import { isWithinWorkdirs } from './workdirs.js';
 
@@ -25,7 +25,10 @@ export interface ProactiveSettings {
 }
 export interface ProactiveRun {
   id: string;
+  /** Empty for an advance on a session that belongs to no matter. */
   matterId: string;
+  /** The session's title when the run was recorded, for cards that have no matter to name them. */
+  threadTitle?: string;
   kind: 'prepare' | 'sandbox' | 'advance';
   variant?: 'deadline' | 'plan';
   needsRepo?: true;
@@ -57,11 +60,22 @@ export const PROACTIVE_RUNS_KEY = 'personalProactiveRuns';
 const RUNS = PROACTIVE_RUNS_KEY;
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
+/** How far back advance looks: the sessions the person is working in now, not ones long left alone. */
+const RECENT = 3 * DAY;
+const clip = (text: string, length: number) => [...text].slice(0, length).join('');
 /** What a worker's "## 测试结果" section must say to count as a failure; anything else passes. */
 const TEST_FAILED = /失败|failed|not ok/i;
 const exec = promisify(execFile);
 const localDay = (now: Date) => `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
 const minutes = (time: string) => { const [h, m] = time.split(':').map(Number); return h * 60 + m; };
+/** The repository a directory belongs to, as its main checkout: every worktree of it is the same repository. */
+async function mainRepository(cwd: string): Promise<string | null> {
+  try {
+    const common = (await exec('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd, timeout: 5000 })).stdout.trim();
+    if (basename(common) === '.git') return realpathSync(dirname(common));
+    return realpathSync((await exec('git', ['rev-parse', '--show-toplevel'], { cwd, timeout: 5000 })).stdout.trim());
+  } catch { return null; }
+}
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 /** Time-sensitive preparation only; a pin alone does not invent a deadline or a meeting. */
@@ -231,19 +245,19 @@ export class ProactiveService {
           && preparationCandidate(todo, this.store.todoNote(todo.id).text, now));
         if (todo) { await this.prepareOrObserve(todo, 'prepare', now, undefined, 'deadline'); return; }
       }
-      if (await this.advance(todos, now)) return;
+      if (await this.advance(now)) return;
       if (today.filter(run => run.kind === 'sandbox').length < 2) {
         for (const todo of todos) {
           if (runs.some(run => run.matterId === todo.id && run.kind === 'sandbox' && ['ready', 'merged'].includes(run.status))) continue;
           for (const id of this.store.todoThreadIds(todo.id)) {
             const thread = this.store.getThread(id);
             if (!thread || thread.archivedAt || runs.some(run => run.kind !== 'advance' && run.threadId === id) || !isWithinWorkdirs(thread.cwd, this.manager.allowedWorkdirs)) continue;
-            let repo: string;
-            try { repo = realpathSync((await exec('git', ['rev-parse', '--show-toplevel'], { cwd: thread.cwd, timeout: 5000 })).stdout.trim()); }
-            catch { continue; }
+            const repo = await mainRepository(thread.cwd);
+            if (!repo || isWithinWorkdirs(repo, [this.personal.directory()])) continue;
             if (!isWithinWorkdirs(repo, this.manager.allowedWorkdirs) || this.busy(todo.id) || this.settings().mode === 'off') continue;
             if (!this.settings().repos.includes(repo)) {
-              if (runs.some(run => run.needsRepo && run.matterId === todo.id && run.repo === repo && now.getTime() - Date.parse(run.startedAt) < 7 * DAY)) continue;
+              // One question per matter a week: a matter's many worktrees are one repository, and one "no" is enough.
+              if (runs.some(run => run.needsRepo && run.matterId === todo.id && now.getTime() - Date.parse(run.startedAt) < 7 * DAY)) continue;
               this.saveRun({ id: randomUUID(), matterId: todo.id, kind: 'sandbox', needsRepo: true, repo, threadId: '', startedAt: now.toISOString(), status: 'observed',
                 summary: `这件事的线程在 ${repo.split('/').pop()} 里，允许它在沙盒里继续吗？` });
               return;
@@ -297,35 +311,68 @@ export class ProactiveService {
     return value.day === localDay(now) ? value : { day: localDay(now), models: 0, sends: 0, sent: value.sent };
   }
 
-  private async advance(todos: TodoRecord[], now: Date): Promise<boolean> {
-    for (const todo of todos) for (const threadId of this.store.todoThreadIds(todo.id)) {
-      const thread = this.store.getThread(threadId), runs = this.runs();
-      if (!thread || thread.status === 'running' || thread.archivedAt || runs.some(run => run.kind !== 'advance' && run.threadId === threadId)) continue;
-      const latest = this.latest(threadId);
-      if (!latest || runs.some(run => run.kind === 'advance' && run.threadId === threadId && run.turnId === latest.turnId)) continue;
+  /**
+   * Sessions the person worked in lately, newest first: the ones whose last turn ended within the
+   * window, started from the hub, and that nobody else follows (not a collaboration member, a
+   * scheduled run, her own conversation, or a thread a proactive run opened).
+   */
+  private recentSessions(now: Date): Array<{ thread: ThreadRecord; latest: NonNullable<ReturnType<ProactiveService['latest']>>; todo: TodoRecord | null }> {
+    const runs = this.runs(), router = this.personal.router.status().threadId;
+    const owner = new Map<string, TodoRecord>();
+    for (const todo of this.store.listTodos()) {
+      if (todo.done || todo.state === 'done' || todo.proposed) continue;
+      for (const id of this.store.todoThreadIds(todo.id)) if (!owner.has(id)) owner.set(id, todo);
+    }
+    const sessions = [];
+    for (const thread of this.store.listThreads()) {
+      if (thread.status === 'running' || thread.archivedAt || thread.doneAt || thread.schedule || thread.id === router) continue;
+      if (now.getTime() - Date.parse(thread.updatedAt) > RECENT) continue;
+      const team = this.manager.coordination?.metadata(thread.id);
+      if (team && team.rootId !== thread.id) continue;
+      if (runs.some(run => run.kind !== 'advance' && run.threadId === thread.id)) continue;
+      const latest = this.latest(thread.id);
+      if (!latest) continue;
       const age = now.getTime() - Date.parse(latest.end.ts);
-      if (age < 15 * 60_000 || age > 7 * DAY) continue;
+      if (age < 15 * 60_000 || age > RECENT) continue;
+      sessions.push({ thread, latest, todo: owner.get(thread.id) ?? null });
+    }
+    return sessions.sort((a, b) => Date.parse(b.latest.end.ts) - Date.parse(a.latest.end.ts));
+  }
+
+  private async advance(now: Date): Promise<boolean> {
+    for (const { thread, latest, todo } of this.recentSessions(now)) {
+      const threadId = thread.id, runs = this.runs();
+      if (runs.some(run => run.kind === 'advance' && run.threadId === threadId && run.turnId === latest.turnId)) continue;
+      if (todo && this.busy(todo.id)) continue;
+      const matterId = todo?.id ?? '';
       const began = Date.now();
       const outcome = turnOutcome(latest.end)!;
       const transient = outcome.outcome === 'error' && transientError(outcome.code, outcome.message ?? '');
       let decision: AdvanceDecision = { phase: 'unsure', line: '' };
-      if (!transient) {
+      // The agent's own [进度] line for this turn says it best; only an unclear one goes to the model.
+      const report = thread.report && !thread.report.by && Date.parse(thread.report.at) >= Date.parse(latest.start.ts) ? thread.report : null;
+      if (transient) { /* A rule: no model call. */ }
+      else if (report?.stage === 'blocked' && report.note.trim()) decision = { phase: 'blocked', on: 'user', line: clip(report.note.trim(), 30), question: { text: report.note.trim(), options: [] } };
+      else if (report?.stage === 'review') decision = { phase: 'done', line: clip(report.note.trim(), 30) };
+      else {
         if (this.budget(now).models >= 30) continue;
         const settings = await this.personal.resolvedSettings();
-        if (!settings.agent || this.settings().mode === 'off' || this.busy(todo.id)) continue;
+        if (!settings.agent || this.settings().mode === 'off' || (todo && this.busy(todo.id))) continue;
         const budget = this.budget(now); budget.models++;
         this.store.saveHubSetting('personalProactiveBudget', budget);
         const answer = turnAnswer(this.store.voiceAnswerEvents(threadId, latest.turnId), latest.turnId, Number.MAX_SAFE_INTEGER).trim();
         try {
           decision = parseAdvance(await this.manager.askOnce(settings.agent,
-            advancePrompt(todo.text, this.store.todoNote(todo.id).text, String(latest.start.data.text ?? ''), answer, now),
+            advancePrompt(todo?.text ?? thread.title, todo ? this.store.todoNote(todo.id).text : '', String(latest.start.data.text ?? ''), answer, now),
             { model: settings.model, title: '推进分流', recordPrompt: false, timeoutMs: 60_000 }), answer);
         } catch { /* A classifier outage produces an audit entry, never a continuation. */ }
       }
+      // A finished session with no matter has nothing to close; its [进度] line already says so in the sidebar.
+      if (decision.phase === 'done' && !todo) decision = { ...decision, phase: 'unsure' };
       const reason = transient ? 'transient' : decision.phase === 'done' ? 'done' : decision.phase === 'blocked' ? decision.on : undefined;
-      const previous = [...runs].reverse().find(run => run.kind === 'advance' && run.matterId === todo.id && run.threadId === threadId && run.status === 'continued');
+      const previous = [...runs].reverse().find(run => run.kind === 'advance' && run.threadId === threadId && run.status === 'continued');
       const attempts = latest.start.data.proactive && previous && previous.reason === reason ? previous.attempts ?? 0 : 0;
-      const run: ProactiveRun = { id: randomUUID(), matterId: todo.id, kind: 'advance', threadId, turnId: latest.turnId, startedAt: now.toISOString(),
+      const run: ProactiveRun = { id: randomUUID(), matterId, threadTitle: thread.title, kind: 'advance', threadId, turnId: latest.turnId, startedAt: now.toISOString(),
         status: 'discarded', phase: transient ? 'blocked' : decision.phase, on: decision.on, line: decision.line, reason, question: decision.question, wait: decision.wait };
       if (reason === 'transient' || reason === 'external') {
         run.attempts = attempts;
@@ -344,13 +391,13 @@ export class ProactiveService {
       run.summary = reason === 'transient' ? '会在退避后续跑临时出错的线程' : reason === 'external' ? `会定时检查：${decision.wait!.what}`
         : reason === 'user' ? `会请你回答：${decision.question!.text}` : reason === 'done' ? `看起来做完了：${decision.line}` : '无法确定下一步，保留记录';
       if (this.settings().mode === 'observe' && run.status === 'waiting') run.status = 'observed';
-      const currentTodo = this.store.getTodo(todo.id);
-      if (this.settings().mode === 'off' || this.quiet(new Date(now.getTime() + Date.now() - began)) || !currentTodo || currentTodo.done || currentTodo.state === 'done' || currentTodo.proposed
-        || this.store.getThread(threadId)?.archivedAt || this.busy(todo.id) || this.latest(threadId)?.turnId !== latest.turnId) {
+      const currentTodo = todo ? this.store.getTodo(todo.id) : null;
+      if (this.settings().mode === 'off' || this.quiet(new Date(now.getTime() + Date.now() - began)) || (todo && (!currentTodo || currentTodo.done || currentTodo.state === 'done' || currentTodo.proposed))
+        || this.store.getThread(threadId)?.archivedAt || (todo && this.busy(todo.id)) || this.store.getThread(threadId)?.status === 'running' || this.latest(threadId)?.turnId !== latest.turnId) {
         run.status = 'discarded'; run.discardReason = '线程或主动行动设置已改变';
       }
       this.saveRun(run);
-      if (run.status === 'asking') this.manager.notice(threadId, `需要你：${todo.text}`, false, true);
+      if (run.status === 'asking') this.manager.notice(threadId, `需要你：${todo?.text ?? thread.title}`, false, true);
       return true;
     }
     return false;
@@ -360,9 +407,9 @@ export class ProactiveService {
     const current = this.get(run.id), thread = this.store.getThread(run.threadId), todo = this.store.getTodo(run.matterId);
     if (!['waiting', 'asking'].includes(current.status)) throw new HttpError(409, '这张卡片已失效，请刷新');
     if (!thread || thread.archivedAt) throw new HttpError(409, '线程已归档或不存在');
-    if (thread.status === 'running' || this.busy(run.matterId)) throw new HttpError(409, '线程正在运行');
+    if (thread.status === 'running' || (run.matterId && this.busy(run.matterId))) throw new HttpError(409, '线程正在运行');
     if (this.latest(run.threadId)?.turnId !== run.turnId) throw new HttpError(409, '线程已继续');
-    if (!todo || todo.done || todo.state === 'done' || todo.proposed) throw new HttpError(409, '事项已结束或尚未确认');
+    if (run.matterId && (!todo || todo.done || todo.state === 'done' || todo.proposed)) throw new HttpError(409, '事项已结束或尚未确认');
     if (automatic && (this.settings().mode !== 'auto' || this.quiet(now))) throw new HttpError(409, '主动行动已关闭或进入安静时段');
   }
 

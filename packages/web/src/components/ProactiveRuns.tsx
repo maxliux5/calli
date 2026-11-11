@@ -147,14 +147,16 @@ function RunSummary({ run }: { run: ProactiveRun }) {
 }
 
 /** The filter's answer: one line per matter she acted on, with what is left to decide right on it. */
-export function ProactiveList({ api, todos, state, canOpen, onOpen, askingOnly = false }: { api: Api; todos: Todo[]; state: ProactiveState; canOpen: (id: string) => boolean; onOpen: (id: string, source: HTMLElement) => void; askingOnly?: boolean }) {
+export function ProactiveList({ api, todos, state, canOpen, onOpen, onOpenThread, askingOnly = false }: { api: Api; todos: Todo[]; state: ProactiveState; canOpen: (id: string) => boolean; onOpen: (id: string, source: HTMLElement) => void; onOpenThread?: (id: string) => void; askingOnly?: boolean }) {
   if (state.error) return <p className="desk-state" role="alert">{state.error} <button className="ghost" onClick={state.load}>{t('common.retry')}</button></p>;
   if (!state.runs) return <p className="desk-state" role="status">{t('common.loading')}</p>;
   const matters = proactiveMatters(askingOnly ? state.runs.filter(run => run.status === 'asking') : state.runs, todos);
   if (!matters.length) return <p className="desk-empty">{t(askingOnly ? 'proactive.noneAsking' : 'proactive.none')}</p>;
   return <ul className="proactive-list desk-paper">{matters.map(({ matterId, todo, run }) => <li key={matterId} data-matter={matterId}>
     <div className="proactive-row-main">
-      {todo && canOpen(matterId) ? <button className="proactive-row-title" onClick={e => onOpen(matterId, e.currentTarget)}>{todo.text}</button> : <span className="proactive-row-title">{todo?.text ?? run.summary ?? t('proactive.goneMatter')}</span>}
+      {todo && canOpen(matterId) ? <button className="proactive-row-title" onClick={e => onOpen(matterId, e.currentTarget)}>{todo.text}</button>
+        : !run.matterId && run.threadId && onOpenThread ? <button className="proactive-row-title" onClick={() => onOpenThread(run.threadId)}>{run.threadTitle || t('proactive.untitledSession')}</button>
+        : <span className="proactive-row-title">{todo?.text ?? (run.matterId ? run.summary ?? t('proactive.goneMatter') : run.threadTitle || t('proactive.untitledSession'))}</span>}
       <span className={`proactive-row-status${run.status === 'failed' || run.status === 'asking' ? ' personal-warning' : ''}`}>{statusLabel(run)}</span>
     </div>
     {(run.kind === 'advance' || run.needsRepo) && <RunSummary run={run} />}

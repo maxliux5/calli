@@ -43,6 +43,7 @@ export const replaceRun = (runs: readonly ProactiveRun[], next: ProactiveRun): P
 
 /** A matter she has acted on, by the run that says the most about it now. */
 export interface ProactiveMatter {
+  /** The matter, or `thread:<id>` for a session that belongs to none. */
   matterId: string;
   todo: Todo | null;
   run: ProactiveRun;
@@ -54,7 +55,9 @@ export interface ProactiveMatter {
  */
 export function proactiveMatters(runs: readonly ProactiveRun[], todos: readonly Todo[]): ProactiveMatter[] {
   const byMatter = new Map<string, ProactiveRun[]>();
-  for (const run of runs) if (run.status !== 'discarded') byMatter.set(run.matterId, [...(byMatter.get(run.matterId) ?? []), run]);
+  // A session that belongs to no matter is its own row, not one heap of every such session.
+  const key = (run: ProactiveRun) => run.matterId || `thread:${run.threadId}`;
+  for (const run of runs) if (run.status !== 'discarded') byMatter.set(key(run), [...(byMatter.get(key(run)) ?? []), run]);
   return [...byMatter.entries()]
     .map(([matterId, list]) => {
       const sorted = list.sort(newestFirst);

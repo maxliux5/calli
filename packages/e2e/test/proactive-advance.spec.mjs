@@ -184,3 +184,27 @@ for (const [locale, labels] of [
     await page.getByRole('button', { name: locale === 'en' ? '1 question waiting for you' : '1 件の質問が回答待ち', exact: true }).waitFor();
   } finally { await browser.close(); await daemon.stop(); }
 });
+
+for (const width of [1440, 390]) for (const colorScheme of ['light', 'dark']) test(`a recent session with no matter asks from its own row and opens the session: ${width}px ${colorScheme}`, async () => {
+  const daemon = await startDaemon();
+  const browser = await launchBrowser();
+  try {
+    const data = await arrangeAdvance(daemon);
+    data.runs.push({ id: 'session', matterId: '', threadId: 'session-thread', threadTitle: '修复白屏', kind: 'advance', turnId: 'turn-s', startedAt: new Date().toISOString(), status: 'asking', reason: 'user', question: { text: '白屏已修好，要我合入 master 吗？', options: [] } });
+    const page = await browser.newPage({ viewport: { width, height: width === 390 ? 844 : 1000 }, isMobile: width === 390, hasTouch: width === 390, colorScheme, timezoneId: 'UTC' });
+    const errors = []; page.on('pageerror', error => errors.push(error.message));
+    await routes(page, data);
+    await openDesk(page, daemon);
+    await page.getByRole('button', { name: '3 个问题等你回答', exact: true }).click();
+    const row = page.locator('.proactive-list li[data-matter="thread:session-thread"]');
+    await row.getByRole('button', { name: '修复白屏', exact: true }).waitFor();
+    await row.getByText('白屏已修好，要我合入 master 吗？', { exact: true }).waitFor();
+    await screenshot(page, `session-${width}-${colorScheme}`);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'no horizontal page overflow');
+    await row.getByRole('textbox').fill('合入吧');
+    await row.getByRole('button', { name: '发送回答', exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('.proactive-list li[data-matter="thread:session-thread"] input'));
+    assert.deepEqual(data.requests.answers, [{ answer: '合入吧' }]);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); await daemon.stop(); }
+});

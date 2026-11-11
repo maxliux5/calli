@@ -270,6 +270,7 @@ export const ja: Messages = {
   "proactive.allowSandbox": "サンドボックス作業を許可",
   "proactive.looksDone": "完了したようです",
   "proactive.service": "モデルサービスの復旧",
+  "proactive.untitledSession": "無題のセッション",
   "proactive.noneAsking": "対応が必要なカードはありません。",
   "proactive.attentionLoading": "要対応の項目を読み込み中",
   "proactive.attentionFailed": "読み込み失敗・再試行",
