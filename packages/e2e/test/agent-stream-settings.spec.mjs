@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startDaemon, openUi, api, launchBrowser } from '../harness.mjs';
+import { writeFakeDoubaoManifest } from '../../daemon/test/fixtures/doubao-runtime.mjs';
 
 const switchName = '启用实验流式桥';
 const view = async (daemon, id) => (await (await api(daemon, `/api/threads/${id}`)).json());
@@ -50,7 +51,7 @@ for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark'])
       await add.locator('.choice-row').filter({ hasText: 'Doubao CLI' }).click();
       const toggle = add.getByRole('switch', { name: switchName, exact: true });
       assert.equal(await toggle.getAttribute('aria-checked'), 'false', 'new opt-in is not preselected');
-      await add.getByText(/仅 2.31.2 · Linux x64/).waitFor();
+      await add.getByText(/仅 Linux x64/).waitFor();
       const name = `豆包 ${mode}`;
       await add.getByLabel('名称（选填）').fill(name);
       await toggle.click();
@@ -70,18 +71,24 @@ for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark'])
       await settings.waitFor({ state: 'detached' });
       assert.equal((await (await api(daemon, '/api/agents')).json()).find(a => a.id === 'doubao').streamBridgeEnabled, false);
       const retry = await openSettings(page, name);
-      const manifestPath = join(daemon.dataDir, 'doubao-runtime', 'manifest.json');
-      const manifestText = readFileSync(manifestPath, 'utf8'), manifest = JSON.parse(manifestText);
-      writeFileSync(manifestPath, JSON.stringify({ ...manifest, version: '2.32.0' }));
+      // Changed output seams report a neutral fallback note; saving consent still succeeds.
+      const runtimeRoot = join(daemon.dataDir, 'doubao-runtime');
+      const bundlePath = join(runtimeRoot, 'resources/js_app/entry-cli-router/main.js');
+      const bundleText = readFileSync(bundlePath, 'utf8');
+      writeFileSync(bundlePath, bundleText.replace('case"stream-json":', 'case"new":'));
+      writeFakeDoubaoManifest(runtimeRoot);
       await retry.getByRole('switch', { name: switchName }).click();
-      await retry.getByRole('button', { name: '保存设置', exact: true }).click();
-      await retry.getByRole('alert').waitFor();
-      assert.match(await retry.getByRole('alert').textContent(), /版本或平台/);
-      assert.equal((await (await api(daemon, '/api/agents')).json()).find(a => a.id === 'doubao').streamBridgeEnabled, false);
+      await retry.getByRole('status').waitFor();
+      assert.match(await retry.getByRole('status').textContent(), /普通文本输出/);
+      assert.equal(await retry.getByRole('alert').count(), 0, 'an incompatible install is not an error');
       await shot('incompatible');
-      writeFileSync(manifestPath, manifestText);
       await retry.getByRole('button', { name: '保存设置', exact: true }).click();
       await retry.waitFor({ state: 'detached' });
+      assert.equal((await (await api(daemon, '/api/agents')).json()).find(a => a.id === 'doubao').streamBridgeEnabled, true);
+      const bridge = await (await api(daemon, '/api/agents/doubao/stream-bridge')).json();
+      assert.equal(bridge.compatible, false); assert.match(bridge.reason, /输出结构/);
+      writeFileSync(bundlePath, bundleText);
+      writeFakeDoubaoManifest(runtimeRoot);
       const made = await api(daemon, '/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'doubao', cwd: daemon.workdir, title: `测试下一轮 ${mode}` }) });
       const thread = await made.json();
       await chooseThread(page, thread.title, mobile);
@@ -116,7 +123,7 @@ for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark'])
   });
 }
 
-test('discovery offers bridge consent separately from selecting a CLI, and failed compatibility can be retried', { timeout: 60_000 }, async () => {
+test('discovery offers bridge consent separately from selecting a CLI, and incompatible installs still connect', { timeout: 60_000 }, async () => {
   const daemon = await startDaemon({ CALLI_E2E_DOUBAO_RUNTIME: '1', CALLI_E2E_DISCOVER_DOUBAO2: '1' }, { agents: [{ id: 'pi', adapter: 'pi', command: ['fake-pi'] }] });
   let browser;
   try {
@@ -139,16 +146,15 @@ test('discovery offers bridge consent separately from selecting a CLI, and faile
     await row.click(); assert.equal(await toggle.isDisabled(), true);
     await row.click(); await toggle.click();
     assert.equal(await row.getAttribute('aria-checked'), 'true', 'checking bridge consent never deselects its CLI');
-    const manifestPath = join(daemon.dataDir, 'doubao-runtime/manifest.json'), text = readFileSync(manifestPath, 'utf8');
-    writeFileSync(manifestPath, JSON.stringify({ ...JSON.parse(text), version: '2.32.0' }));
+    const runtimeRoot = join(daemon.dataDir, 'doubao-runtime');
+    const bundlePath = join(runtimeRoot, 'resources/js_app/entry-cli-router/main.js'), bundleText = readFileSync(bundlePath, 'utf8');
+    writeFileSync(bundlePath, bundleText.replace('case"stream-json":', 'case"new":'));
+    writeFakeDoubaoManifest(runtimeRoot);
     await discovery.getByRole('button', { name: '连接 1 个', exact: true }).click();
-    await discovery.getByRole('alert').waitFor();
-    assert.equal((await (await api(daemon, '/api/agents')).json()).some(a => a.id === 'doubao2'), false);
-    writeFileSync(manifestPath, text);
-    await discovery.getByRole('button', { name: '连接 1 个', exact: true }).click();
-    await discovery.waitFor({ state: 'detached' });
+    await discovery.waitFor({ state: 'detached' }, { timeout: 10_000 });
     const agent = (await (await api(daemon, '/api/agents')).json()).find(a => a.id === 'doubao2');
-    assert.ok(agent.available); assert.equal(agent.streamBridgeEnabled, true);
+    assert.ok(agent.available); assert.equal(agent.streamBridgeEnabled, true, 'consent saves even when incompatible');
+    assert.equal((await (await api(daemon, '/api/agents/doubao2/stream-bridge')).json()).compatible, false);
     const saved = JSON.parse(readFileSync(join(daemon.dataDir, 'agents.json'), 'utf8')).agents.find(a => a.id === 'doubao2');
     assert.equal(saved.env.CALLI_DOUBAO_STREAM, '1');
     await context.close();

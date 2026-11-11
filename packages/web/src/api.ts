@@ -767,9 +767,8 @@ export interface AgentReferences {
   handoverOrders: number;
 }
 
-/** A version-limited opt-in bridge that changes only a private runtime copy. */
+/** An opt-in bridge that changes only a private runtime copy; incompatible installs fall back. */
 export interface StreamBridgeCapability {
-  version: string;
   platform: string;
   temporaryMegabytes: number;
 }
@@ -1837,6 +1836,11 @@ export class Api {
   /** Updates hub-owned settings; its id, which threads store, does not change. */
   updateAgent(id: string, patch: { label?: string; hidden?: boolean; streamBridge?: boolean }): Promise<{ id: string; label?: string; hidden?: boolean }> {
     return this.request('PATCH', `/api/agents/${encodeURIComponent(id)}`, patch);
+  }
+
+  /** Whether the experimental bridge would run on this install right now, and why not. */
+  agentStreamBridge(id: string): Promise<{ compatible: boolean; reason?: string }> {
+    return this.request('GET', `/api/agents/${encodeURIComponent(id)}/stream-bridge`);
   }
 
   /** Removes only the hub's registration; the agent's config, login and sessions stay. */

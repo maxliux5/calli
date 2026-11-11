@@ -5,8 +5,7 @@ import { createHash } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, posix, resolve } from 'node:path';
 
-const VERSION = '2.31.2';
-export const DOUBAO_STREAM_BRIDGE = { version: VERSION, platform: 'Linux x64', temporaryMegabytes: 106 };
+export const DOUBAO_STREAM_BRIDGE = { platform: 'Linux x64', temporaryMegabytes: 106 };
 const BUNDLES = ['entry-cli-router', 'entry-cli-chat'] as const;
 const MAX_RUNTIME_BYTES = 512 * 1024 * 1024;
 
@@ -98,14 +97,16 @@ async function digest(path: string): Promise<string> {
 
 /** Read only the selected installation's compatibility metadata. */
 async function inspectDoubaoStreamRuntime(command: string[], env: NodeJS.ProcessEnv, cwd: string) {
-  if (process.platform !== 'linux') throw new Error('Doubao 实验流式桥当前仅验证 Linux');
+  if (process.platform !== 'linux') throw new Error('Doubao 实验流式桥仅支持 Linux');
   const { root, base } = await sourceRuntime(command, env, cwd);
   const manifestPath = join(root, 'manifest.json');
   const info = await lstat(manifestPath);
   if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024) throw new Error('Doubao 流式桥没有有效的原生运行清单');
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-  if (manifest.version !== VERSION || manifest.target !== 'linux-x64' || process.arch !== 'x64') {
-    throw new Error(`Doubao 流式桥尚未验证此版本或平台（仅支持 ${VERSION} / Linux x64），请关闭实验流式桥或更新 Calli`);
+  // Compatibility is decided by the patch anchors, not the version number: a CLI update that
+  // keeps the same output seams still works, and callers fall back to text output when it does not.
+  if (manifest.target !== 'linux-x64' || process.arch !== 'x64') {
+    throw new Error('Doubao 流式桥仅支持 Linux x64 的原生安装');
   }
   if (manifest.entrypoint !== 'doubao' || !Array.isArray(manifest.files) || !manifest.files.length || manifest.files.length > 512) {
     throw new Error('Doubao 流式桥的运行清单不兼容');
@@ -136,7 +137,7 @@ export async function validateDoubaoStreamRuntime(command: string[], env: NodeJS
   }
 }
 
-/** Version-guarded local snapshot. No writes, hard links, config copies or downloads in the source. */
+/** Anchor-checked local snapshot. No writes, hard links, config copies or downloads in the source. */
 export async function prepareDoubaoStreamRuntime(command: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<DoubaoStreamRuntime> {
   const { root, base, manifest } = await inspectDoubaoStreamRuntime(command, env, cwd);
   const directory = await mkdtemp(join(tmpdir(), 'calli-doubao-stream-'));

@@ -300,7 +300,6 @@ export interface MemoryReader {
 
 /** Compatibility information for an opt-in bridge that patches a private runtime copy. */
 export interface StreamBridgeCapability {
-  version: string;
   platform: string;
   temporaryMegabytes: number;
 }
@@ -374,8 +373,11 @@ export interface AgentAdapter {
   };
   /** Effective setting, including this instance's environment and an inherited hub default. */
   readonly streamBridgeEnabled?: boolean;
-  /** Validate opt-in compatibility and return only the adapter-owned setting environment. */
-  streamBridgeEnvironment?(enabled: boolean): Promise<Record<string, string>>;
+  /**
+   * Save the adapter-owned setting environment. Enabling never fails on an incompatible
+   * installation; `incompatible` explains why turns will run without the bridge instead.
+   */
+  streamBridgeEnvironment?(enabled: boolean): Promise<{ environment: Record<string, string>; incompatible?: string }>;
   memoryReader?(): MemoryReader;
   /** Whether the agent can be started on this host. */
   available(): Promise<boolean>;
