@@ -37,6 +37,22 @@ export function patchDoubaoStreamBundle(source: string, bundle: typeof BUNDLES[n
   return (source.slice(0, at) + forwarded + source.slice(at + hook.length)).replace(output, 'output_format:"stream-json"');
 }
 
+/** A read-only catalog entry in our copy; it never calls send, opens a session or reports choices. */
+export function patchDoubaoModelBundle(source: string, bundle: typeof BUNDLES[number]): string {
+  const router = bundle === 'entry-cli-router';
+  const branch = `if("list"===o.kind)return ${router ? 'p' : 'b'}(e,t);`;
+  const method = router
+    ? 'resolveSettings(e,t){return G({im:this.im,botId:this.botId},e,t)}'
+    : 'resolveSettings(e,t){return et({im:this.im,botId:this.botId},e,t)}';
+  const load = router ? '(0,U.Fo)' : 'W';
+  if (source.split(branch).length !== 2 || source.split(method).length !== 2
+    || !source.includes('/alice/slot/action_bar_v3/brief_list')) {
+    throw new Error('Doubao 模型目录不兼容：原生加载入口已变化，请升级 Calli');
+  }
+  return source.replace(method, `async calliReadModels(){return ${load}({im:this.im,botId:this.botId})}${method}`)
+    .replace(branch, 'if("list"===o.kind){const catalog=await e.chat.calliReadModels();await e.output.stdout(JSON.stringify({type:"calli_models",models:catalog.models.map(model=>({...model.option}))})+"\\n");return{code:"ok"}}');
+}
+
 async function executable(token: string, env: NodeJS.ProcessEnv, cwd: string): Promise<string> {
   const candidates = isAbsolute(token) || token.includes('/')
     ? [resolve(cwd, token)] : (env.PATH ?? '').split(delimiter).filter(Boolean).map(dir => join(dir, token));
@@ -138,7 +154,7 @@ export async function validateDoubaoStreamRuntime(command: string[], env: NodeJS
 }
 
 /** Anchor-checked local snapshot. No writes, hard links, config copies or downloads in the source. */
-export async function prepareDoubaoStreamRuntime(command: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<DoubaoStreamRuntime> {
+export async function prepareDoubaoStreamRuntime(command: string[], env: NodeJS.ProcessEnv, cwd: string, mode: 'stream' | 'models' = 'stream'): Promise<DoubaoStreamRuntime> {
   const { root, base, manifest } = await inspectDoubaoStreamRuntime(command, env, cwd);
   const directory = await mkdtemp(join(tmpdir(), 'calli-doubao-stream-'));
   const target = join(directory, 'runtime');
@@ -159,7 +175,8 @@ export async function prepareDoubaoStreamRuntime(command: string[], env: NodeJS.
     for (const bundle of BUNDLES) {
       const rel = `resources/js_app/${bundle}/main.js`;
       const path = join(target, rel);
-      await writeFile(path, patchDoubaoStreamBundle(await readFile(path, 'utf8'), bundle));
+      const patch = mode === 'models' ? patchDoubaoModelBundle : patchDoubaoStreamBundle;
+      await writeFile(path, patch(await readFile(path, 'utf8'), bundle));
       const file = manifest.files.find((entry: { path: string }) => entry.path === rel);
       file.size = (await lstat(path)).size;
       file.sha256 = await digest(path);
