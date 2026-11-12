@@ -14580,7 +14580,15 @@ body:has(.settings-page, .action-sheet) .pet { display: none; }
 .pop-panel.context-picker-panel { width: min(440px, calc(100vw - 24px)); }
 .reference-picker { padding: 8px; }
 .reference-search { width: 100%; padding: 10px; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font: inherit; font-size: 13px; }
-.reference-results { height: min(380px, 45dvh); overflow-y: auto; margin-top: 8px; }
+/* One kind of reference at a time: the three lists never stack into one long phone scroll. */
+.reference-tabs { display: flex; gap: 2px; margin: 8px 0 2px; padding: 3px; border-radius: var(--radius-pill); background: var(--surface-2); }
+.reference-tabs button { flex: 1; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--muted); font: inherit; font-size: 12px; padding: 6px 4px; cursor: pointer; }
+.reference-tabs button[aria-selected='true'] { background: var(--surface); color: var(--text); font-weight: 550; }
+.reference-tab-count { color: var(--faint); font-size: 11px; font-weight: 400; }
+.reference-tabs button[aria-selected='true'] .reference-tab-count { color: var(--muted); }
+/* The list takes only the height it needs, up to the old cap: a tab with two folders must not
+   leave an empty sheet on a phone. Typing changes it, which is the person's own doing. */
+.reference-results { height: auto; min-height: 96px; max-height: min(380px, 45dvh); overflow-y: auto; margin-top: 8px; }
 .reference-option { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 10px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text); font: inherit; font-size: 13px; text-align: start; cursor: pointer; }
 .reference-option:hover { background: var(--hover); }
 .reference-option > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -31,6 +31,9 @@ export function ReferencePicker({ source, initialQuery, agents, onAgent, onPick 
   onAgent: (agent: AgentMention) => void; onPick: (reference: ContextReference) => void;
 }) {
   const [query, setQuery] = useState(initialQuery);
+  // One kind of reference at a time: sessions first, folders when an address is typed, agents
+  // one tap away. The three lists never share the screen, which made a long scroll on a phone.
+  const [tab, setTab] = useState<'threads' | 'dirs' | 'agents'>(initialQuery.includes('/') ? 'dirs' : 'threads');
   const [folder, setFolder] = useState(source.cwd);
   const [threads, setThreads] = useState<Thread[] | null>(null);
   const [listing, setListing] = useState<ProjectDirectoryInfo | null>(null);
@@ -72,6 +75,11 @@ export function ReferencePicker({ source, initialQuery, agents, onAgent, onPick 
   const go = (next: string) => { setFolder(next); setQuery(''); };
   const matches = (threads ?? []).filter(thread => thread.id !== source.threadId && `${thread.title} ${thread.cwd}`.toLowerCase().includes(query.toLowerCase())).slice(0, 8);
   const options = agents.filter(agent => `${agent.label} ${agent.id}`.toLowerCase().includes(query.toLowerCase())).slice(0, 8);
+  const tabs = [
+    { id: 'threads' as const, label: t('references.tab.threads'), count: threads === null ? null : matches.length },
+    { id: 'dirs' as const, label: t('references.tab.directories'), count: listing ? listing.directories.filter(dir => dir.name.toLowerCase().includes(filter)).length : null },
+    { id: 'agents' as const, label: t('references.tab.agents'), count: options.length },
+  ];
   return <div className="reference-picker" onKeyDown={event => {
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     if (event.target === search.current && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
@@ -81,27 +89,38 @@ export function ReferencePicker({ source, initialQuery, agents, onAgent, onPick 
     }
     if (event.key === 'Enter' && event.target === search.current) { event.preventDefault(); event.currentTarget.querySelector<HTMLButtonElement>('[data-reference-pick]')?.click(); }
   }}>
-    <input ref={search} className="reference-search" aria-label={t('references.search')} placeholder={t('references.search')} value={query} onChange={event => setQuery(event.target.value)} />
-    <div className="reference-results" aria-busy={busy}>
-      {slash < 0 && <><div className="coord-caption">{t('references.threads')}</div>
+    <input ref={search} className="reference-search" aria-label={t('references.search')} placeholder={t('references.search')} value={query}
+      onChange={event => { const value = event.target.value; setQuery(value); if (value.includes('/')) setTab('dirs'); }} />
+    <div className="reference-tabs" role="tablist">
+      {tabs.map(item => <button key={item.id} type="button" role="tab" aria-selected={tab === item.id}
+        className={tab === item.id ? 'on' : undefined} onClick={() => setTab(item.id)}>
+        <span>{item.label}</span>
+        {item.count !== null && <span className="reference-tab-count">{item.count}</span>}
+      </button>)}
+    </div>
+    <div className="reference-results" aria-busy={busy} role="tabpanel">
+      {tab === 'threads' && <>
         {threadError ? <p role="alert">{threadError} <button onClick={() => setRetry(value => value + 1)}>{t('references.retry')}</button></p>
           : threads === null ? <p className="reference-state">{t('references.loading')}</p>
           : !matches.length ? <p className="reference-state">{t('references.empty')}</p>
           : matches.map(thread => <button data-reference-pick className="reference-option" key={thread.id} disabled={busy} onClick={() => void pick({ kind: 'thread', sourceId: thread.id })}>
             <IconQuote size={16} /><span><strong>{thread.title}</strong><small>{thread.cwd}</small></span>
           </button>)}</>}
-      <div className="coord-caption">{t('references.directories')}</div>
-      {folderError ? <p role="alert">{folderError} <button onClick={() => setRetry(value => value + 1)}>{t('references.retry')}</button></p>
-        : loading || !listing ? <p className="reference-state">{t('references.loading')}</p> : <>
-          <div className="reference-location"><span title={listing.path}>{listing.path}</span>{listing.parent && <button disabled={busy} onClick={() => go(listing.parent!)}>{t('references.parent')}</button>}</div>
-          <button className="reference-option" data-reference-pick disabled={busy} onClick={() => void pick({ kind: 'directory', path: listing.path })}><IconFolder size={16} /><span>{t('references.thisDirectory')}</span></button>
-          {listing.directories.filter(dir => dir.name.toLowerCase().includes(filter)).slice(0, 30).map(dir => <div className="reference-directory" key={dir.path}>
-            <button className="reference-option" data-reference-pick disabled={busy} onClick={() => void pick({ kind: 'directory', path: dir.path })}><IconFolder size={16} /><span>{dir.name}/</span></button>
-            <button className="icon-btn" disabled={busy} aria-label={t('references.browse', dir.name)} onClick={() => go(dir.path)}><IconChevron size={16} /></button>
-          </div>)}
-          {!listing.directories.some(dir => dir.name.toLowerCase().includes(filter)) && <p className="reference-state">{t('references.empty')}</p>}
-        </>}
-      {slash < 0 && options.length > 0 && <><div className="coord-caption">{t('references.agents')}</div>{options.map(agent => <button className="reference-option" key={`${agent.kind}:${agent.id}`} disabled={busy} onClick={() => onAgent(agent)}><IconAgents size={16} /><span>{agent.label}</span></button>)}</>}
+      {tab === 'dirs' && <>
+        {folderError ? <p role="alert">{folderError} <button onClick={() => setRetry(value => value + 1)}>{t('references.retry')}</button></p>
+          : loading || !listing ? <p className="reference-state">{t('references.loading')}</p> : <>
+            <div className="reference-location"><span title={listing.path}>{listing.path}</span>{listing.parent && <button disabled={busy} onClick={() => go(listing.parent!)}>{t('references.parent')}</button>}</div>
+            <button className="reference-option" data-reference-pick disabled={busy} onClick={() => void pick({ kind: 'directory', path: listing.path })}><IconFolder size={16} /><span>{t('references.thisDirectory')}</span></button>
+            {listing.directories.filter(dir => dir.name.toLowerCase().includes(filter)).slice(0, 30).map(dir => <div className="reference-directory" key={dir.path}>
+              <button className="reference-option" data-reference-pick disabled={busy} onClick={() => void pick({ kind: 'directory', path: dir.path })}><IconFolder size={16} /><span>{dir.name}/</span></button>
+              <button className="icon-btn" disabled={busy} aria-label={t('references.browse', dir.name)} onClick={() => go(dir.path)}><IconChevron size={16} /></button>
+            </div>)}
+            {!listing.directories.some(dir => dir.name.toLowerCase().includes(filter)) && <p className="reference-state">{t('references.empty')}</p>}
+          </>}
+      </>}
+      {tab === 'agents' && (options.length
+        ? options.map(agent => <button className="reference-option" key={`${agent.kind}:${agent.id}`} disabled={busy} onClick={() => onAgent(agent)}><IconAgents size={16} /><span>{agent.label}</span></button>)
+        : <p className="reference-state">{t('references.empty')}</p>)}
     </div>
     <div className="reference-status" role="status">{pickError || (busy ? t('references.adding') : t('references.localOnly'))}</div>
   </div>;

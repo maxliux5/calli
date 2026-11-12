@@ -41,10 +41,14 @@ test('compact references coexist with notes, survive reload/failure/queue editin
       await composer.locator('.note-strip').waitFor();
       await input.fill('Please use @');
       await page.locator('.reference-picker').waitFor();
+      // One kind of reference at a time: folders wait in their own tab, not below the chats.
+      assert.equal(await page.getByRole('tab').count(), 3);
+      assert.equal(await page.getByRole('button', { name: '引用此目录', exact: true }).count(), 0);
       await page.locator('.reference-option', { hasText: 'Reference source' }).click();
       await composer.locator('.context-reference').waitFor();
       assert.equal(await input.inputValue(), 'Please use ');
       await composer.getByRole('button', { name: '引用会话或目录', exact: true }).click();
+      await page.getByRole('tab', { name: /目录/ }).click();
       await page.getByRole('button', { name: '引用此目录', exact: true }).click();
       await composer.locator('.context-reference').nth(1).waitFor();
       assert.equal(await composer.locator('.context-reference').count(), 2);
@@ -68,6 +72,7 @@ test('compact references coexist with notes, survive reload/failure/queue editin
       if (shots) await page.screenshot({ path: join(shots, `${mobile ? 'mobile' : 'desktop'}-${theme}-composer.png`) });
       await composer.getByRole('button', { name: '引用会话或目录', exact: true }).click();
       await page.locator('.reference-picker').waitFor();
+      await page.getByRole('tab', { name: /目录/ }).click();
       await page.getByRole('button', { name: '引用此目录', exact: true }).waitFor();
       await page.waitForTimeout(250);
       if (shots) await page.screenshot({ path: join(shots, `${mobile ? 'mobile' : 'desktop'}-${theme}-picker.png`) });
