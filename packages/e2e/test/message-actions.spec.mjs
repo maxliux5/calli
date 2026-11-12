@@ -64,7 +64,7 @@ test('message actions keep fork visible, attach snapshots, select passages and h
       assert.ok(await selection.getByRole('button', { name: '引用所选', exact: true }).isEnabled(), JSON.stringify(await selection.locator('textarea').evaluate(element => ({ start: element.selectionStart, end: element.selectionEnd, text: element.value.slice(0, 60), focused: document.activeElement === element, active: document.activeElement?.outerHTML.slice(0, 150) }))));
       await selection.getByRole('button', { name: '引用所选', exact: true }).click();
       await composer.locator('.note-strip').nth(1).waitFor();
-      // Right-click and a stationary touch press use the same commands; moving the finger scrolls.
+      // Desktop right-click opens commands. Touch holds stay with native text selection and notes.
       const answer = page.locator('.row.assistant .markdown p').first();
       if (mobile) {
         await answer.dispatchEvent('pointerdown', { pointerType: 'touch', clientX: 50, clientY: 240, pointerId: 1 });
@@ -73,7 +73,32 @@ test('message actions keep fork visible, attach snapshots, select passages and h
         assert.equal(await page.getByRole('menu', { name: '更多消息操作', exact: true }).count(), 0);
         await answer.dispatchEvent('pointerdown', { pointerType: 'touch', clientX: 50, clientY: 240, pointerId: 2 });
         await page.waitForTimeout(500);
+        assert.equal(await menu.count(), 0, 'a touch hold must not race native text selection');
+        const selectPassage = () => answer.evaluate(element => {
+          const range = document.createRange(); range.selectNodeContents(element);
+          const selection = document.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+        });
+        await selectPassage();
+        await answer.dispatchEvent('contextmenu', { clientX: 50, clientY: 240 });
         await answer.dispatchEvent('pointerup', { pointerType: 'touch', clientX: 50, clientY: 240, pointerId: 2 });
+        await page.locator('.selection-menu.docked').waitFor();
+        assert.equal(await menu.count(), 0);
+        await page.locator('.selection-menu').getByRole('button', { name: '注释', exact: true }).tap();
+        const note = page.locator('.selection-menu.commenting.docked');
+        await note.locator('input').fill('Keep the original inline note field.');
+        const noteBounds = await note.boundingBox();
+        assert.ok(noteBounds.width > 300 && noteBounds.height < 80, 'notes keep their compact bottom input');
+        assert.equal(await page.locator('.dialog-scrim').count(), 0, 'adding a note does not open a modal');
+        assert.equal(await page.locator('.composer-box').evaluate(element => getComputedStyle(element).visibility), 'hidden');
+        assert.equal(await page.locator('.pet').evaluate(element => getComputedStyle(element).visibility), 'hidden', 'the assistant cannot cover the note controls');
+        if (shots) await page.screenshot({ path: join(shots, `mobile-${theme}-note.png`) });
+        await note.getByRole('button').tap();
+        await composer.locator('.note-strip').nth(2).waitFor();
+        assert.equal(await input.inputValue(), 'Keep my unsent question @');
+        await selectPassage();
+        await page.locator('.selection-menu.docked').waitFor();
+        await toolbar.getByRole('button', { name: '更多消息操作', exact: true }).tap();
+        await page.locator('.selection-menu').waitFor({ state: 'detached' });
       } else await answer.click({ button: 'right' });
       await menu.waitFor();
       await page.waitForTimeout(250);
@@ -109,7 +134,7 @@ test('message actions keep fork visible, attach snapshots, select passages and h
       await page.evaluate(id => { location.hash = `#/thread/${id}`; }, thread.id);
       await composer.locator('.context-reference').waitFor();
       assert.equal(await input.inputValue(), 'Keep my unsent question @');
-      assert.equal(await composer.locator('.note-strip').count(), 2);
+      assert.equal(await composer.locator('.note-strip').count(), mobile ? 3 : 2);
       assert.ok(await toolbar.getByRole('button', { name: '分叉', exact: true }).isVisible());
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       assert.deepEqual(errors, []);

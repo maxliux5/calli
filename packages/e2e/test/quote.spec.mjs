@@ -72,7 +72,9 @@ test('a selection in the answer becomes a quote in the composer and in the sent 
 });
 
 test('a note number stays out of the glass bars the conversation scrolls under', async () => {
+  // Root navigation starts a new thread; explicitly reopen the source created above.
   await openUi(page, daemon);
+  await page.locator('.sidebar .thread-title').first().click();
   await page.getByText('hi there quoteselect').first().waitFor({ timeout: 15_000 });
   await selectStartOfAnswer(7);
   await page.locator('.selection-menu button', { hasText: '注释' }).click();

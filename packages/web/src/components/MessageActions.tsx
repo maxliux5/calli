@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ComponentType, type MouseEvent, type PointerEvent, type TouchEvent } from 'react';
+import { useEffect, useId, useRef, useState, type ComponentType, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { Api } from '../api';
 import { copyText } from '../clipboard';
@@ -38,7 +38,8 @@ function Commands({ actions, close }: { actions: MessageAction[]; close: () => v
 
 export function MessageMore({ actions }: { actions: MessageAction[] }) {
   return <Popover label={t('messageActions.more')} triggerLabel={t('messageActions.more')} triggerTitle={t('messageActions.more')}
-    triggerClassName="quiet-btn" panelClassName="message-command-menu" trigger={<IconMore size={15} />}>
+    triggerClassName="quiet-btn" panelClassName="message-command-menu" trigger={<IconMore size={15} />}
+    onOpen={() => window.getSelection()?.removeAllRanges()}>
     {close => <Commands actions={actions} close={close} />}
   </Popover>;
 }
@@ -51,36 +52,17 @@ export function PointMessageMenu({ point, actions }: { point: { x: number; y: nu
     </Popover></>, document.body);
 }
 
-/** Preserve selected passages and interactive children; a moved finger remains a scroll. */
+/** Touch holds belong to text selection; whole-message commands use the explicit More button. */
 export function useMessageGestures(open: (element: HTMLElement, x: number, y: number) => void) {
-  const press = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number } | null>(null);
-  const opened = useRef(0);
-  const cancel = () => { if (press.current) clearTimeout(press.current.timer); press.current = null; };
-  useEffect(() => cancel, []);
   const target = (value: EventTarget | null) => value instanceof Element && !value.closest('a, button, input, textarea, pre, code, [role="menu"], .message-edit')
     ? value.closest<HTMLElement>('[data-message-key]') : null;
   return {
     onContextMenu: (event: MouseEvent) => {
-      if (Date.now() - opened.current < 1000) { event.preventDefault(); return; }
+      if (matchMedia('(hover: none)').matches || ('pointerType' in event.nativeEvent && event.nativeEvent.pointerType === 'touch')) return;
       const element = target(event.target);
       if (!element || window.getSelection()?.toString()) return;
       event.preventDefault(); open(element, event.clientX, event.clientY);
     },
-    onPointerDown: (event: PointerEvent) => {
-      cancel();
-      if (event.pointerType !== 'touch' || window.getSelection()?.toString()) return;
-      const element = target(event.target);
-      if (!element) return;
-      const { clientX: x, clientY: y } = event;
-      press.current = { x, y, timer: setTimeout(() => {
-        press.current = null; opened.current = Date.now();
-        window.getSelection()?.removeAllRanges(); open(element, x, y);
-      }, 450) };
-    },
-    onPointerMove: (event: PointerEvent) => { if (press.current && Math.hypot(event.clientX - press.current.x, event.clientY - press.current.y) > 8) cancel(); },
-    onPointerUp: cancel, onPointerCancel: cancel,
-    onTouchEnd: (event: TouchEvent) => { if (Date.now() - opened.current < 1000) event.preventDefault(); },
-    onClickCapture: (event: MouseEvent) => { if (Date.now() - opened.current < 600 && target(event.target)) { event.preventDefault(); event.stopPropagation(); } },
   };
 }
 
