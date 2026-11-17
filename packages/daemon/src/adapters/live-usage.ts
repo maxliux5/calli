@@ -45,6 +45,7 @@ export class LiveUsage {
   private readonly previousAt = new Map<string, number>();
   private timer?: NodeJS.Timeout;
   private pending: Promise<void> | null = null;
+  private tail: Promise<void> | null = null;
   private stopped = false;
   private sequence = 0;
   readonly ledger = new UsageLedger();
@@ -54,6 +55,7 @@ export class LiveUsage {
     private readonly paths: () => Promise<string[]>,
     private readonly parse: (line: string) => NativeUsage | null,
     private readonly emit: (sample: UsageSample) => void,
+    private readonly onLine?: (line: string, minAtMs: number) => void,
   ) {}
 
   async start(): Promise<void> {
@@ -69,15 +71,22 @@ export class LiveUsage {
   }
 
   poll(): Promise<void> {
-    if (this.pending) return this.pending;
-    this.pending = this.read().catch(() => undefined).finally(() => { this.pending = null; });
-    return this.pending;
+    if (!this.pending) {
+      this.pending = this.read().catch(() => undefined).finally(() => { this.pending = null; });
+      return this.pending;
+    }
+    // Coalesce concurrent polls into one follow-up read so callers see bytes written after the active read started.
+    this.tail ??= this.pending.finally(() => {
+      this.tail = null;
+      return this.stopped ? undefined : this.poll();
+    });
+    return this.tail;
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
     clearInterval(this.timer);
-    await this.pending;
+    await (this.tail ?? this.pending);
     await this.read(true).catch(() => undefined);
   }
 
@@ -116,9 +125,13 @@ export class LiveUsage {
   }
 
   private line(line: string, path: string): void {
+    const minAt = Math.floor(this.startedAt / 1000) * 1000;
+    if (this.onLine) {
+      try { this.onLine(line, minAt); } catch { /* Ignore malformed transcript lines. */ }
+    }
     let record;
     try { record = this.parse(line); } catch { return; }
-    if (!record || !Number.isFinite(record.at) || record.at < Math.floor(this.startedAt / 1000) * 1000) return;
+    if (!record || !Number.isFinite(record.at) || record.at < minAt) return;
     const { sample } = record;
     const prior = this.seen.get(sample.id);
     const delta = { ...sample };

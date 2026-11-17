@@ -24,3 +24,15 @@ export function agyUsage(id, step) {
   const row = { type: 'PLANNER_RESPONSE', step_index: step, created_at: new Date().toISOString(), input_tokens: 150, cache_read_tokens: 50, output_tokens: 20 };
   append(file, row); append(file, row);
 }
+
+export function agyThinking(id, step, thinking, { compactOnly = false, truncatedThinking = thinking } = {}) {
+  const dir = join(process.env.CALLI_AGY_HOME, 'brain', id, '.system_generated', 'logs');
+  const now = new Date().toISOString();
+  const base = { type: 'PLANNER_RESPONSE', step_index: step, created_at: now, input_tokens: 120, cache_read_tokens: 20, output_tokens: 30 };
+  if (!compactOnly) append(join(dir, 'transcript_full.jsonl'), { ...base, thinking });
+  append(join(dir, 'transcript.jsonl'), {
+    ...base,
+    thinking: truncatedThinking,
+    ...(truncatedThinking !== thinking ? { truncated_fields: ['thinking'] } : {}),
+  });
+}

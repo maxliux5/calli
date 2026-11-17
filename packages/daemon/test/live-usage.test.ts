@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LiveUsage, UsageLedger } from '../src/adapters/live-usage.js';
-import { claudeSessionUsage, agySessionUsage } from '../src/adapters/session-usage.js';
+import { claudeSessionUsage, agySessionUsage, agySessionThinking, agyLiveUsage } from '../src/adapters/session-usage.js';
 import { ClaudeAcpAdapter } from '../src/adapters/claude.js';
 import { AgyAdapter } from '../src/adapters/agy.js';
 import { ZcodeAdapter } from '../src/adapters/zcode.js';
@@ -102,4 +102,87 @@ test('cancellation flushes measured file usage without waiting for a protocol su
     assert.equal((await run).stopReason, 'cancelled');
     assert.equal(samples.reduce((sum, s) => sum + s.total!, 0), 245);
   } finally { await session.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('agyLiveUsage prefers transcript_full.jsonl for thinking, falls back to transcript.jsonl, and deduplicates', async () => {
+  assert.equal(agySessionThinking(JSON.stringify({ type: 'GENERIC', step_index: 1, created_at: new Date().toISOString(), thinking: 'skip' })), null);
+  assert.equal(agySessionThinking(JSON.stringify({ type: 'PLANNER_RESPONSE', step_index: 1, created_at: new Date().toISOString(), thinking: '' })), null);
+  const parsed = agySessionThinking(JSON.stringify({ type: 'PLANNER_RESPONSE', step_index: 2, created_at: '2026-11-17T07:55:00Z', thinking: 'plan' }));
+  assert.deepEqual(parsed, { id: 'agy:2:2026-11-17T07:55:00Z', text: 'plan', at: Date.parse('2026-11-17T07:55:00Z') });
+
+  const dir = mkdtempSync(join(tmpdir(), 'calli-agy-think-'));
+  try {
+    const logsDir = join(dir, 'brain', 'conv-1', '.system_generated', 'logs');
+    mkdirSync(logsDir, { recursive: true });
+    const now = new Date().toISOString();
+    const compact = join(logsDir, 'transcript.jsonl');
+    const full = join(logsDir, 'transcript_full.jsonl');
+    writeFileSync(compact, JSON.stringify({ type: 'PLANNER_RESPONSE', step_index: 0, created_at: '2020-01-01T00:00:00Z', thinking: 'old' }) + '\n');
+    writeFileSync(full, JSON.stringify({ type: 'PLANNER_RESPONSE', step_index: 0, created_at: '2020-01-01T00:00:00Z', thinking: 'old' }) + '\n');
+
+    const thoughts: string[] = [];
+    const samples: UsageSample[] = [];
+    const live = agyLiveUsage('conv-1', dir, { CALLI_AGY_HOME: dir }, s => samples.push(s), t => thoughts.push(t));
+    try {
+      await live.start();
+      const row1 = { type: 'PLANNER_RESPONSE', step_index: 1, created_at: now, input_tokens: 100, cache_read_tokens: 0, output_tokens: 20, thinking: 'full-thinking-1' };
+      appendFileSync(compact, JSON.stringify({ ...row1, thinking: 'full-<truncated>', truncated_fields: ['thinking'] }) + '\n');
+      appendFileSync(full, JSON.stringify(row1) + '\n' + JSON.stringify(row1) + '\n');
+      await live.poll();
+      assert.deepEqual(thoughts, ['full-thinking-1']);
+      assert.equal(samples.length, 1);
+
+      // Growing thought on the same step emits only the newly appended suffix.
+      appendFileSync(full, JSON.stringify({ ...row1, thinking: 'full-thinking-1+more' }) + '\n');
+      await live.poll();
+      assert.deepEqual(thoughts, ['full-thinking-1', '+more']);
+    } finally {
+      await live.stop();
+    }
+
+    // Fallback when only transcript.jsonl exists.
+    const compactOnlyDir = join(dir, 'brain', 'conv-2', '.system_generated', 'logs');
+    mkdirSync(compactOnlyDir, { recursive: true });
+    const fallbackThoughts: string[] = [];
+    const fallbackLive = agyLiveUsage('conv-2', dir, { CALLI_AGY_HOME: dir }, () => undefined, t => fallbackThoughts.push(t));
+    try {
+      await fallbackLive.start();
+      appendFileSync(join(compactOnlyDir, 'transcript.jsonl'), JSON.stringify({ type: 'PLANNER_RESPONSE', step_index: 1, created_at: now, thinking: 'compact-only' }) + '\n');
+      await fallbackLive.poll();
+      assert.deepEqual(fallbackThoughts, ['compact-only']);
+    } finally {
+      await fallbackLive.stop();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('LiveUsage.poll coalesces concurrent calls so newly appended bytes are not missed', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'calli-poll-coalesce-'));
+  const file = join(dir, 'session.jsonl');
+  writeFileSync(file, '');
+  const samples: UsageSample[] = [];
+  let pathCalls = 0;
+  let releaseFirst!: () => void;
+  const gate = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const live = new LiveUsage(async () => {
+    pathCalls++;
+    if (pathCalls === 2) await gate;
+    return [file];
+  }, claudeSessionUsage, s => samples.push(s));
+  try {
+    await live.start();
+    const p1 = live.poll();
+    await new Promise(r => setTimeout(r, 10));
+    appendFileSync(file, row('after-p1-started') + '\n');
+    const p2 = live.poll();
+    releaseFirst();
+    await Promise.all([p1, p2]);
+    assert.equal(samples.length, 1);
+    assert.equal(samples[0].total, 170);
+  } finally {
+    await live.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

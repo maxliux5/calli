@@ -45,7 +45,8 @@ import type {
  * - Permission level and model are command-line flags, so changing one restarts the process on the
  *   same conversation.
  * - Input is text only, so pictures are passed as file paths; agy looks at them with its own file
- *   viewer. The stream carries neither thinking text nor file contents.
+ *   viewer. The stream carries neither thinking text nor file contents, so thinking is tailed
+ *   from the session's native transcript alongside usage.
  */
 
 /** How long the command list is reused. Reading it takes two short agy runs. */
@@ -262,6 +263,8 @@ interface Turn {
   hooks: TurnHooks;
   resolve(result: TurnResult): void;
   started: Set<number>;
+  seenSteps: Set<number>;
+  syncTranscript(): Promise<void>;
   cancelled: boolean;
   /** In plan mode, the reply held back until it is known whether it is the plan. */
   plan?: PlanReply;
@@ -269,6 +272,7 @@ interface Turn {
 
 class AgySession implements AgentSession {
   private preparing: Promise<void> = Promise.resolve();
+  private recordQueue: Promise<void> = Promise.resolve();
   agentSessionId = '';
   private child: ChildProcessWithoutNullStreams | null = null;
   private buffer = '';
@@ -336,11 +340,11 @@ class AgySession implements AgentSession {
     while ((idx = this.buffer.indexOf('\n')) >= 0) {
       const line = this.buffer.slice(0, idx).trim();
       this.buffer = this.buffer.slice(idx + 1);
-      if (line) this.onRecord(line);
+      if (line) this.enqueueRecord(line);
     }
   }
 
-  private onRecord(line: string): void {
+  private enqueueRecord(line: string): void {
     let record: any;
     try {
       record = JSON.parse(line);
@@ -351,19 +355,50 @@ class AgySession implements AgentSession {
     if (record.event === 'init') {
       if (record.conversation_id) this.agentSessionId = String(record.conversation_id);
       this.ready?.resolve();
-    } else if (record.event === 'step_update' && this.turn) {
-      const { hooks, plan } = this.turn;
-      for (const ev of mapAgyStep(record.step_update, this.turn.started)) {
-        if (plan && ev.type === 'message.delta') plan.add(String(ev.data.text ?? ''));
-        else {
-          if (plan && ev.type === 'tool.start') plan.aside();
-          hooks.emit(ev);
+      return;
+    }
+    // Serialize stdout events so transcript sync finishes before the step or turn completion that followed it.
+    this.recordQueue = this.recordQueue.then(() => this.handleRecord(record)).catch((err) => {
+      console.error(`[agy] record handling error: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
+  private async handleRecord(record: any): Promise<void> {
+    const turn = this.turn;
+    if (!turn) return;
+    if (record.event === 'step_update') {
+      const step = record.step_update;
+      const index = Number(step?.step_index);
+      const isNewStep = Number.isInteger(index) && !turn.seenSteps.has(index);
+      if (isNewStep) turn.seenSteps.add(index);
+      const stepDone = step?.step_type === 'agent_response' && (step.state === 'DONE' || step.state === 'ERROR');
+      const emitStep = () => {
+        const { hooks, plan } = turn;
+        for (const ev of mapAgyStep(step, turn.started)) {
+          if (plan && ev.type === 'message.delta') plan.add(String(ev.data.text ?? ''));
+          else {
+            if (plan && ev.type === 'tool.start') plan.aside();
+            hooks.emit(ev);
+          }
         }
+      };
+      if (stepDone) {
+        // Flush any trailing text_delta (often "\n") onto the open answer before tailing this step's thinking.
+        emitStep();
+        await turn.syncTranscript();
+        return;
       }
-    } else if (record.event === 'result' && this.turn) {
+      if (isNewStep) {
+        await turn.syncTranscript();
+        if (this.turn !== turn) return;
+      }
+      emitStep();
+    } else if (record.event === 'result') {
+      await turn.syncTranscript();
+      if (this.turn !== turn) return;
       // After an interrupted or failed turn the process is on its way out; the next turn gets a new one.
       if (record.result?.status !== 'SUCCESS') { this.stale = true; this.restartReason = 'turn_interrupted_or_failed'; }
-      this.finishTurn(agyTurnResult(record.result, this.turn.cancelled));
+      this.finishTurn(agyTurnResult(record.result, turn.cancelled));
     }
   }
 
@@ -381,7 +416,12 @@ class AgySession implements AgentSession {
     const detail = this.stderrTail.trim().split('\n').pop();
     const message = detail ? `${reason}: ${detail}` : reason;
     this.ready?.reject(new Error(message));
-    if (this.turn) this.finishTurn(this.turn.cancelled ? { stopReason: 'cancelled' } : { stopReason: 'error', error: message });
+    const turn = this.turn;
+    if (!turn) return;
+    this.recordQueue = this.recordQueue.then(() => {
+      if (this.turn !== turn) return;
+      this.finishTurn(turn.cancelled ? { stopReason: 'cancelled' } : { stopReason: 'error', error: message });
+    }).catch(() => undefined);
   }
 
   isAlive(): boolean { return this.child !== null; }
@@ -416,13 +456,19 @@ class AgySession implements AgentSession {
       this.restartReason = 'process_exited';
     }
     const child = this.child!;
-    const live = agyLiveUsage(this.agentSessionId, this.opts.cwd, this.env, sample => hooks.emit({ type: 'usage.sample', data: { ...sample } }));
+    const live = agyLiveUsage(
+      this.agentSessionId,
+      this.opts.cwd,
+      this.env,
+      sample => hooks.emit({ type: 'usage.sample', data: { ...sample } }),
+      text => hooks.emit({ type: 'reasoning.delta', data: { text } }),
+    );
     await live.start();
     if (this.child !== child) { await live.stop(); return { stopReason: 'error', error: 'agy 已退出' }; }
     try { return await new Promise<TurnResult>((resolve) => {
       // agy's plan mode has no plan of its own to send: what it answers with is the plan.
       const plan = this.opts.workMode === 'plan' ? new PlanReply((ev) => hooks.emit(ev), 'plan') : undefined;
-      this.turn = { hooks, resolve, started: new Set(), cancelled: false, plan };
+      this.turn = { hooks, resolve, started: new Set(), seenSteps: new Set(), syncTranscript: () => live.poll(), cancelled: false, plan };
       child.stdin.write(JSON.stringify({ event: 'user', message: { content: input.text + imagePathNote(input.images) } }) + '\n');
       prepared();
     }); } finally { await live.stop(); }

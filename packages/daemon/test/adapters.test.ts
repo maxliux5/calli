@@ -8,6 +8,7 @@ import { ClaudeAcpAdapter } from '../src/adapters/claude.js';
 import { DshAcpAdapter } from '../src/adapters/dsh.js';
 import { TraexAcpAdapter } from '../src/adapters/traex.js';
 import { mapPiEvent, mapPiStats, piEfforts, PiRpcAdapter } from '../src/adapters/pi.js';
+import { partitionHistory } from '../src/history.js';
 import type { EmittedEvent } from '../src/events.js';
 import type { ApprovalDecision, ApprovalRequest, TurnHooks, TurnInput } from '../src/adapters/types.js';
 
@@ -805,6 +806,72 @@ test('AgyAdapter: models, a turn with a tool, and several turns in one process',
     assert.deepEqual(second.events.map((e) => e.type), ['message.delta', 'message.delta'], 'steps of the first turn are not repeated');
   } finally {
     await session.close();
+  }
+});
+
+test('AgyAdapter: emits reasoning.delta from transcript_full.jsonl before tool steps and falls back to transcript.jsonl', async () => {
+  const fullHome = mkdtempSync(join(tmpdir(), 'calli-agy-think-full-'));
+  const compactHome = mkdtempSync(join(tmpdir(), 'calli-agy-think-compact-'));
+  try {
+    const fullAdapter = new AgyAdapter([process.execPath, fakeAgy], { CALLI_AGY_HOME: fullHome, FAKE_AGY_THINK: 'full' });
+    const fullSession = await fullAdapter.start({ cwd: here, model: 'fast' });
+    try {
+      const first = collectingHooks();
+      assert.deepEqual(await fullSession.prompt(turn('think first'), first.hooks), { stopReason: 'end_turn' });
+      const types = first.events.map((e) => e.type);
+      const firstReason = types.indexOf('reasoning.delta');
+      const firstTool = types.indexOf('tool.start');
+      assert.ok(firstReason >= 0 && firstTool > firstReason, `thinking must precede tool.start, got ${types.join(',')}`);
+      assert.deepEqual(
+        first.events.filter((e) => e.type === 'reasoning.delta').map((e) => e.data.text),
+        ['step-thought:think first', 'final-thought:think first'],
+      );
+      assert.equal(textFrom(first.events).trim(), 'thought-reply:think first');
+      // Trailing "\n" from agent_response DONE must flush before final thinking so history keeps the full answer.
+      const now = new Date().toISOString();
+      const { summary, blocks } = partitionHistory([
+        { threadId: 't1', turnId: 'u1', seq: 1, ts: now, type: 'turn.started', data: { text: 'think first' } },
+        ...first.events.map((e, i) => ({
+          threadId: 't1', turnId: 'u1', seq: i + 2, ts: now,
+          type: e.type === 'reasoning.delta' ? 'history.thought' : e.type === 'tool.start' ? 'history.tool.start' : e.type === 'tool.end' ? 'history.tool.end' : e.type,
+          data: e.type === 'reasoning.delta' ? { id: i + 2, text: e.data.text, startedAt: now, endedAt: now } : e.data,
+        })),
+        { threadId: 't1', turnId: 'u1', seq: first.events.length + 2, ts: now, type: 'turn.done', data: { stopReason: 'end_turn' } },
+      ]);
+      const work = summary.find((e) => e.type === 'history.work')!;
+      assert.ok(work);
+      assert.equal(
+        summary.filter((e) => e.type === 'message.delta').map((e) => e.data.text).join('').trim(),
+        'thought-reply:think first',
+      );
+      assert.equal(blocks.get(work.seq)?.filter((e) => e.type === 'history.thought').length, 2);
+
+      const second = collectingHooks();
+      assert.deepEqual(await fullSession.prompt(turn('think second'), second.hooks), { stopReason: 'end_turn' });
+      assert.deepEqual(
+        second.events.filter((e) => e.type === 'reasoning.delta').map((e) => e.data.text),
+        ['step-thought:think second', 'final-thought:think second'],
+        'previous turn thinking must not repeat in subsequent turns',
+      );
+    } finally {
+      await fullSession.close();
+    }
+
+    const compactAdapter = new AgyAdapter([process.execPath, fakeAgy], { CALLI_AGY_HOME: compactHome, FAKE_AGY_THINK: 'compact' });
+    const compactSession = await compactAdapter.start({ cwd: here, model: 'fast' });
+    try {
+      const fallback = collectingHooks();
+      assert.deepEqual(await compactSession.prompt(turn('think fallback'), fallback.hooks), { stopReason: 'end_turn' });
+      assert.deepEqual(
+        fallback.events.filter((e) => e.type === 'reasoning.delta').map((e) => e.data.text),
+        ['step-thought:think fallback', 'final-thought:think fallback'],
+      );
+    } finally {
+      await compactSession.close();
+    }
+  } finally {
+    rmSync(fullHome, { recursive: true, force: true });
+    rmSync(compactHome, { recursive: true, force: true });
   }
 });
 
