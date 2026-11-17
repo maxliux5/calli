@@ -18,6 +18,7 @@ import { agyBrowserTool, agySearchTool } from './agy-web.js';
 import type {
   AgentAdapter,
   AgentSession,
+  EffortLevel,
   ModelOption,
   PermissionMode,
   PlanQuota,
@@ -230,29 +231,101 @@ export function agyTurnResult(result: any, cancelled: boolean): TurnResult {
   return { stopReason: 'end_turn' };
 }
 
-/** The model list as `agy models` prints it: one `id<TAB>label` per line. Anything else is ignored. */
-export function parseAgyModels(stdout: string): ModelOption[] {
-  const models: ModelOption[] = [];
+/** Canonical thinking-effort order shown on the slider (left to right). */
+const AGY_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+type AgyEffort = (typeof AGY_EFFORTS)[number];
+const AGY_EFFORT_SUFFIX = /^(.+)-(minimal|low|medium|high|xhigh|max)$/;
+
+/**
+ * Parses `agy models` (`id<TAB>label` per line) and folds multi-tier thinking models into one
+ * ModelOption with `efforts`, while keeping single-variant models (e.g. `gpt-oss-120b-medium` or
+ * `Orchestrator (Carbon)`) as standalone options. `defaults` records the first raw id listed by
+ * `agy models` for each folded family, which is Antigravity's upstream default tier.
+ */
+function parseAgyCatalog(stdout: string): { models: ModelOption[]; defaults: Map<string, string> } {
+  const raw: Array<{ id: string; label: string }> = [];
+  const plainIds = new Set<string>();
   for (const line of stdout.split('\n')) {
     const tab = line.indexOf('\t');
     if (tab <= 0) continue;
     const id = line.slice(0, tab).trim();
     const label = line.slice(tab + 1).trim();
-    // Effort is part of the model id here ("…-high", "…-low"). Images go in as paths, for every model.
-    if (id && !/\s/.test(id)) models.push({ id, label: label || id, efforts: [] });
+    if (!id || /\s/.test(id)) continue;
+    raw.push({ id, label });
+    plainIds.add(id);
   }
-  return models;
+
+  // Group candidates whose id ends with `-<effort>` and whose label ends with `(<effort>)`.
+  const groups = new Map<string, { baseLabel: string; firstId: string; efforts: Set<AgyEffort> }>();
+  const entryGroup = new Map<string, string>();
+  for (const entry of raw) {
+    const m = AGY_EFFORT_SUFFIX.exec(entry.id);
+    if (!m || plainIds.has(m[1])) continue;
+    const [, baseId, effort] = m as unknown as [string, string, AgyEffort];
+    const labelMatch = entry.label ? new RegExp(`^(.+?)\\s*\\(${effort}\\)$`, 'i').exec(entry.label) : null;
+    if (entry.label && !labelMatch) continue;
+    const baseLabel = labelMatch ? labelMatch[1].trim() : baseId;
+    const existing = groups.get(baseId);
+    if (existing) {
+      existing.efforts.add(effort);
+    } else {
+      groups.set(baseId, { baseLabel, firstId: entry.id, efforts: new Set([effort]) });
+    }
+    entryGroup.set(entry.id, baseId);
+  }
+
+  const models: ModelOption[] = [];
+  const defaults = new Map<string, string>();
+  const emitted = new Set<string>();
+  for (const entry of raw) {
+    const baseId = entryGroup.get(entry.id);
+    const group = baseId ? groups.get(baseId) : undefined;
+    // Only fold when the same base model actually offers multiple thinking effort levels.
+    if (baseId && group && group.efforts.size > 1) {
+      if (emitted.has(baseId)) continue;
+      emitted.add(baseId);
+      defaults.set(baseId, group.firstId);
+      models.push({
+        id: baseId,
+        label: group.baseLabel,
+        efforts: AGY_EFFORTS.filter((e) => group.efforts.has(e)),
+      });
+    } else {
+      models.push({ id: entry.id, label: entry.label || entry.id, efforts: [] });
+    }
+  }
+  return { models, defaults };
 }
 
-/** Flags for one process. Exported so the mapping from the hub's settings is tested directly. */
-export function agyArgs(opts: { conversationId?: string; permissionMode?: PermissionMode; model?: string; workMode?: WorkMode }): string[] {
+/** The model list as `agy models` prints it: one `id<TAB>label` per line. Anything else is ignored. */
+export function parseAgyModels(stdout: string): ModelOption[] {
+  return parseAgyCatalog(stdout).models;
+}
+
+/**
+ * Flags for one process. `agy` CLI does not accept `--effort` on folded base ids, so `{ model, effort }`
+ * is resolved back to the concrete suffixed `--model <id>` flag expected by `agy`.
+ */
+export function agyArgs(opts: {
+  conversationId?: string;
+  permissionMode?: PermissionMode;
+  model?: string;
+  effort?: EffortLevel;
+  defaultModels?: ReadonlyMap<string, string>;
+  workMode?: WorkMode;
+}): string[] {
+  const cliModel = !opts.model
+    ? undefined
+    : opts.effort
+      ? (opts.model.endsWith(`-${opts.effort}`) ? opts.model : `${opts.model}-${opts.effort}`)
+      : (opts.defaultModels?.get(opts.model) ?? opts.model);
   return [
     '--input-format',
     'stream-json',
     '--output-format',
     'stream-json',
     ...(opts.workMode === 'plan' ? ['--mode', 'plan'] : opts.permissionMode === 'full_access' ? ['--dangerously-skip-permissions'] : ['--mode', 'accept-edits']),
-    ...(opts.model ? ['--model', opts.model] : []),
+    ...(cliModel ? ['--model', cliModel] : []),
     ...(opts.conversationId ? ['--conversation', opts.conversationId] : []),
     '-p=', // print mode with no prompt of its own: prompts arrive on stdin
   ];
@@ -287,6 +360,8 @@ class AgySession implements AgentSession {
     private readonly answerCommand: (text: string) => Promise<string | null>,
     /** Environment overrides of the agent instance this session belongs to. */
     private readonly env: Record<string, string> = {},
+    /** Default raw CLI model id for each folded base model when `effort` is left at default (`undefined`). */
+    private readonly defaultModels: ReadonlyMap<string, string> = new Map(),
   ) {
     this.agentSessionId = opts.resumeId ?? '';
     this.permissionMode = opts.permissionMode;
@@ -295,7 +370,14 @@ class AgySession implements AgentSession {
   /** Starts a process on this session's conversation and waits until it has announced itself. */
   async launch(): Promise<void> {
     const [bin, ...base] = this.command;
-    const args = agyArgs({ conversationId: this.agentSessionId || undefined, permissionMode: this.permissionMode, model: this.opts.model, workMode: this.opts.workMode });
+    const args = agyArgs({
+      conversationId: this.agentSessionId || undefined,
+      permissionMode: this.permissionMode,
+      model: this.opts.model,
+      effort: this.opts.effort,
+      defaultModels: this.defaultModels,
+      workMode: this.opts.workMode,
+    });
     const child = spawn(bin, [...base, ...args], { cwd: this.opts.cwd, stdio: ['pipe', 'pipe', 'pipe'], env: sessionEnvironment(this.env, this.opts.coordinationEnv) });
     this.child = child;
     this.buffer = '';
@@ -514,7 +596,7 @@ export class AgyAdapter implements AgentAdapter {
     forkInto: false,
     quota: true,
   };
-  private modelCache: { at: number; models: ModelOption[] } | null = null;
+  private modelCache: { at: number; models: ModelOption[]; defaults: Map<string, string> } | null = null;
   private readonly commandCache = new Map<string, { at: number; value: Promise<{ cli: AgyCliCommand[]; list: SlashCommand[] }> }>();
 
   constructor(
@@ -553,9 +635,22 @@ export class AgyAdapter implements AgentAdapter {
     const stdout = await new Promise<string>((resolve, reject) => {
       execFile(bin, [...base, 'models'], { timeout: 30_000, env: { ...process.env, ...this.env } }, (err, out) => (err ? reject(err) : resolve(out)));
     });
-    const models = parseAgyModels(stdout);
-    if (models.length > 0) this.modelCache = { at: Date.now(), models };
+    const { models, defaults } = parseAgyCatalog(stdout);
+    if (models.length > 0) this.modelCache = { at: Date.now(), models, defaults };
     return models;
+  }
+
+  /** Maps legacy suffixed model ids (e.g. `gemini-4-carbon-high`) onto folded `{ model, effort }`. */
+  normalizeModel(model: string | null, effort: string | null): { model: string | null; effort: EffortLevel | null } {
+    const normalizedEffort = (effort as EffortLevel | null) ?? null;
+    if (!model || normalizedEffort || !this.modelCache) return { model, effort: normalizedEffort };
+    if (this.modelCache.models.some((m) => m.id === model)) return { model, effort: null };
+    const m = AGY_EFFORT_SUFFIX.exec(model);
+    if (!m) return { model, effort: null };
+    const [, baseId, level] = m as unknown as [string, string, AgyEffort];
+    const group = this.modelCache.models.find((o) => o.id === baseId);
+    if (group?.efforts?.includes(level)) return { model: baseId, effort: level };
+    return { model, effort: null };
   }
 
   /** One `agy -p <text>` run, for the commands agy answers itself. Resolves to what it printed. */
@@ -669,7 +764,11 @@ export class AgyAdapter implements AgentAdapter {
   }
 
   async start(opts: StartOptions): Promise<AgentSession> {
-    const session = new AgySession(this.command, opts, (text) => this.answer(opts.cwd, text), this.env);
+    // Load default tier mapping when starting a folded base model with default ("默认") effort.
+    if (opts.model && !opts.effort && !this.modelCache) {
+      await this.models().catch(() => []);
+    }
+    const session = new AgySession(this.command, opts, (text) => this.answer(opts.cwd, text), this.env, this.modelCache?.defaults);
     await session.launch();
     if (!session.agentSessionId) {
       await session.close();

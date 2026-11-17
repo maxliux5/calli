@@ -411,6 +411,8 @@ export interface AgentAdapter {
   realtimeSupport?(): Promise<{ supported: boolean; reason?: string; login?: 'ready' | 'required' }>;
   /** Models the user can pick from. May start a short-lived process to ask the agent. */
   models(refresh?: boolean): Promise<ModelOption[]>;
+  /** Fold a legacy suffixed model id (such as agy's `gemini-4-carbon-high`) into `{ model, effort }`. */
+  normalizeModel?(model: string | null, effort: string | null): { model: string | null; effort: EffortLevel | null };
   /** A background catalog or capability probe changed the last published list. */
   onModelsChanged?: (models: ModelOption[]) => void;
   /** Plan usage observed in-band as the agent answers (Claude Code's rate_limit_event): free and

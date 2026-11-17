@@ -1616,7 +1616,7 @@ test('agy: two permission levels, no approvals, no images; settings are flags of
   assert.deepEqual(agy.capabilities.permissionModes, ['auto_edit', 'full_access']);
   assert.deepEqual([agy.capabilities.approvals, agy.capabilities.images, agy.capabilities.effortLevels.length], [false, true, 0]);
   const models = (await (await api('/api/agents/agy/models')).json()) as Array<{ id: string; efforts: string[] }>;
-  assert.deepEqual(models.map((m) => m.id), ['fast-low', 'fast-high', 'big-thinking']);
+  assert.deepEqual(models.map((m) => [m.id, m.efforts]), [['fast', ['low', 'high']], ['big-thinking', []]]);
 
   // It cannot ask, so "ask" is not offered, and a new thread starts with full access: at the lower
   // level every command is refused. The lower level can still be chosen; other agents keep theirs.
@@ -1626,8 +1626,9 @@ test('agy: two permission levels, no approvals, no images; settings are flags of
   assert.equal((await api('/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'agy', cwd: workdir, effort: 'high' }) })).status, 400);
   assert.equal(((await newThread({ agent: 'agy' })) as { permissionMode?: string }).permissionMode, 'full_access');
   assert.equal(((await newThread({ agent: 'claude' })) as { permissionMode?: string }).permissionMode, 'auto_edit');
-  const thread = (await newThread({ agent: 'agy', model: 'fast-low', permissionMode: 'auto_edit' })) as { id: string; permissionMode?: string };
+  const thread = (await newThread({ agent: 'agy', model: 'fast-low', permissionMode: 'auto_edit' })) as { id: string; model?: string; effort?: string; permissionMode?: string };
   assert.equal(thread.permissionMode, 'auto_edit');
+  assert.deepEqual([thread.model, thread.effort], ['fast', 'low']);
 
   const replyOf = (list: Array<{ type: string; turnId: string | null; data: any }>, turnId: string | null) =>
     list.filter((e) => e.type === 'message.delta' && e.turnId === turnId).map((e) => e.data.text).join('').trim();
@@ -1656,8 +1657,25 @@ test('agy: two permission levels, no approvals, no images; settings are flags of
   assert.match(refused.end.data.message, /full access/);
   assert.deepEqual([refused.end.data.code, refused.end.data.refused], ['permission_refused', ['RunCommand']]);
 
+  // Changing thinking effort restarts agy on the same conversation with the suffixed model flag;
+  // switching to a model without efforts drops effort back to null.
+  const effortPatch = await api(`/api/threads/${thread.id}`, { method: 'PATCH', body: JSON.stringify({ effort: 'high' }) });
+  assert.equal(effortPatch.status, 200);
+  assert.deepEqual(
+    await effortPatch.json().then((t: any) => [t.model, t.effort]),
+    ['fast', 'high'],
+  );
+  const higher = await sendAndWait('think harder');
+  assert.equal(higher.end.type, 'turn.done');
+  assert.equal(replyOf(higher.list, higher.turnId), 'echo:think harder;model:fast-high;mode:accept-edits;conv:agy-conv-1');
+
   // Raising the level and changing the model both carry on in the same conversation.
-  assert.equal((await api(`/api/threads/${thread.id}`, { method: 'PATCH', body: JSON.stringify({ permissionMode: 'full_access', model: 'big-thinking' }) })).status, 200);
+  const modelPatch = await api(`/api/threads/${thread.id}`, { method: 'PATCH', body: JSON.stringify({ permissionMode: 'full_access', model: 'big-thinking' }) });
+  assert.equal(modelPatch.status, 200);
+  assert.deepEqual(
+    await modelPatch.json().then((t: any) => [t.model, t.effort]),
+    ['big-thinking', null],
+  );
   const allowed = await sendAndWait('run a command');
   assert.equal(allowed.end.type, 'turn.done');
   assert.equal(replyOf(allowed.list, allowed.turnId), 'echo:run a command;model:big-thinking;mode:always-proceed;conv:agy-conv-1');

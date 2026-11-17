@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agentGroups, effortsForModel, imagesBlocked, modelLoadLabel, modelLoadPercent, modelName, modelRows, modelQueueLabel, modelStatusLabel } from '../src/components/Pickers.js';
+import { agentGroups, effortsForModel, imagesBlocked, modelLoadLabel, modelLoadPercent, modelName, modelQuotaWindows, modelRows, modelQueueLabel, modelStatusLabel, resolveModel } from '../src/components/Pickers.js';
 import { setLocale } from '../src/i18n/index.js';
 import { isFastSpeed, type AgentInfo } from '../src/api.js';
 
@@ -170,6 +170,22 @@ test('effort levels follow the model, with the agent default looked up under its
   assert.deepEqual(effortsForModel([], null, agentWide), agentWide);
 });
 
+test('model load follows the selected model and the agent default alias', () => {
+  const models = [
+    { id: 'default', label: 'Default', description: 'Opus 5.5', loadPercent: 42 },
+    { id: 'old', label: 'Opus 4.6', loadPercent: 108 },
+    { id: 'quiet', label: 'Haiku 4.5' },
+  ];
+  assert.equal(modelLoadPercent(models, null), 42);
+  assert.equal(modelLoadPercent(models, 'old'), 108);
+  assert.equal(modelLoadPercent(models, 'quiet'), undefined);
+  assert.equal(modelLoadPercent(models, 'missing'), undefined);
+});
+
+test('model load badge includes the literal load label', () => {
+  assert.equal(modelLoadLabel(100), '负载100%');
+});
+
 test('an agent that flags its default model (pi) gets the same treatment as one with a "default" alias', () => {
   const models = [
     { id: 'z/vision', label: 'GLM-4.6V', efforts: ['off', 'low'], images: true },
@@ -285,4 +301,28 @@ test('a CLI without a native catalog exposes no model or effort picker, includin
   const props = { catalog: false, models: [], model: null, efforts: [], effort: null, onModel: () => undefined, onEffort: () => undefined };
   assert.equal(renderToStaticMarkup(createElement(ModelPicker, props)), '');
   assert.equal(renderToStaticMarkup(createElement(ModelPicker, { ...props, quietFor: 'CLI instance' })), '');
+});
+
+test('modelQuotaWindows filters quota windows to the selected model pool and sorts short before weekly', () => {
+  const models = [
+    { id: 'gemini-4-argon', label: 'Gemini 4 Argon', efforts: ['low', 'medium', 'high'] },
+    { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', efforts: ['low', 'medium', 'high', 'xhigh'], isDefault: true },
+  ];
+  const quota = {
+    checkedAt: '2026-11-17T08:00:00Z',
+    windows: [
+      { label: '7D', scope: 'Gemini Models', usedPercent: 11, modelIds: ['gemini-4-argon'] },
+      { label: '5H', scope: 'Gemini Models', usedPercent: 18, modelIds: ['gemini-4-argon'] },
+      { label: '7D', scope: 'Claude and GPT models', usedPercent: 1, modelIds: ['claude-opus-5-5'] },
+      { label: '5H', scope: 'Claude and GPT models', usedPercent: 0, modelIds: ['claude-opus-5-5'] },
+    ],
+  };
+  assert.deepEqual(
+    modelQuotaWindows(quota, resolveModel(models, 'gemini-4-argon')).map((w) => [w.label, w.usedPercent]),
+    [['5H', 18], ['7D', 11]],
+  );
+  assert.deepEqual(
+    modelQuotaWindows(quota, resolveModel(models, null)).map((w) => [w.label, w.usedPercent]),
+    [['5H', 0], ['7D', 1]],
+  );
 });

@@ -25,7 +25,7 @@ type Window = {
   amount?: string;
 };
 
-function periodNames(label: string): { period: string; short: string } {
+export function periodNames(label: string): { period: string; short: string } {
   if (label === '7D') return { period: t('quota.weekly'), short: t('quota.weeklyShort') };
   const duration = /^(\d+)(H|D)$/.exec(label);
   if (!duration) return { period: label, short: label };

@@ -1111,16 +1111,31 @@ export class ThreadManager {
     return entry.value;
   }
 
-  private adapterModels(adapter: AgentAdapter, refresh = false): Promise<ModelOption[]> {
+  private async adapterModels(adapter: AgentAdapter, refresh = false): Promise<ModelOption[]> {
+    const findAgent = () => [...this.adapters].find(([, current]) => current === adapter)?.[0];
     adapter.onModelsChanged = models => {
       // Instance ids can differ from adapter ids; removed/replaced instances must not publish.
-      const agent = [...this.adapters].find(([, current]) => current === adapter)?.[0];
+      const agent = findAgent();
       if (!agent) return;
       const event: StoredEvent = { threadId: '', seq: 0, turnId: null, type: 'agent.modelsChanged',
         ts: new Date().toISOString(), data: { agent, models } };
       for (const listener of this.listeners) listener(event);
     };
-    return adapter.models(refresh);
+    const models = await adapter.models(refresh);
+    // Migrate stored threads that still hold legacy suffixed model ids (e.g. `gemini-4-carbon-high`).
+    const agent = adapter.normalizeModel ? findAgent() : undefined;
+    if (agent && adapter.normalizeModel) {
+      for (const t of [...this.store.listThreads(), ...this.store.listThreads({ archived: true })]) {
+        if (t.agent !== agent) continue;
+        const next = adapter.normalizeModel(t.model, t.effort);
+        if (next.model !== t.model || next.effort !== t.effort) {
+          this.store.updateThread(t.id, { model: next.model, effort: next.effort });
+          const ev: StoredEvent = { threadId: t.id, seq: 0, turnId: null, type: 'thread.updated', ts: new Date().toISOString(), data: {} };
+          for (const listener of this.listeners) listener(ev);
+        }
+      }
+    }
+    return models;
   }
 
   async listModels(agent: string, refresh = false): Promise<ModelOption[]> {
@@ -1251,10 +1266,19 @@ export class ThreadManager {
   async saveDraftModelPreferences(input: unknown): Promise<DraftModelPreferences> {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new HttpError(400, 'invalid draft model preferences');
     for (const [agent, value] of Object.entries(input)) {
-      if (!this.adapters.has(agent) || !value || typeof value !== 'object') continue;
+      const adapter = this.adapters.get(agent);
+      if (!adapter || !value || typeof value !== 'object') continue;
       const raw = value as DraftModelPreference;
-      const model = typeof raw.model === 'string' ? await this.validateModelOrNull(agent, raw.model) : null;
-      const effort = typeof raw.effort === 'string' ? await this.validateEffortOrNull(agent, model, raw.effort) : null;
+      let rawModel = typeof raw.model === 'string' ? raw.model : null;
+      let rawEffort = typeof raw.effort === 'string' ? raw.effort : null;
+      if (rawModel && adapter.normalizeModel) {
+        await this.adapterModels(adapter).catch(() => []);
+        const normalized = adapter.normalizeModel(rawModel, rawEffort);
+        rawModel = normalized.model;
+        rawEffort = normalized.effort;
+      }
+      const model = rawModel ? await this.validateModelOrNull(agent, rawModel) : null;
+      const effort = rawEffort ? await this.validateEffortOrNull(agent, model, rawEffort) : null;
       const speed = typeof raw.speed === 'string' ? await this.validateSpeedOrNull(agent, model, raw.speed) : null;
       this.rememberModelPreference(agent, { model, effort, speed });
     }
@@ -1385,7 +1409,8 @@ export class ThreadManager {
     } : null;
     const failed = thread.status === 'error' ? this.store.lastTurnFailure(thread.id) : null;
     const failure = failed ? { code: failed.code, message: failed.message.slice(0, 500), at: failed.at } : null;
-    return { ...thread, failure, writing: thread.writing ? { ...thread.writing, habits: habitsPath() } : null, handover: thread.handover ? { ...thread.handover, mode: this.store.handoverMode(thread)!, automatic: thread.handover.mode === 'continue', sourceMoved: this.store.handoverSourceMoved(thread)! } : null, autoHandover: { ...this.autoHandover.view(thread.id), resume: this.quotaResume.view(thread.id) }, autoRetry: this.autoRetry.view(thread.id), advance: this.autoAdvance.view(thread.id), worktree, resumeCommand, cwdReal, waiting, waitingReason, queued, modelQueue, terminalActivity, scratch, projectGone, runningSince, coordination: this.coordination?.metadata(thread.id) };
+    const normalized = adapter?.normalizeModel ? adapter.normalizeModel(thread.model, thread.effort) : { model: thread.model, effort: thread.effort };
+    return { ...thread, model: normalized.model, effort: normalized.effort, failure, writing: thread.writing ? { ...thread.writing, habits: habitsPath() } : null, handover: thread.handover ? { ...thread.handover, mode: this.store.handoverMode(thread)!, automatic: thread.handover.mode === 'continue', sourceMoved: this.store.handoverSourceMoved(thread)! } : null, autoHandover: { ...this.autoHandover.view(thread.id), resume: this.quotaResume.view(thread.id) }, autoRetry: this.autoRetry.view(thread.id), advance: this.autoAdvance.view(thread.id), worktree, resumeCommand, cwdReal, waiting, waitingReason, queued, modelQueue, terminalActivity, scratch, projectGone, runningSince, coordination: this.coordination?.metadata(thread.id) };
   }
 
   /**
@@ -1854,32 +1879,52 @@ export class ThreadManager {
       const session = this.sessions.get(id);
       if (session?.setPermissionMode) await session.setPermissionMode(mode);
     }
-    if (updates.model !== undefined) {
-      if (updates.model === null) {
+    let requestedModel = updates.model;
+    let requestedEffort = updates.effort;
+    let currentModel = thread.model;
+    let currentEffort = thread.effort;
+    if (updates.model !== undefined || updates.effort !== undefined) {
+      const adapter = this.adapters.get(thread.agent);
+      if (adapter?.normalizeModel) {
+        await this.adapterModels(adapter);
+        const current = adapter.normalizeModel(thread.model, thread.effort);
+        currentModel = current.model;
+        currentEffort = current.effort;
+        if (currentModel !== thread.model) patch.model = currentModel;
+        if (currentEffort !== thread.effort) patch.effort = currentEffort;
+        if (typeof requestedModel === 'string') {
+          const normalized = adapter.normalizeModel(requestedModel, requestedEffort ?? null);
+          requestedModel = normalized.model;
+          if (requestedEffort === undefined && normalized.effort) requestedEffort = normalized.effort;
+        }
+      }
+    }
+    if (requestedModel !== undefined) {
+      if (requestedModel === null) {
         // Back to the agent's own default: only a restart can do that.
         patch.model = null;
         await this.restartForChange(thread, 'model');
       } else {
-        const model = await this.validateModel(thread.agent, updates.model);
+        const model = await this.validateModel(thread.agent, requestedModel);
         patch.model = model;
         await this.applyLive(thread, 'model', (s) => s.setModel?.(model) ?? Promise.resolve(false));
       }
     }
     // Effort is checked against the model the thread will have after this update.
-    const nextModel = patch.model !== undefined ? (patch.model as string | null) : thread.model;
-    if (updates.effort !== undefined) {
-      if (updates.effort === null) {
+    const nextModel = patch.model !== undefined ? (patch.model as string | null) : currentModel;
+    if (requestedEffort !== undefined) {
+      if (requestedEffort === null) {
         patch.effort = null;
         await this.restartForChange(thread, 'effort');
       } else {
-        const effort = await this.validateEffort(thread.agent, nextModel, updates.effort);
+        const effort = await this.validateEffort(thread.agent, nextModel, requestedEffort);
         patch.effort = effort;
         await this.applyLive(thread, 'effort', (s) => s.setEffort?.(effort) ?? Promise.resolve(false));
       }
-    } else if (patch.model !== undefined && thread.effort) {
+    } else if (patch.model !== undefined && currentEffort) {
       // The model changed but the effort was left alone: drop it if the new model cannot take it.
       const supported = await this.effortsFor(thread.agent, nextModel);
-      if (!supported.includes(thread.effort as EffortLevel)) {
+      if (!supported.includes(currentEffort as EffortLevel)) {
         patch.effort = null;
         await this.restartForChange(thread, 'effort');
       }
@@ -2228,8 +2273,16 @@ export class ThreadManager {
     const permissionMode = adapter.capabilities.permissionModes.length === 0 ? 'auto_edit'
       : this.validatePermissionMode(input.agent, input.permissionMode ?? adapter.capabilities.defaultPermissionMode ?? 'auto_edit');
     const workMode = this.validateWorkMode(input.agent, input.workMode ?? 'execute');
-    const model = input.model ? await this.validateModel(input.agent, input.model) : null;
-    const effort = input.effort ? await this.validateEffort(input.agent, model, input.effort) : null;
+    let rawModel = input.model ?? null;
+    let rawEffort = input.effort ?? null;
+    if (rawModel && adapter.normalizeModel) {
+      await this.adapterModels(adapter);
+      const normalized = adapter.normalizeModel(rawModel, rawEffort);
+      rawModel = normalized.model;
+      rawEffort = normalized.effort;
+    }
+    const model = rawModel ? await this.validateModel(input.agent, rawModel) : null;
+    const effort = rawEffort ? await this.validateEffort(input.agent, model, rawEffort) : null;
     const speed = input.speed == null ? null : await this.validateSpeed(input.agent, model, input.speed);
     return { permissionMode, workMode, model, effort, speed };
   }
@@ -3594,8 +3647,12 @@ export class ThreadManager {
         this.store.updateThread(thread.id, { workMode });
         this.emitThreadEvent(thread.id, null, 'thread.updated', {});
       },
-      model: thread.model ?? undefined,
-      effort: (thread.effort ?? undefined) as EffortLevel | undefined,
+      ...(this.adapters.get(thread.agent)?.normalizeModel
+        ? (() => {
+            const normalized = this.adapters.get(thread.agent)!.normalizeModel!(thread.model, thread.effort);
+            return { model: normalized.model ?? undefined, effort: normalized.effort ?? undefined };
+          })()
+        : { model: thread.model ?? undefined, effort: (thread.effort ?? undefined) as EffortLevel | undefined }),
     };
   }
 

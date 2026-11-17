@@ -7,6 +7,7 @@ export function pricingModel(sample: UsageSample, configuredModel: string | null
   if (sample.source === 'agy.transcript') {
     // https://www.antigravity.google/docs/cli/headless/
     if (/^gemini-3\.(6|8)-flash-(low|medium|high)$/.test(model)) return { model: model.replace(/-(low|medium|high)$/, '') };
+    if (/^claude-(opus|sonnet)-5-5-(minimal|low|medium|high|xhigh|max)$/.test(model)) return { model: model.replace(/-(minimal|low|medium|high|xhigh|max)$/, '') };
     if (/^claude-(opus|sonnet)-4-6-thinking$/.test(model)) return { model: model.replace(/-thinking$/, '') };
   }
   // Operator-supplied routing assumptions; never present these as verified upstream model IDs.

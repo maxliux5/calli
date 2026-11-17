@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { isFastSpeed, type AgentInfo, type Api, type ModelOption } from '../api';
+import { isFastSpeed, type AgentInfo, type Api, type ModelOption, type PlanQuota, type QuotaWindow } from '../api';
 import { usageSummary, type Usage, type UsageSample } from '../timeline';
 import { compactTokens, ContextTotals, percentLabel } from './SessionStats';
 import { EFFORT_LABELS, PERMISSION_LABELS, PERMISSION_ORDER, permissionHint } from '../permissions';
-import { AgentMark, ContextRing, IconBolt, IconEffortGauge, IconCompress, IconList, IconChevronRight, IconRefresh, IconCheck, IconChevron, IconFolder, IconHand, IconPlus, IconShield, IconShieldAlert, IconSparkle, IconWorktree } from './icons';
+import { AgentMark, ContextRing, IconBolt, IconEffortGauge, IconCompress, IconList, IconChevronRight, IconRefresh, IconCheck, IconChevron, IconFolder, IconHand, IconPlus, IconShield, IconShieldAlert, IconSparkle, IconWorktree, QuotaRing } from './icons';
 import { Popover } from './Popover';
 import { EffortSlider } from './EffortSlider';
-import { AgentQuota } from './AgentQuota';
+import { AgentQuota, periodNames } from './AgentQuota';
+import { formatReset, quotaLeft, quotaLevel, quotaSlots } from '../quota';
+import { useAgentQuota } from '../quota-reading';
 import { useIsNarrow } from '../hooks';
 import { t } from '../i18n';
 
@@ -87,6 +89,8 @@ export function PermissionPicker({ modes, value, onChange, canAsk, openSignal, q
 }
 
 interface ModelProps {
+  api?: Api | null;
+  agent?: string;
   preferenceStatus?: 'loading' | 'ready' | 'error';
   onRetryPreference?: () => void;
   onDiagnose?: () => void;
@@ -141,6 +145,7 @@ export function modelLoadPercent(models: ModelOption[], id: string | null): numb
   return resolveModel(models, id)?.loadPercent;
 }
 
+/** The inline model badge stays terse in the model picker while still flowing through locale data. */
 export function modelLoadLabel(percent: number): string {
   return t('pickers.modelLoad', percent);
 }
@@ -287,7 +292,7 @@ export function ModelPicker(props: ModelProps) {
   );
 }
 
-function ModelControl({ models, model, efforts, effort, onModel, onEffort, speed, onSpeed }: ModelProps) {
+function ModelControl({ api, agent, models, model, efforts, effort, onModel, onEffort, speed, onSpeed }: ModelProps) {
   const levels = effortsForModel(models, model, efforts);
   const selectedModel = resolveModel(models, model);
   const loadPercent = selectedModel?.loadPercent;
@@ -350,11 +355,52 @@ function ModelControl({ models, model, efforts, effort, onModel, onEffort, speed
             {loadPercent !== undefined ? <ModelLoad percent={loadPercent} /> : <span className="model-inline-load">{selectedModel?.loadError ? t('pickers.modelLoadFailed') : t('pickers.modelLoadUnknown')}</span>}
             <span className="model-inline-load model-inline-queue" title={queueLabel}>{queueLabel}</span>
           </div>}
+          {api && agent && <ModelQuotaLine api={api} agent={agent} option={selectedModel} />}
         </div>
         <button type="button" className="icon-btn effort-reset" aria-label={t('pickers.resetEffort')} title={t('pickers.resetEffort')} disabled={selected === null} onClick={() => onEffort(null)}><IconRefresh size={18} /></button>
       </div>
       {levels.length > 0 ? <EffortSlider key={`${model ?? 'default'}:${levels.join(',')}`} levels={levels} value={selected} onChange={onEffort} onPreview={setPreview} />
         : <div className="pop-note">{t('pickers.modelNoEffort')}</div>}
+    </div>
+  );
+}
+
+/** Quota windows that apply to the chosen model: pool-scoped windows matching its id or family, shortest window first. */
+export function modelQuotaWindows(quota: PlanQuota | null | undefined, option: ModelOption | undefined): QuotaWindow[] {
+  if (!quota?.windows.length || !option) return [];
+  const direct = quota.windows.filter((w) => w.modelIds?.includes(option.id));
+  const matched = direct.length > 0 ? direct : quota.windows.filter((w) => {
+    if (!w.scope) return false;
+    const family = /^(Gemini|Claude)(?: Models)?$/i.exec(w.scope)?.[1]?.toLowerCase();
+    const families = family ? [family] : /^Claude and GPT models$/i.test(w.scope) ? ['claude', 'gpt'] : [];
+    return families.length
+      ? families.some((f) => option.id.toLowerCase().startsWith(f + '-') || option.label.toLowerCase().startsWith(f + ' '))
+      : option.id === w.scope || option.label === w.scope;
+  });
+  return quotaSlots(matched).flatMap((slot) => (slot.window ? [slot.window] : []));
+}
+
+/** Ring chips for the selected model's quota pool inside the effort card. */
+function ModelQuotaLine({ api, agent, option }: { api: Api; agent: string; option: ModelOption | undefined }) {
+  const { quota } = useAgentQuota(api, agent);
+  const windows = modelQuotaWindows(quota, option);
+  if (windows.length === 0) return null;
+  return (
+    <div className="model-quota-line" aria-label={windows.map((w) => [periodNames(w.label).period, t('quota.remaining', quotaLeft(w))].join(' ')).join(' · ')}>
+      {windows.map((w, index) => {
+        const { period, short } = periodNames(w.label);
+        const remaining = quotaLeft(w);
+        const low = quotaLevel(w.usedPercent) === 'danger';
+        const reset = formatReset(w);
+        const tip = [period, t('quota.remaining', remaining), reset].filter(Boolean).join(' · ');
+        return (
+          <span key={`${w.label}-${w.scope ?? ''}-${index}`} className={`agent-quota-chip${low ? ' low' : ''}`} title={tip}>
+            <QuotaRing remaining={remaining} size={13} />
+            <span className="agent-quota-label">{short}</span>
+            <span className="agent-quota-percent">{remaining}%</span>
+          </span>
+        );
+      })}
     </div>
   );
 }

@@ -767,17 +767,47 @@ test('agyTurnResult: success, interruption, errors, and actions refused for lack
   assert.match(denied.error!, /full access/);
 });
 
-test('parseAgyModels reads id and label pairs and skips everything else', () => {
-  const models = parseAgyModels('Fetching available models...\nfast-low\tFast (Low)\n\nbroken line\nbig\tBig (Thinking)\n\tno id\n');
-  assert.deepEqual(models.map((m) => [m.id, m.label]), [['fast-low', 'Fast (Low)'], ['big', 'Big (Thinking)']]);
-  assert.ok(models.every((m) => m.efforts?.length === 0 && m.images === undefined), 'no effort setting; images go in as paths');
+test('parseAgyModels folds multi-tier thinking families and leaves single entries standalone', () => {
+  const single = parseAgyModels('Fetching available models...\nfast-low\tFast (Low)\n\nbroken line\nbig\tBig (Thinking)\n\tno id\n');
+  assert.deepEqual(single.map((m) => [m.id, m.label]), [['fast-low', 'Fast (Low)'], ['big', 'Big (Thinking)']]);
+  assert.ok(single.every((m) => m.efforts?.length === 0 && m.images === undefined), 'single variants keep empty efforts');
+
+  const multi = parseAgyModels([
+    'claude-opus-5-5-low\tClaude Opus 5.5 (Low)',
+    'claude-opus-5-5-medium\tClaude Opus 5.5 (Medium)',
+    'claude-opus-5-5-high\tClaude Opus 5.5 (High)',
+    'gemini-4-carbon-medium\tGemini 4 Carbon (Medium)',
+    'gemini-4-carbon-high\tGemini 4 Carbon (High)',
+    'gemini-4-carbon-low\tGemini 4 Carbon (Low)',
+    'gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)',
+    'gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)',
+    'gemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)',
+    'gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)',
+    'gemini-pro-orchestrator\tOrchestrator (Carbon)',
+    'gpt-oss-120b-medium\tGPT-OSS 120B (Medium)',
+  ].join('\n'));
+  assert.deepEqual(
+    multi.map((m) => [m.id, m.label, m.efforts]),
+    [
+      ['claude-opus-5-5', 'Claude Opus 5.5', ['low', 'medium', 'high']],
+      ['gemini-4-carbon', 'Gemini 4 Carbon', ['low', 'medium', 'high']],
+      ['gemini-4-hydrogen', 'Gemini 4 Hydrogen', ['low', 'medium', 'high', 'xhigh']],
+      ['gemini-pro-orchestrator', 'Orchestrator (Carbon)', []],
+      ['gpt-oss-120b-medium', 'GPT-OSS 120B (Medium)', []],
+    ],
+  );
   assert.deepEqual(parseAgyModels(''), []);
 });
 
-test('agyArgs turns the permission level, model and conversation into flags', () => {
+test('agyArgs turns the permission level, model, effort and conversation into flags', () => {
   const base = ['--input-format', 'stream-json', '--output-format', 'stream-json'];
   assert.deepEqual(agyArgs({}), [...base, '--mode', 'accept-edits', '-p=']);
   assert.deepEqual(agyArgs({ permissionMode: 'auto_edit', model: 'fast-low' }), [...base, '--mode', 'accept-edits', '--model', 'fast-low', '-p=']);
+  assert.deepEqual(agyArgs({ permissionMode: 'auto_edit', model: 'fast', effort: 'high' }), [...base, '--mode', 'accept-edits', '--model', 'fast-high', '-p=']);
+  assert.deepEqual(
+    agyArgs({ permissionMode: 'auto_edit', model: 'fast', defaultModels: new Map([['fast', 'fast-medium']]) }),
+    [...base, '--mode', 'accept-edits', '--model', 'fast-medium', '-p='],
+  );
   assert.deepEqual(agyArgs({ permissionMode: 'full_access', conversationId: 'c1' }), [...base, '--dangerously-skip-permissions', '--conversation', 'c1', '-p=']);
   assert.equal(agyArgs({ permissionMode: 'full_access' }).includes('--mode'), false);
 });
@@ -786,11 +816,16 @@ test('AgyAdapter: models, a turn with a tool, and several turns in one process',
   const adapter = new AgyAdapter([process.execPath, fakeAgy]);
   assert.equal(await adapter.available(), true);
   assert.equal(await new AgyAdapter(['definitely-not-installed-agy']).available(), false);
-  assert.deepEqual((await adapter.models()).map((m) => m.id), ['fast-low', 'fast-high', 'big-thinking']);
+  assert.deepEqual(
+    (await adapter.models()).map((m) => [m.id, m.label, m.efforts]),
+    [['fast', 'Fast', ['low', 'high']], ['big-thinking', 'Big (Thinking)', []]],
+  );
+  assert.deepEqual(adapter.normalizeModel('fast-high', null), { model: 'fast', effort: 'high' });
+  assert.deepEqual(adapter.normalizeModel('big-thinking', null), { model: 'big-thinking', effort: null });
   assert.ok((await adapter.commands()).some((c) => c.name === 'usage'));
   assert.equal(adapter.resumeCommand('abc'), 'agy --conversation abc');
 
-  const session = await adapter.start({ cwd: here, model: 'fast-low' });
+  const session = await adapter.start({ cwd: here, model: 'fast' });
   try {
     assert.equal(session.agentSessionId, 'agy-conv-1', 'the conversation id is known before the first message');
     const first = collectingHooks();
@@ -805,6 +840,15 @@ test('AgyAdapter: models, a turn with a tool, and several turns in one process',
     assert.deepEqual(second.events.map((e) => e.type), ['message.delta', 'message.delta'], 'steps of the first turn are not repeated');
   } finally {
     await session.close();
+  }
+
+  const highSession = await adapter.start({ cwd: here, model: 'fast', effort: 'high' });
+  try {
+    const highTurn = collectingHooks();
+    assert.deepEqual(await highSession.prompt(turn('check effort'), highTurn.hooks), { stopReason: 'end_turn' });
+    assert.match(textFrom(highTurn.events), /model:fast-high;/);
+  } finally {
+    await highSession.close();
   }
 });
 

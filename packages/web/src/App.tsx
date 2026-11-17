@@ -379,17 +379,27 @@ function savedMemberDefaults(key: string): Record<string, MemberDefault> {
 }
 
 function fitDraftModelPreference(value: DraftModelPreference, models: ModelOption[], effortLevels: string[], canSpeed: boolean): DraftModelPreference {
-  const model = value.model && models.length > 0 && !models.some((option) => option.id === value.model) ? null : value.model;
+  let rawModel = value.model;
+  let rawEffort = value.effort;
+  // Upgrade a remembered legacy suffixed model id (e.g. `gemini-4-carbon-high`) once folded models arrive.
+  if (rawModel && !rawEffort && models.length > 0 && !models.some((option) => option.id === rawModel)) {
+    const folded = models.find((option) => option.efforts?.some((level) => `${option.id}-${level}` === rawModel));
+    if (folded) {
+      rawEffort = rawModel.slice(folded.id.length + 1);
+      rawModel = folded.id;
+    }
+  }
+  const model = rawModel && models.length > 0 && !models.some((option) => option.id === rawModel) ? null : rawModel;
   const levels = effortsForModel(models, model, effortLevels);
-  const effort = value.effort && (levels.includes(value.effort) || (models.length === 0 && effortLevels.length === 0)) ? value.effort : null;
+  const effort = rawEffort && (levels.includes(rawEffort) || (models.length === 0 && effortLevels.length === 0)) ? rawEffort : null;
   const speeds = speedsForModel(models, model);
   const speed = canSpeed && value.speed && (models.length === 0 || speeds.some((option) => option.id === value.speed)) ? value.speed : null;
   return { model, effort, speed };
 }
 
 /** The model and thinking effort for one instance's members: a quiet mark until something is chosen. */
-function MemberModel({ agent, models, value, permission, onNeed, onChange, onPermission }: {
-  agent: AgentInfo; models: ModelOption[]; value: MemberDefault; onNeed: (agent: string, refresh?: boolean) => void; onChange: (value: MemberDefault) => void;
+function MemberModel({ api, agent, models, value, permission, onNeed, onChange, onPermission }: {
+  api?: Api | null; agent: AgentInfo; models: ModelOption[]; value: MemberDefault; onNeed: (agent: string, refresh?: boolean) => void; onChange: (value: MemberDefault) => void;
   /** The level in force, and how to change it; left out where the agent has no levels. */
   permission?: string; onPermission?: (mode: string) => void;
 }) {
@@ -398,6 +408,8 @@ function MemberModel({ agent, models, value, permission, onNeed, onChange, onPer
   return (<>
     {permission && onPermission && <PermissionPicker quietFor={agent.label} modes={agent.capabilities.permissionModes} value={permission} canAsk={agent.capabilities.approvals ?? true} onChange={onPermission} />}
     <ModelPicker
+      api={api}
+      agent={agent.capabilities.quota ? agent.id : undefined}
       quietFor={agent.label}
       catalog={agent.capabilities.modelCatalog}
       models={models}
@@ -2648,7 +2660,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     const value = teamDefaults[agent.id] ?? { model: null, effort: null };
     const level = value.permission ?? teamPermission;
     return (
-      <MemberModel agent={agent} models={modelsByAgent[agent.id] ?? []} value={value} onNeed={needModels} onChange={(next) => setMemberDefault(agent.id, next)}
+      <MemberModel api={api} agent={agent} models={modelsByAgent[agent.id] ?? []} value={value} onNeed={needModels} onChange={(next) => setMemberDefault(agent.id, next)}
         permission={agent.capabilities.permissionModes.includes(level) ? level : undefined} onPermission={(permission) => setMemberDefault(agent.id, { ...value, permission })} />
     );
   };
@@ -2776,6 +2788,8 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
         compactDisabled={(selected.queued?.length ?? 0) >= MAX_QUEUED}
       />}
       <ModelPicker
+        api={api}
+        agent={activeCaps?.quota ? activeAgent : undefined}
         preferenceStatus={!selected ? modelPreferences.status : undefined}
         onRetryPreference={() => void modelPreferences.refresh()}
         catalog={activeCaps?.modelCatalog}
@@ -3578,7 +3592,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
 
       {agentsOpen && coordination && <AgentPanel key={`${coordination.rootId}:${agentsStart ?? ''}`} start={agentsStart} api={api} memberApi={(id) => new Api(token ?? '', '', id)} team={coordination} agents={agents} memberModel={(thread) => {
         const a = agents.find((v) => v.id === thread.agent);
-        return a ? <MemberModel agent={a} models={modelsByAgent[a.id] ?? []} value={{ model: thread.model ?? null, effort: thread.effort ?? null }} onNeed={needModels} onChange={({ model, effort }) => { void api.updateThread(thread.id, { model, effort }).then(() => refreshThreads()).catch(handleError); }}
+        return a ? <MemberModel api={api} agent={a} models={modelsByAgent[a.id] ?? []} value={{ model: thread.model ?? null, effort: thread.effort ?? null }} onNeed={needModels} onChange={({ model, effort }) => { void api.updateThread(thread.id, { model, effort }).then(() => refreshThreads()).catch(handleError); }}
           permission={a.capabilities.permissionModes.length ? thread.permissionMode : undefined} onPermission={(permissionMode) => { void api.updateThread(thread.id, { permissionMode }).then(() => refreshThreads()).catch(handleError); }} /> : null;
       }} leadAgent={threads.find((t) => t.id === coordination.rootId)?.agent} phone={compact} onClose={() => setAgentsOpen(false)} onOpen={thread => { openThread(thread); setAgentsOpen(false); }} onAdjust={(name, draft) => { setAgentsOpen(false); setSelectedId(coordination.rootId); setRestore({ text: t('app.adjustTask', name) + draft, nonce: Date.now() }); }} onRefresh={() => { void refreshThreads(); }} onError={handleError} />}
       {files && filesThread && api && <FilesPanel api={api} threadId={filesThread.id} target={files} phone={compact} revision={filesThread.updatedAt} writingStage={filesThread.writing?.stage ?? null} writingHabits={filesThread.writing?.habits ?? null} noted={{ count: noteCount, nonce: filesNotePulse }} onClose={() => setFiles(null)} />}
