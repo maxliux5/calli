@@ -3,8 +3,7 @@ import type { Api, GeneralSettings } from '../api';
 import { t } from '../i18n';
 import { Popover } from './Popover';
 import { IconCheck, IconChevron } from './icons';
-import { useStoredFlag } from '../hooks';
-import { QUICK_SWITCH_HIDDEN_KEY } from '../quick-switch';
+import { useQuickSwitchMode, type QuickSwitchMode } from '../quick-switch';
 import { SettingsSection, usePageDraft } from './PageNavigation';
 
 export function GeneralSettingsDialog({ api, onSave, onClose }: {
@@ -14,7 +13,9 @@ export function GeneralSettingsDialog({ api, onSave, onClose }: {
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [retry, setRetry] = useState(0);
-  const [handleHidden, setHandleHidden] = useStoredFlag(QUICK_SWITCH_HIDDEN_KEY);
+  const [quickSwitchMode, setQuickSwitchMode] = useQuickSwitchMode();
+  const quickSwitchLabel = (mode: QuickSwitchMode) =>
+    t(mode === 'handle' ? 'quickSwitch.mode.handle' : mode === 'button' ? 'quickSwitch.mode.button' : 'quickSwitch.mode.off');
   useEffect(() => {
     let live = true;
     setError('');
@@ -69,11 +70,11 @@ export function GeneralSettingsDialog({ api, onSave, onClose }: {
             <span>{t('quickSwitch.handle')}</span>
             <Popover label={t('quickSwitch.handle')} triggerLabel={t('quickSwitch.handle')} placement="below" align="end"
               triggerClassName="context-btn general-select" panelClassName="general-startup-menu"
-              trigger={<>{t(handleHidden ? 'quickSwitch.hidden' : 'quickSwitch.show')}<IconChevron size={12} open /></>}>
-              {close => [false, true].map(hide => <button key={String(hide)} type="button" className="pop-item compact"
-                role="menuitemradio" aria-checked={handleHidden === hide} onClick={() => { close(); setHandleHidden(hide); }}>
-                <span className="pop-item-label">{t(hide ? 'quickSwitch.hidden' : 'quickSwitch.show')}</span>
-                <span className="pop-item-check">{handleHidden === hide && <IconCheck size={14} />}</span>
+              trigger={<>{quickSwitchLabel(quickSwitchMode)}<IconChevron size={12} open /></>}>
+              {close => (['off', 'handle', 'button'] as const).map(mode => <button key={mode} type="button" className="pop-item compact"
+                role="menuitemradio" aria-checked={quickSwitchMode === mode} onClick={() => { close(); setQuickSwitchMode(mode); }}>
+                <span className="pop-item-label">{quickSwitchLabel(mode)}</span>
+                <span className="pop-item-check">{quickSwitchMode === mode && <IconCheck size={14} />}</span>
               </button>)}
             </Popover>
           </div>

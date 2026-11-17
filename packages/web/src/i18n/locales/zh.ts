@@ -2148,10 +2148,13 @@ export const zh = {
   'sidebar.settings': '配置',
   'quickSwitch.sessions': '最近会话',
   'quickSwitch.hide': '隐藏入口',
-  'quickSwitch.handle': '快速切换把手',
-  'quickSwitch.handleHint': '手机上显示在右侧，可拖动位置',
+  'quickSwitch.handle': '会话快速切换',
+  'quickSwitch.handleHint': '在手机会话页显示快速切换入口，可选择侧边贴边把手、右下角悬浮按钮或关闭（默认关闭）。',
   'quickSwitch.show': '显示',
   'quickSwitch.hidden': '隐藏',
+  'quickSwitch.mode.off': '关闭',
+  'quickSwitch.mode.handle': '侧边贴边把手',
+  'quickSwitch.mode.button': '右下角悬浮按钮',
 
   // Skills
   'skills.view': '查看说明',

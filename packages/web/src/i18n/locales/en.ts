@@ -2150,10 +2150,13 @@ export const en: Messages = {
   'sidebar.settings': 'Settings',
   'quickSwitch.sessions': 'Recent sessions',
   'quickSwitch.hide': 'Hide handle',
-  'quickSwitch.handle': 'Quick-switch handle',
-  'quickSwitch.handleHint': 'Shown on the right on a phone; drag it to move',
+  'quickSwitch.handle': 'Quick session switch',
+  'quickSwitch.handleHint': 'Quickly switch conversations on a phone using a right-edge handle or a floating button (off by default).',
   'quickSwitch.show': 'Show',
   'quickSwitch.hidden': 'Hidden',
+  'quickSwitch.mode.off': 'Off',
+  'quickSwitch.mode.handle': 'Right-edge handle',
+  'quickSwitch.mode.button': 'Floating button',
 
   // Skills
   'skills.view': 'View description',

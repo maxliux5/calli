@@ -42,6 +42,7 @@ async function summon(page) {
 }
 
 async function openSession(context) {
+  await context.addInitScript(() => { localStorage.setItem('calli.quickSwitch.mode', 'handle'); });
   const page = await context.newPage();
   await openUi(page, daemon);
   await page.locator('.menu-btn').click();
@@ -58,6 +59,11 @@ test('the handle opens on a tap or a leftward pull, moves when dragged, and can 
     await page.locator('.menu-btn').click();
     await page.locator('.thread-row').filter({ has: page.getByText('viewport-session-3', { exact: true }) }).click();
     await page.waitForTimeout(450);
+    assert.equal(await page.locator('.quick-switch-handle, .quick-switch-button').count(), 0, 'quick switch is off by default');
+    await page.evaluate(() => {
+      localStorage.setItem('calli.quickSwitch.mode', 'handle');
+      window.dispatchEvent(new Event('calli:quick-switch-mode'));
+    });
     const handle = page.locator('.quick-switch-handle');
     const box = await handle.boundingBox();
     assert.ok(box.width <= 30 && box.height <= 60, `the handle stays small: ${box.width}x${box.height}`);

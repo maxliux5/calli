@@ -123,7 +123,7 @@ import { NoteMarks, type NoteMark } from './components/NoteMarks';
 import { ConnectDialog, DemoBar } from './components/ConnectDialog';
 import { DemoApi, DemoError } from './demo/DemoApi';
 import { EMPTY_MODEL_PREFERENCE, type DraftModelPreference } from '../../daemon/src/model-preferences';
-import { QUICK_SWITCH_HIDDEN_KEY, clampQuickSwitchBottom, savedQuickSwitchBottom, saveQuickSwitchBottom } from './quick-switch';
+import { clampQuickSwitchBottom, savedQuickSwitchBottom, saveQuickSwitchBottom, useQuickSwitchMode } from './quick-switch';
 import { IconCheck, IconBell, AgentMark, IconActivity, IconAgents, IconArchive, IconArrowLeft, IconArrowDown, IconBack, IconClose, IconEdit, IconFolder, IconGauge, IconGlobe, IconImport, IconList, IconMenu, IconSettings, IconMore, IconOverview, IconPalette, IconPlus, IconPuzzle, IconServer, IconSidebar, IconSignIn, IconSignOut, IconSparkle, IconTerminal, IconTrace, IconLanguage, IconWaveform, IconSideChat } from './components/icons';
 import { StatReadings } from './components/SessionStats';
 import { ThreadTracePanel } from './components/TracePanel';
@@ -244,6 +244,8 @@ const MEMBER_DEFAULTS_KEY = 'calli.coord.defaults';
 const PLAN_SKIP_KEY = 'calli:plan-skipped';
 
 const QUICK_SWITCH_SIDE = 10;
+const QUICK_SWITCH_HOLD_MS = 360;
+
 function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
   threads: Thread[];
   selectedId: string;
@@ -254,25 +256,66 @@ function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
   const items = useMemo(() => selectedIndex < 0 ? [] : threads.slice(Math.max(0, selectedIndex - QUICK_SWITCH_SIDE), Math.min(threads.length, selectedIndex + QUICK_SWITCH_SIDE + 1)), [threads, selectedIndex]);
   const root = useRef<HTMLDivElement>(null);
   const current = useRef<HTMLButtonElement | null>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const rows = useRef(new Map<string, HTMLButtonElement>());
   const start = useRef<{ pointerId: number; x: number; y: number; bottom: number; moved: boolean } | null>(null);
-  const [open, setOpen] = useState(false);
-  const [hidden, setHidden] = useStoredFlag(QUICK_SWITCH_HIDDEN_KEY);
+  const timer = useRef<number | null>(null);
+  const lastY = useRef(0);
+  const tapOpenAtPointerDown = useRef(false);
+  const [tapOpen, setTapOpen] = useState(false);
+  const [press, setPress] = useState<{ pointerId: number; open: boolean; targetId: string } | null>(null);
+  const [mode, setMode] = useQuickSwitchMode();
   const [bottom, setBottom] = useState(savedQuickSwitchBottom);
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
+  const open = tapOpen || (press?.open ?? false);
+  const clearTimer = () => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+  };
+  const targetAt = (y: number) => {
+    const panelRect = panel.current?.getBoundingClientRect();
+    if (!panelRect || y < panelRect.top || y > panelRect.bottom) return selectedId;
+    const visible = items
+      .map((thread) => ({ thread, el: rows.current.get(thread.id) }))
+      .filter((row): row is { thread: Thread; el: HTMLButtonElement } => Boolean(row.el));
+    if (!visible.length) return selectedId;
+    let best = visible[0];
+    let bestDistance = Infinity;
+    for (const row of visible) {
+      const rect = row.el.getBoundingClientRect();
+      if (y >= rect.top && y <= rect.bottom) return row.thread.id;
+      const distance = Math.abs(y - (rect.top + rect.bottom) / 2);
+      if (distance < bestDistance) {
+        best = row;
+        bestDistance = distance;
+      }
+    }
+    return best.thread.id;
+  };
+  const updateTarget = (y: number) => {
+    if (!panel.current) return;
+    setPress((cur) => cur && cur.open ? { ...cur, targetId: targetAt(y) } : cur);
+  };
+  const reset = (el?: HTMLElement, pointerId?: number) => {
+    clearTimer();
+    if (el && pointerId !== undefined && el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
+    setPress(null);
+  };
+  useEffect(() => () => clearTimer(), []);
   // The panel is short: it opens on the current session, with its neighbours above and below.
-  useLayoutEffect(() => { if (open) current.current?.scrollIntoView({ block: 'center' }); }, [open]);
+  useLayoutEffect(() => { if (open && mode === 'handle') current.current?.scrollIntoView({ block: 'center' }); }, [open, mode]);
   useEffect(() => {
-    if (!open) return;
+    if (!tapOpen) return;
     // Dismissing is all a tap outside does: what lies under it is not pressed as well.
     const onPointerDown = (e: PointerEvent) => {
       if (!root.current || root.current.contains(e.target as Node)) return;
-      setOpen(false);
+      setTapOpen(false);
       const swallow = (click: MouseEvent) => { click.stopPropagation(); click.preventDefault(); };
       document.addEventListener('click', swallow, { capture: true, once: true });
       window.setTimeout(() => document.removeEventListener('click', swallow, { capture: true }), 500);
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') setTapOpen(false);
     };
     document.addEventListener('pointerdown', onPointerDown, true);
     document.addEventListener('keydown', onKeyDown);
@@ -280,73 +323,124 @@ function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
       document.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [open]);
-  if (hidden || selectedIndex < 0 || items.length <= 1) return null;
+  }, [tapOpen]);
+  if (mode === 'off' || selectedIndex < 0 || items.length <= 1) return null;
   const release = (el: HTMLElement, pointerId: number) => {
     if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
     start.current = null;
   };
   return (
-    <div className="quick-switch" ref={root}>
-      {/* A small visible handle near the right edge, inset from iOS's own edge gestures. Tap it or
-          pull it left to open the panel; drag it up or down to move it out of the way of text. It
-          covers only its own few pixels, so selecting text elsewhere is never intercepted. */}
-      <button
-        type="button"
-        className={`quick-switch-handle${open ? ' open' : ''}`}
-        style={{ bottom: `calc(${bottom}px + var(--safe-bottom))` }}
-        aria-label={t('quickSwitch.sessions')}
-        aria-expanded={open}
-        onPointerDown={(e) => {
-          if (e.pointerType === 'mouse' && e.button !== 0) return;
-          e.currentTarget.setPointerCapture(e.pointerId);
-          start.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, bottom, moved: false };
-        }}
-        onPointerMove={(e) => {
-          const from = start.current;
-          if (from?.pointerId !== e.pointerId) return;
-          const dx = from.x - e.clientX;
-          const dy = e.clientY - from.y;
-          if (!from.moved && dx > 24 && dx > Math.abs(dy)) { release(e.currentTarget, e.pointerId); setOpen(true); return; }
-          if (!from.moved && Math.abs(dy) > 8) from.moved = true;
-          if (from.moved) setBottom(clampQuickSwitchBottom(from.bottom - dy));
-        }}
-        onPointerUp={(e) => {
-          const from = start.current;
-          if (from?.pointerId !== e.pointerId) return;
-          release(e.currentTarget, e.pointerId);
-          if (from.moved) saveQuickSwitchBottom(bottom);
-          else setOpen((was) => !was);
-        }}
-        onPointerCancel={(e) => {
-          if (start.current?.pointerId === e.pointerId) release(e.currentTarget, e.pointerId);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    <div className={`quick-switch${mode === 'button' ? ' quick-switch-floating' : ''}${open ? ' open' : ''}`} ref={root}>
+      {mode === 'button' ? (
+        /* Floating bottom-right button: tap to toggle the session list, or hold and slide to scrub. */
+        <button
+          type="button"
+          className="quick-switch-button"
+          aria-label={t('quickSwitch.handle')}
+          aria-expanded={open}
+          onPointerDown={(e) => {
+            if (e.pointerType === 'mouse' && e.button !== 0) return;
             e.preventDefault();
-            const next = clampQuickSwitchBottom(bottom + (e.key === 'ArrowUp' ? 24 : -24));
-            setBottom(next);
-            saveQuickSwitchBottom(next);
-          }
-        }}
-        onClick={(e) => { if (e.detail === 0) setOpen((was) => !was); }}
-      ><IconArrowLeft size={12} /></button>
+            e.currentTarget.setPointerCapture(e.pointerId);
+            tapOpenAtPointerDown.current = tapOpen;
+            lastY.current = e.clientY;
+            setPress({ pointerId: e.pointerId, open: false, targetId: selectedId });
+            clearTimer();
+            timer.current = window.setTimeout(() => {
+              timer.current = null;
+              setPress((cur) => cur?.pointerId === e.pointerId ? { ...cur, open: true } : cur);
+              requestAnimationFrame(() => updateTarget(lastY.current));
+            }, QUICK_SWITCH_HOLD_MS);
+          }}
+          onPointerMove={(e) => {
+            if (press?.pointerId !== e.pointerId) return;
+            e.preventDefault();
+            lastY.current = e.clientY;
+            updateTarget(e.clientY);
+          }}
+          onPointerUp={(e) => {
+            if (press?.pointerId !== e.pointerId) return;
+            e.preventDefault();
+            const targetId = press.open ? press.targetId : null;
+            reset(e.currentTarget, e.pointerId);
+            if (targetId) {
+              setTapOpen(false);
+              if (targetId !== selectedId) onSelect(targetId);
+            } else {
+              setTapOpen(!tapOpenAtPointerDown.current);
+            }
+          }}
+          onPointerCancel={(e) => {
+            if (press?.pointerId === e.pointerId) reset(e.currentTarget, e.pointerId);
+          }}
+        >
+          <IconList size={20} />
+        </button>
+      ) : (
+        /* A small visible handle near the right edge, inset from iOS's own edge gestures. Tap it or
+           pull it left to open the panel; drag it up or down to move it out of the way of text. */
+        <button
+          type="button"
+          className={`quick-switch-handle${open ? ' open' : ''}`}
+          style={{ bottom: `calc(${bottom}px + var(--safe-bottom))` }}
+          aria-label={t('quickSwitch.sessions')}
+          aria-expanded={open}
+          onPointerDown={(e) => {
+            if (e.pointerType === 'mouse' && e.button !== 0) return;
+            e.currentTarget.setPointerCapture(e.pointerId);
+            start.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, bottom, moved: false };
+          }}
+          onPointerMove={(e) => {
+            const from = start.current;
+            if (from?.pointerId !== e.pointerId) return;
+            const dx = from.x - e.clientX;
+            const dy = e.clientY - from.y;
+            if (!from.moved && dx > 24 && dx > Math.abs(dy)) { release(e.currentTarget, e.pointerId); setTapOpen(true); return; }
+            if (!from.moved && Math.abs(dy) > 8) from.moved = true;
+            if (from.moved) setBottom(clampQuickSwitchBottom(from.bottom - dy));
+          }}
+          onPointerUp={(e) => {
+            const from = start.current;
+            if (from?.pointerId !== e.pointerId) return;
+            release(e.currentTarget, e.pointerId);
+            if (from.moved) saveQuickSwitchBottom(bottom);
+            else setTapOpen((was) => !was);
+          }}
+          onPointerCancel={(e) => {
+            if (start.current?.pointerId === e.pointerId) release(e.currentTarget, e.pointerId);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+              e.preventDefault();
+              const next = clampQuickSwitchBottom(bottom + (e.key === 'ArrowUp' ? 24 : -24));
+              setBottom(next);
+              saveQuickSwitchBottom(next);
+            }
+          }}
+          onClick={(e) => { if (e.detail === 0) setTapOpen((was) => !was); }}
+        ><IconArrowLeft size={12} /></button>
+      )}
       {open && (
-        <div className="quick-switch-panel" role="listbox" aria-label={t('quickSwitch.sessions')}>
+        <div className="quick-switch-panel" ref={panel} role="listbox" aria-label={t('quickSwitch.sessions')}>
           {items.map((thread) => {
             const agent = agentById.get(thread.agent);
             const isCurrent = thread.id === selectedId;
+            const isTarget = press?.open ? press.targetId === thread.id : isCurrent;
             const place = thread.scratch ? t('projects.none') : folderName(projectDir(thread).cwd);
             return (
               <button
                 type="button"
                 key={thread.id}
-                ref={isCurrent ? current : undefined}
-                className={`quick-switch-card${isCurrent ? ' current' : ''}`}
+                ref={(el) => {
+                  if (isCurrent) current.current = el;
+                  if (el) rows.current.set(thread.id, el);
+                  else rows.current.delete(thread.id);
+                }}
+                className={`quick-switch-card${isCurrent ? ' current' : ''}${mode === 'button' && isTarget ? ' target' : ''}`}
                 role="option"
-                aria-selected={isCurrent}
+                aria-selected={isTarget}
                 onClick={() => {
-                  setOpen(false);
+                  setTapOpen(false);
                   if (!isCurrent) onSelect(thread.id);
                 }}
               >
@@ -362,7 +456,9 @@ function ThreadQuickSwitch({ threads, selectedId, agents, onSelect }: {
               </button>
             );
           })}
-          <button type="button" className="quick-switch-hide" onClick={() => { setOpen(false); setHidden(true); }}>{t('quickSwitch.hide')}</button>
+          {mode === 'handle' && (
+            <button type="button" className="quick-switch-hide" onClick={() => { setTapOpen(false); setMode('off'); }}>{t('quickSwitch.hide')}</button>
+          )}
         </div>
       )}
     </div>

@@ -810,6 +810,50 @@ button:disabled {
     pointer-events: none;
   }
 
+  .quick-switch.quick-switch-floating {
+    --quick-switch-bottom: calc(176px + var(--safe-bottom));
+    --quick-switch-button-size: 44px;
+    --quick-switch-panel-gap: 10px;
+    position: absolute;
+    inset: auto;
+    display: flex;
+    right: calc(14px + env(safe-area-inset-right));
+    bottom: var(--quick-switch-bottom);
+  }
+
+  .quick-switch-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--quick-switch-button-size);
+    height: var(--quick-switch-button-size);
+    padding: 0;
+    border: 1px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--surface) 92%, transparent);
+    color: var(--text);
+    box-shadow: var(--shadow-pop);
+    pointer-events: auto;
+    touch-action: none;
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
+    transition:
+      transform 0.14s ease,
+      background 0.14s ease,
+      border-color 0.14s ease;
+  }
+
+  .quick-switch-button > svg {
+    color: var(--muted);
+  }
+
+  .quick-switch.open .quick-switch-button,
+  .quick-switch-button:active {
+    transform: scale(0.97);
+    border-color: var(--accent);
+    background: var(--surface);
+  }
+
   /* A small tab on the right edge, inset from iOS's own edge gestures. Quiet until used. */
   .quick-switch-handle {
     position: fixed;
@@ -874,9 +918,19 @@ button:disabled {
     backdrop-filter: blur(18px);
   }
 
+  .quick-switch.quick-switch-floating .quick-switch-panel {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + var(--quick-switch-panel-gap));
+    max-height: min(620px, max(0px, calc(
+      var(--vvh, 100dvh) - var(--quick-switch-bottom) - var(--quick-switch-button-size)
+      - var(--quick-switch-panel-gap) - 60px - env(safe-area-inset-top) - 12px
+    )));
+  }
+
   /* Landscape phones are short: let the panel reach down toward the pad. */
   @media (max-height: 520px) {
-    .quick-switch-panel {
+    .quick-switch:not(.quick-switch-floating) .quick-switch-panel {
       bottom: calc(190px + var(--safe-bottom));
       max-height: max(0px, calc(var(--vvh, 100dvh) - 260px - env(safe-area-inset-top)));
     }
@@ -902,6 +956,15 @@ button:disabled {
 
   .quick-switch-card.current {
     background: var(--hover);
+  }
+
+  .quick-switch-card.target {
+    background: var(--accent-soft);
+    color: var(--accent-fg);
+  }
+
+  .quick-switch-card.target .quick-switch-meta {
+    color: color-mix(in srgb, var(--accent-fg) 78%, var(--muted));
   }
 
   .quick-switch-title {

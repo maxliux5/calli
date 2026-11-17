@@ -2146,10 +2146,13 @@ export const ja: Messages = {
   'sidebar.settings': '設定',
   'quickSwitch.sessions': '最近のセッション',
   'quickSwitch.hide': 'ハンドルを隠す',
-  'quickSwitch.handle': 'クイック切替ハンドル',
-  'quickSwitch.handleHint': 'スマホで右側に表示。ドラッグで移動できます',
+  'quickSwitch.handle': 'セッションのクイック切替',
+  'quickSwitch.handleHint': 'スマホの会話画面にクイック切替を表示します。右端ハンドル・右下フローティングボタン・オフから選べます（既定はオフ）。',
   'quickSwitch.show': '表示',
   'quickSwitch.hidden': '非表示',
+  'quickSwitch.mode.off': 'オフ',
+  'quickSwitch.mode.handle': '右端ハンドル',
+  'quickSwitch.mode.button': '右下フローティングボタン',
 
   // Skills
   'skills.view': '説明を見る',
