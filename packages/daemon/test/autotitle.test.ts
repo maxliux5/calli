@@ -13,7 +13,7 @@ import { ClaudeAcpAdapter } from '../src/adapters/claude.js';
 import type { AgentAdapter } from '../src/adapters/types.js';
 import { ExtensionHost } from '../src/extension-host.js';
 import { loadCatalog } from '../src/extensions.js';
-import { AUTOTITLE_ID, AutoTitle, cleanTitle, namingPrompt } from '../src/autotitle.js';
+import { AUTOTITLE_ID, AutoTitle, cleanTitle, namingPrompt, DEFAULT_TASK_TITLE_FORMAT, validateTitleFormat, taskNamingPrompt, parseTaskTitle, taskTitleState, renderTaskTitle } from '../src/autotitle.js';
 import { createHttpServer } from '../src/http.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -308,4 +308,237 @@ test('「整理现有线程」 names the backlog, one title the person set stays
     const again = await (await h.api('/api/extensions/autotitle/organize', 'POST')).json() as { queued: number };
     assert.equal(again.queued, 0, 'a finished pass leaves nothing to do');
   } finally { await h.close(); }
+});
+
+// Templates are deliberately a bounded substitution, with at least one model-generated field.
+test('task title templates validate placeholders and keep null as the short-title default', () => {
+  assert.equal(validateTitleFormat(null), null);
+  assert.equal(validateTitleFormat(`  ${DEFAULT_TASK_TITLE_FORMAT}  `), DEFAULT_TASK_TITLE_FORMAT);
+  assert.equal(validateTitleFormat('{state} {mandate} · {focus}'), '{state} {mandate} · {focus}');
+  for (const bad of [5, '', '  ', '{title}', '{topic', '{{topic}}', '{topic}\n', '{topic}\u0000', '{topic}' + String.fromCharCode(0x2028) + '{focus}', '{topic}' + String.fromCharCode(0x2029) + '{focus}', '{state} [#{number}]', 'x'.repeat(256) + '{topic}']) {
+    assert.throws(() => validateTitleFormat(bad), /titleFormat/, String(bad));
+  }
+});
+
+// Model fields cannot override numbering or state; each field is cut without splitting emoji.
+test('task title parsing rejects invalid JSON and bounds fields independently of short titles', () => {
+  const emoji = '👨‍👩‍👧‍👦';
+  const fields = parseTaskTitle('```json\n' + JSON.stringify({ topic: `[${emoji.repeat(20)}]`, mandate: '主'.repeat(60), focus: '重'.repeat(60), state: '✅', number: 999 }) + '\n```');
+  assert.equal(fields.topic, emoji.repeat(16));
+  assert.equal(fields.mandate, '主'.repeat(34));
+  assert.equal(fields.focus, '重'.repeat(30));
+  const title = renderTaskTitle(DEFAULT_TASK_TITLE_FORMAT, fields, '🔄', null);
+  assert.match(title, /^🔄 \[#\?\]/);
+  assert.ok(title.endsWith('重'.repeat(30)), 'the focus is not lost to the old 40-grapheme limit');
+  assert.doesNotMatch(title, /999|✅/);
+  const literal = renderTaskTitle('{mandate} · {focus}', { topic: 'topic', mandate: '{focus}', focus: 'literal' }, '🔄', 1);
+  assert.equal(literal, '{focus} · literal', 'replacement is not recursive');
+  for (const bad of ['', 'not JSON', '[]', '{}', '{"topic":"a","mandate":7,"focus":"f"}', '{"topic":"[]","mandate":"m","focus":"f"}']) {
+    assert.throws(() => parseTaskTitle(bad), /任务标题字段/, bad);
+  }
+  assert.throws(() => renderTaskTitle('{focus}'.repeat(20), { topic: 'a', mandate: 'm', focus: '重'.repeat(30) }, '🔄', 1), /过长/);
+});
+
+// Completion belongs to the host's explicit done mark, not the naming model or a completed reply.
+test('task title state uses live waiting, running, error and explicit done state', () => {
+  assert.equal(taskTitleState({ waiting: true, status: 'running', doneAt: null }), '🙋');
+  assert.equal(taskTitleState({ waiting: false, status: 'running', doneAt: 'done' }), '🔄');
+  assert.equal(taskTitleState({ waiting: false, status: 'error', doneAt: 'done' }), '❌');
+  assert.equal(taskTitleState({ waiting: false, status: 'idle', doneAt: null }), '🔄');
+  assert.equal(taskTitleState({ waiting: false, status: 'idle', doneAt: 'done' }), '✅');
+});
+
+// The task prompt carries recent asks while preserving the original mandate and custom rules.
+test('task title prompt includes recent conversation and a host-owned output contract', () => {
+  const prompt = taskNamingPrompt('- 我的规则', '现有标题', '最初请求', [{ question: '最新请求', answer: '最近回答' }]);
+  assert.match(prompt, /我的规则/);
+  assert.match(prompt, /现有标题/);
+  assert.match(prompt, /最初请求/);
+  assert.match(prompt, /用户：最新请求/);
+  assert.match(prompt, /回复：最近回答/);
+  assert.match(prompt, /任务标题字段（JSON）/);
+  assert.match(prompt, /不要输出状态、编号/);
+});
+
+// Numbers live in SQLite, survive restarts and archives, and are not recycled after deletion.
+test('title numbers are durable, unique, idempotent and transactionally allocated', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'calli-title-numbers-'));
+  let store = new Store(dir);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const add = (id: string) => store.createThread({ id, agent: 'test', cwd: '', title: id, permissionMode: 'ask', model: null, effort: null });
+  add('one'); add('two');
+  assert.equal(store.titleNumber('one'), null);
+  assert.equal(store.allocateTitleNumber('one'), 1);
+  assert.equal(store.allocateTitleNumber('one'), 1);
+  assert.equal(store.allocateTitleNumber('two'), 2);
+  store.updateThread('two', { archivedAt: new Date().toISOString(), title: 'manual title' });
+  assert.equal(store.titleNumber('two'), 2);
+  store.close(); store = new Store(dir);
+  assert.equal(store.titleNumber('two'), 2);
+  store.updateThread('two', { archivedAt: null });
+  store.deleteThread('one'); add('three');
+  assert.equal(store.allocateTitleNumber('three'), 3);
+  add('rolled-back');
+  assert.throws(() => store.transaction(() => { store.allocateTitleNumber('rolled-back'); throw new Error('rollback'); }), /rollback/);
+  assert.equal(store.titleNumber('rolled-back'), null);
+  assert.equal(store.allocateTitleNumber('rolled-back'), 4, 'the failed write did not consume a number');
+  assert.throws(() => store.allocateTitleNumber('missing'), /not found/);
+});
+
+// Old settings receive a null format without changing their rules or trigger, and bad templates stay rejected.
+test('title format settings are optional and validated through the existing endpoint', async (t) => {
+  const h = await setup(); t.after(() => h.close());
+  h.store.saveHubSetting('autotitle', { agent: 'claude', model: null, rules: '旧规则', trigger: 'sent', again: true });
+  assert.deepEqual(h.autotitle.settings(), { modelSource: 'fixed', agent: 'claude', model: null, rules: '旧规则', trigger: 'sent', again: true, every: 3, titleFormat: null });
+  assert.equal((await h.api('/api/extensions/autotitle/settings', 'PUT', { modelSource: 'thread' })).status, 400);
+  assert.equal((await h.api('/api/extensions/autotitle/settings', 'PUT', { modelSource: 'session' })).status, 200);
+  assert.equal(h.autotitle.settings().modelSource, 'session');
+  for (const every of [1, 0, 2.5, 51, '3']) {
+    assert.equal((await h.api('/api/extensions/autotitle/settings', 'PUT', { every })).status, 400, String(every));
+  }
+  assert.equal((await h.api('/api/extensions/autotitle/settings', 'PUT', { every: 2 })).status, 200);
+  assert.equal(h.autotitle.settings().every, 2);
+  assert.equal(h.autotitle.settings().again, false, 'the interval replaces the legacy pass');
+  assert.equal((await h.api('/api/extensions/autotitle/settings', 'PUT', { every: null })).status, 200);
+  assert.equal(h.autotitle.settings().every, null);
+  const saved = await h.api('/api/extensions/autotitle/settings', 'PUT', { titleFormat: DEFAULT_TASK_TITLE_FORMAT });
+  assert.equal(saved.status, 200);
+  assert.equal(h.autotitle.settings().trigger, 'sent');
+  for (const titleFormat of [false, '', '{unknown}', '{state}', '{topic}\n{focus}']) {
+    assert.equal((await h.api('/api/extensions/autotitle/settings', 'PUT', { titleFormat })).status, 400);
+  }
+  assert.equal(h.autotitle.settings().titleFormat, DEFAULT_TASK_TITLE_FORMAT);
+  assert.equal((await h.api('/api/extensions/autotitle/settings', 'PUT', { titleFormat: null })).status, 200);
+  assert.equal(h.autotitle.settings().titleFormat, null);
+});
+
+// Session mode takes the agent and model from the thread being named, without a fixed agent.
+test('the session model source names with the thread’s own agent and model', async (t) => {
+  const h = await setup(); t.after(() => h.close());
+  const thread = await h.manager.createThread({ agent: 'claude', cwd: h.cwd, model: 'big' });
+  await h.send(thread.id, '登录总是超时');
+  h.autotitle.configure({ modelSource: 'session', agent: null, titleFormat: DEFAULT_TASK_TITLE_FORMAT });
+  const result = await h.autotitle.name(thread.id, { apply: true });
+  assert.match(result.title, /^🔄 \[#1\]/);
+  const scratch = h.manager.listThreads({ archived: true }).find(view => view.scratch);
+  assert.equal(scratch?.agent, 'claude', 'the question runs on the thread’s agent');
+  assert.equal(scratch?.model, 'big', 'and on the thread’s current model');
+  assert.equal(h.store.titleNumber(thread.id), 1);
+});
+
+// Preview leaves numbering and the title untouched; applying and switching formats preserve the assigned number.
+test('task titles preview without allocation and keep numbering through renames and format switches', async (t) => {
+  const h = await setup(); t.after(() => h.close());
+  const thread = await h.manager.createThread({ agent: 'claude', cwd: h.cwd });
+  await h.send(thread.id, '登录总是超时');
+  h.autotitle.configure({ agent: 'claude', titleFormat: DEFAULT_TASK_TITLE_FORMAT });
+  const original = h.manager.threadView(thread.id);
+  for (let i = 0; i < 2; i++) {
+    const preview = await (await h.api('/api/extensions/autotitle/preview', 'POST', { threadId: thread.id })).json() as { title: string };
+    assert.equal(preview.title, '🔄 [#?] [API] 修复登录超时 · 检查token过期');
+    assert.equal(h.store.titleNumber(thread.id), null);
+    assert.equal(h.manager.threadView(thread.id).title, original.title);
+  }
+  const result = await (await h.api(`/api/threads/${thread.id}/autotitle`, 'POST')).json() as { title: string };
+  assert.equal(result.title, '🔄 [#1] [API] 修复登录超时 · 检查token过期');
+  assert.equal(h.manager.threadView(thread.id).updatedAt, original.updatedAt, 'naming does not move the thread in recent order');
+  assert.equal(h.manager.titleBy(thread.id), 'auto');
+  await h.manager.updateThread(thread.id, { done: true });
+  assert.match((await h.autotitle.name(thread.id, { apply: true })).title, /^✅ \[#1\]/);
+  await h.manager.updateThread(thread.id, { archived: true });
+  await h.manager.updateThread(thread.id, { archived: false });
+  assert.equal(h.store.titleNumber(thread.id), 1);
+  h.autotitle.configure({ titleFormat: null });
+  assert.equal((await h.autotitle.name(thread.id, { apply: true })).title, '🐛 修复登录超时');
+  h.autotitle.configure({ titleFormat: DEFAULT_TASK_TITLE_FORMAT });
+  assert.match((await h.autotitle.name(thread.id, { apply: true })).title, /^✅ \[#1\]/);
+});
+
+// Omitting {number} avoids allocation; recent asks update focus and field limits leave it visible.
+test('task titles support unnumbered templates and recent context without the old short-title cut', async (t) => {
+  const h = await setup(); t.after(() => h.close());
+  const thread = await h.manager.createThread({ agent: 'claude', cwd: h.cwd });
+  await h.send(thread.id, '登录总是超时'); await h.send(thread.id, '改为排查缓存');
+  h.autotitle.configure({ agent: 'claude', titleFormat: '{topic} · {focus}' });
+  assert.equal((await h.autotitle.name(thread.id, { apply: true })).title, 'API · 排查缓存');
+  assert.equal(h.store.titleNumber(thread.id), null);
+  h.autotitle.configure({ titleFormat: DEFAULT_TASK_TITLE_FORMAT, rules: '- long task title' });
+  const result = await h.autotitle.name(thread.id, { apply: true });
+  assert.ok(result.title.endsWith('重'.repeat(30)));
+  assert.ok([...result.title].length > 40);
+  assert.equal(h.store.titleNumber(thread.id), 1);
+});
+
+// An invalid model result records an error but does not write the title or reserve a number.
+test('invalid task title output leaves the title and number unchanged', async (t) => {
+  const h = await setup(); t.after(() => h.close());
+  const thread = await h.manager.createThread({ agent: 'claude', cwd: h.cwd });
+  await h.send(thread.id, '登录总是超时');
+  h.autotitle.configure({ agent: 'claude', titleFormat: DEFAULT_TASK_TITLE_FORMAT, rules: '- invalid task title' });
+  const original = h.manager.threadView(thread.id).title;
+  assert.equal((await h.api(`/api/threads/${thread.id}/autotitle`, 'POST')).status, 502);
+  assert.equal(h.manager.threadView(thread.id).title, original);
+  assert.equal(h.store.titleNumber(thread.id), null);
+  assert.match(h.autotitle.status().error!.message, /任务标题字段/);
+});
+
+// Permission, template, manual-title and new-turn changes discard stale results without numbering.
+test('stale task titles neither overwrite a manual title nor allocate a number', async (t) => {
+  for (const change of ['manual', 'format', 'disabled', 'turn'] as const) {
+    const h = await setup(); t.after(() => h.close());
+    const thread = await h.manager.createThread({ agent: 'claude', cwd: h.cwd });
+    await h.send(thread.id, '登录总是超时');
+    h.autotitle.configure({ agent: 'claude', titleFormat: DEFAULT_TASK_TITLE_FORMAT, rules: '- later name' });
+    const original = h.manager.threadView(thread.id).title;
+    const naming = h.autotitle.name(thread.id, { apply: true });
+    await wait(() => h.manager.listThreads({ archived: true }).some(th => th.status === 'running'));
+    if (change === 'manual') await h.manager.updateThread(thread.id, { title: '保留我的标题' });
+    if (change === 'format') h.autotitle.configure({ titleFormat: null });
+    if (change === 'disabled') h.extensions.setEnabled(AUTOTITLE_ID, false);
+    if (change === 'turn') await h.send(thread.id, '新一轮改为排查缓存');
+    await naming;
+    assert.equal(h.manager.threadView(thread.id).title, change === 'manual' ? '保留我的标题' : original);
+    assert.equal(h.store.titleNumber(thread.id), null, change);
+  }
+});
+
+// The interval renames on every Nth turn while the title stays automatic, and a person's title stops it.
+test('the interval renames every N turns while the title is still automatic', async (t) => {
+  const h = await setup(); t.after(() => h.close());
+  h.autotitle.configure({ agent: 'claude', every: 2 });
+  const thread = await h.manager.createThread({ agent: 'claude', cwd: h.cwd });
+  // Only finished namings count, so the next turn never races a naming still in flight.
+  const named = () => h.manager.listThreads({ archived: true }).filter(view => view.scratch && view.status !== 'running').length;
+  await h.send(thread.id, '登录总是超时');
+  await wait(() => named() === 1);
+  await h.send(thread.id, '第二轮');
+  await wait(() => named() === 2);
+  await h.send(thread.id, '第三轮');
+  await new Promise(r => setTimeout(r, 300));
+  assert.equal(named(), 2, 'a turn between intervals keeps the title');
+  await h.send(thread.id, '第四轮');
+  await wait(() => named() === 3);
+  await h.manager.updateThread(thread.id, { title: '我的标题' });
+  await h.send(thread.id, '第五轮'); await h.send(thread.id, '第六轮');
+  await new Promise(r => setTimeout(r, 300));
+  assert.equal(named(), 3, 'a title the person set is left alone');
+  assert.equal(h.manager.threadView(thread.id).title, '我的标题');
+});
+
+// Enabling a format preserves the existing first/third-turn schedule rather than enabling every-turn calls.
+test('automatic task titles retain the original first and optional third-turn triggers', async (t) => {
+  const h = await setup(); t.after(() => h.close());
+  h.autotitle.configure({ agent: 'claude', titleFormat: DEFAULT_TASK_TITLE_FORMAT, again: true });
+  const thread = await h.manager.createThread({ agent: 'claude', cwd: h.cwd });
+  await h.send(thread.id, '登录总是超时');
+  await wait(() => h.manager.titleBy(thread.id) === 'auto');
+  const title = h.manager.threadView(thread.id).title;
+  assert.match(title, /^🔄 \[#1\]/);
+  await h.send(thread.id, '第二轮');
+  assert.equal(h.manager.listThreads({ archived: true }).length, 1);
+  await h.send(thread.id, '改为排查缓存');
+  await wait(() => h.manager.threadView(thread.id).title.endsWith('排查缓存'));
+  assert.equal(h.manager.listThreads({ archived: true }).length, 2);
+  assert.equal(h.store.titleNumber(thread.id), 1);
+  assert.match(h.manager.threadView(thread.id).title, /^🔄 \[#1\]/);
 });

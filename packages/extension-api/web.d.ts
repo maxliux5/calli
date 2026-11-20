@@ -159,16 +159,22 @@ export interface WebHostRealtime {
 
 /** 自动取名's settings, as the hub keeps them. */
 export interface AutoTitleSettings {
-  /** The agent instance that names threads; null until the person picks one. */
+  /** Where the naming agent and model come from: a fixed choice, or the thread being named. */
+  modelSource: 'fixed' | 'session';
+  /** The agent instance that names threads in fixed mode; null until the person picks one. */
   agent: string | null;
   /** Its model; null for the agent's default. */
   model: string | null;
   /** The person's naming rules, sent as written. */
   rules: string;
+  /** Optional task title template; null keeps the original short-title path. */
+  titleFormat: string | null;
   /** Name when the first message is sent, or once the first turn has its answer. */
   trigger: 'sent' | 'finished';
-  /** Name once more after the third turn, while the title is still an automatic one. */
+  /** Legacy one-off pass after the third turn; the interval below replaces it in the UI. */
   again: boolean;
+  /** Rename every N user turns while the title is still automatic; null turns the periodic pass off. */
+  every: number | null;
 }
 
 export interface AutoTitleStatus {

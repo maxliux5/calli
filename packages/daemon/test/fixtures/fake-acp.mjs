@@ -457,8 +457,14 @@ rl.on('line', async (line) => {
         // rule still gets the robot; no emoji rule gets none.
         const emoji = text.includes('注意区分度') ? '🐛 ' : text.includes('emoji') ? '🤖 ' : '';
         const title = `${emoji}修复登录超时`;
+        // Task-title mode returns fields; the hub, not this fixture, supplies state and numbering.
+        const fields = text.includes('long task title')
+          ? { topic: '长'.repeat(60), mandate: '主'.repeat(60), focus: '重'.repeat(60) }
+          : { topic: 'API', mandate: '修复登录超时', focus: text.includes('排查缓存') ? '排查缓存' : '检查token过期' };
+        const taskReply = text.includes('invalid task title') ? '{"topic":""}' : JSON.stringify(fields);
+        const reply = text.includes('任务标题字段（JSON）') ? taskReply : `标题：「${title}」\n`;
         const answer = () => {
-          update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `标题：「${title}」\n` } });
+          update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: reply } });
           out({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
         };
         if (text.includes('later name')) { setTimeout(answer, 300); return; }

@@ -541,6 +541,9 @@ export class Store {
     if (!cols.some((c) => c.name === 'external_at')) this.db.exec('ALTER TABLE threads ADD COLUMN external_at TEXT');
     // Migration: who set the title (see titleBy). NULL for threads from before, which no one renames.
     if (!cols.some((c) => c.name === 'title_by')) this.db.exec('ALTER TABLE threads ADD COLUMN title_by TEXT');
+    // A stable, machine-local title number. NULL until a numbered title is actually applied.
+    if (!cols.some((c) => c.name === 'title_number')) this.db.exec('ALTER TABLE threads ADD COLUMN title_number INTEGER');
+    this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_title_number ON threads(title_number) WHERE title_number IS NOT NULL');
     // Migration: the sidebar's preview line, the newest thing the user asked.
     if (!cols.some((c) => c.name === 'preview')) this.db.exec('ALTER TABLE threads ADD COLUMN preview TEXT');
     // Migration: the board's done mark and the agent's progress line, as JSON.
@@ -1133,6 +1136,26 @@ export class Store {
 
   setTitleBy(id: string, by: TitleBy): void {
     this.db.prepare('UPDATE threads SET title_by = ? WHERE id = ?').run(by, id);
+  }
+
+  /** Reading a number for a preview never reserves one. */
+  titleNumber(id: string): number | null {
+    const row = this.db.prepare('SELECT title_number FROM threads WHERE id = ?').get(id) as { title_number: number | null } | undefined;
+    return row?.title_number ?? null;
+  }
+
+  /** Assigned numbers survive renames and archives; deleted numbers are not recycled. */
+  allocateTitleNumber(id: string): number {
+    return this.transaction(() => {
+      if (!this.getThread(id)) throw new Error(`thread not found: ${id}`);
+      const existing = this.titleNumber(id);
+      if (existing !== null) return existing;
+      // Persist the next unused number separately so deleting a thread cannot rewind it.
+      const next = this.hubSetting<number>('autotitle.nextNumber', 1);
+      this.db.prepare('UPDATE threads SET title_number = ? WHERE id = ?').run(next, id);
+      this.saveHubSetting('autotitle.nextNumber', next + 1);
+      return next;
+    });
   }
 
   listSections(): SectionRecord[] {
