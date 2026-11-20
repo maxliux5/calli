@@ -8,7 +8,7 @@ export class DoubaoStream {
   private tail: { id: string; text: string } | null = null;
   private readonly snapshots = new Map<string, string>();
   private readonly asides = new Map<string, string>();
-  private readonly tools = new Map<string, { ended: boolean }>();
+  private readonly tools = new Map<string, { ended: boolean; title: string; name?: string; input?: unknown }>();
   private result: TurnResult | null = null;
   private hasText = false;
 
@@ -36,8 +36,24 @@ export class DoubaoStream {
       case 'assistant': {
         const parts = record.message?.content;
         if (!Array.isArray(parts)) break;
+        // 原生流式输出用 tool_use / tool_result 表达工具，不再注入私有快照事件。
+        for (const part of parts) if (part?.type === 'tool_use' && typeof part.id === 'string' && typeof part.name === 'string') {
+          this.tool({ step: { key: part.id, title: part.name, finished: false, call: { name: part.name, ...(part.input_status !== 'unavailable' && part.input !== undefined ? { input: part.input } : {}) } } });
+        }
         const text = parts.filter((part: any) => part?.type === 'text' && typeof part.text === 'string').map((part: any) => part.text).join('');
         if (typeof record.message.id === 'string' && parts.some((part: any) => part?.type === 'text' && typeof part.text === 'string')) this.complete(record.message.id, text);
+        break;
+      }
+      case 'user': {
+        const parts = record.message?.content;
+        if (!Array.isArray(parts)) break;
+        for (const part of parts) if (part?.type === 'tool_result' && typeof part.tool_use_id === 'string') {
+          const text = typeof part.content === 'string' ? part.content : Array.isArray(part.content)
+            ? part.content.filter((p: any) => p?.type === 'text' && typeof p.text === 'string').map((p: any) => p.text).join('\n') : undefined;
+          this.tool({ step: { key: part.tool_use_id, finished: true, call: { result: {
+            ...(typeof part.is_error === 'boolean' ? { isError: part.is_error } : {}), ...(text !== undefined ? { text } : {}),
+          } } } });
+        }
         break;
       }
       case 'calli_bridge_tool': this.tool(record); break;
@@ -93,11 +109,12 @@ export class DoubaoStream {
     if (typeof step?.key !== 'string' || !step.key || typeof step.finished !== 'boolean') throw new Error('Doubao 流式桥收到无效工具快照');
     const id = `doubao:${step.key}`, call = step.call;
     const state = this.tools.get(id);
-    const title = typeof step.title === 'string' && step.title ? step.title : typeof call?.name === 'string' ? call.name : 'Tool';
-    const name = typeof call?.name === 'string' && call.name ? call.name : undefined;
-    const detail = { title, kind: name ? toolKinds[name] ?? 'other' : 'other', ...(name ? { tool: name } : {}), ...(call?.input !== undefined ? { input: call.input } : {}) };
+    const title = typeof step.title === 'string' && step.title ? step.title : state?.title ?? (typeof call?.name === 'string' ? call.name : 'Tool');
+    const name = typeof call?.name === 'string' && call.name ? call.name : state?.name;
+    const input = call?.input ?? state?.input;
+    const detail = { title, kind: name ? toolKinds[name] ?? 'other' : 'other', ...(name ? { tool: name } : {}), ...(input !== undefined ? { input } : {}) };
     if (!state) {
-      this.tools.set(id, { ended: false });
+      this.tools.set(id, { ended: false, title, name, input });
       this.emit({ type: 'tool.start', data: { id, ...detail, status: 'in_progress' } });
       // Subsequent text is a new visible segment. A final snapshot may not erase or repeat the aside.
       if (this.tail) this.asides.set(this.tail.id, (this.asides.get(this.tail.id) ?? '') + this.tail.text);

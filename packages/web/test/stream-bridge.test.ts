@@ -21,3 +21,11 @@ test('stream bridge consent has an accessible separate switch, platform and fall
     } finally { setLocale('zh'); }
   }
 });
+
+test('native streaming does not advertise temporary runtime storage', () => {
+  const html = renderToStaticMarkup(createElement(StreamBridgeOption, {
+    capability: { platform: 'Doubao CLI', temporaryMegabytes: 0 }, value: true, onChange: () => undefined,
+  }));
+  assert.ok(html.includes('Doubao CLI'));
+  assert.equal(html.includes('0 MB'), false);
+});

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { startDaemon, openUi, api, launchBrowser } from '../harness.mjs';
 import { writeFakeDoubaoManifest } from '../../daemon/test/fixtures/doubao-runtime.mjs';
 
-const switchName = '启用实验流式桥';
+const switchName = '启用流式回复';
 const view = async (daemon, id) => (await (await api(daemon, `/api/threads/${id}`)).json());
 const send = async (page, text) => {
   await page.locator('.composer textarea').fill(text);
@@ -51,7 +51,7 @@ for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark'])
       await add.locator('.choice-row').filter({ hasText: 'Doubao CLI' }).click();
       const toggle = add.getByRole('switch', { name: switchName, exact: true });
       assert.equal(await toggle.getAttribute('aria-checked'), 'false', 'new opt-in is not preselected');
-      await add.getByText(/仅 Linux x64/).waitFor();
+      await add.getByText(/原生流式接口/).waitFor();
       const name = `豆包 ${mode}`;
       await add.getByLabel('名称（选填）').fill(name);
       await toggle.click();
@@ -73,9 +73,9 @@ for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark'])
       const retry = await openSettings(page, name);
       // Changed output seams report a neutral fallback note; saving consent still succeeds.
       const runtimeRoot = join(daemon.dataDir, 'doubao-runtime');
-      const bundlePath = join(runtimeRoot, 'resources/js_app/entry-cli-router/main.js');
+      const bundlePath = join(daemon.dataDir, 'bin', 'fake-doubao');
       const bundleText = readFileSync(bundlePath, 'utf8');
-      writeFileSync(bundlePath, bundleText.replace('case"stream-json":', 'case"new":'));
+      writeFileSync(bundlePath, bundleText.replace('#!/bin/sh\n', '#!/bin/sh\nexport FAKE_DOUBAO_LEGACY=1\n'));
       writeFakeDoubaoManifest(runtimeRoot);
       await retry.getByRole('switch', { name: switchName }).click();
       await retry.getByRole('status').waitFor();
@@ -86,9 +86,10 @@ for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark'])
       await retry.waitFor({ state: 'detached' });
       assert.equal((await (await api(daemon, '/api/agents')).json()).find(a => a.id === 'doubao').streamBridgeEnabled, true);
       const bridge = await (await api(daemon, '/api/agents/doubao/stream-bridge')).json();
-      assert.equal(bridge.compatible, false); assert.match(bridge.reason, /输出结构/);
+      assert.equal(bridge.compatible, false); assert.match(bridge.reason, /原生流式输出/);
       writeFileSync(bundlePath, bundleText);
       writeFakeDoubaoManifest(runtimeRoot);
+      await api(daemon, '/api/agents/doubao', { method: 'PATCH', body: JSON.stringify({ streamBridge: true }) });
       const made = await api(daemon, '/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'doubao', cwd: daemon.workdir, title: `测试下一轮 ${mode}` }) });
       const thread = await made.json();
       await chooseThread(page, thread.title, mobile);
@@ -107,6 +108,7 @@ for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark'])
       await during.waitFor({ state: 'detached' });
       assert.equal((await view(daemon, thread.id)).status, 'running', 'changing the bridge preserves the in-flight task');
       await chooseThread(page, thread.title, mobile);
+      if (mobile && await page.getByRole('button', { name: '关闭助手', exact: true }).isVisible()) await page.getByRole('button', { name: '关闭助手', exact: true }).click();
       await page.getByRole('button', { name: '停止', exact: true }).click();
       await page.getByRole('button', { name: '停止', exact: true }).waitFor({ state: 'hidden' });
       await send(page, 'after switch');
@@ -147,8 +149,8 @@ test('discovery offers bridge consent separately from selecting a CLI, and incom
     await row.click(); await toggle.click();
     assert.equal(await row.getAttribute('aria-checked'), 'true', 'checking bridge consent never deselects its CLI');
     const runtimeRoot = join(daemon.dataDir, 'doubao-runtime');
-    const bundlePath = join(runtimeRoot, 'resources/js_app/entry-cli-router/main.js'), bundleText = readFileSync(bundlePath, 'utf8');
-    writeFileSync(bundlePath, bundleText.replace('case"stream-json":', 'case"new":'));
+    const bundlePath = join(daemon.dataDir, 'bin', 'doubao2'), bundleText = readFileSync(bundlePath, 'utf8');
+    writeFileSync(bundlePath, bundleText.replace('#!/bin/sh\n', '#!/bin/sh\nexport FAKE_DOUBAO_LEGACY=1\n'));
     writeFakeDoubaoManifest(runtimeRoot);
     await discovery.getByRole('button', { name: '连接 1 个', exact: true }).click();
     await discovery.waitFor({ state: 'detached' }, { timeout: 10_000 });

@@ -41,7 +41,7 @@ test('stream bridge settings validate read-only, persist only their own env and 
   const h = await setup(t);
   const original = readFileSync(join(h.root, 'resources/js_app/entry-cli-router/main.js'), 'utf8');
   const supported = await (await h.api('/api/agents/supported')).json() as any[];
-  assert.deepEqual(supported.find(a => a.adapter === 'doubao').capabilities.streamBridge, { platform: 'Linux x64', temporaryMegabytes: 106 });
+  assert.deepEqual(supported.find(a => a.adapter === 'doubao').capabilities.streamBridge, { platform: 'Doubao CLI', temporaryMegabytes: 0 });
   assert.equal(supported.find(a => a.adapter === 'pi').capabilities.streamBridge, undefined);
   const before = await (await h.api('/api/agents')).json() as any[];
   assert.equal(before.find(a => a.id === 'doubao').streamBridgeEnabled, false);
@@ -64,7 +64,7 @@ test('stream bridge settings validate read-only, persist only their own env and 
   assert.equal(reloaded.get('doubao').hidden, true);
   assert.equal(reloaded.get('doubao').account, h.instance.account);
   assert.equal(reloaded.get('doubao').env?.KEEP, 'instance-setting');
-  assert.equal((await (await h.api('/api/agents/doubao/diagnostics')).json() as any).protocol, 'doubao stream-json bridge (experimental)');
+  assert.equal((await (await h.api('/api/agents/doubao/diagnostics')).json() as any).protocol, 'doubao --output-format stream-json');
   await h.api('/api/agents/doubao', 'PATCH', { streamBridge: false });
   assert.equal((await (await h.api('/api/agents/doubao/diagnostics')).json() as any).protocol, 'doubao -p (text)', 'settings invalidate cached diagnostics');
 });
@@ -85,18 +85,17 @@ test('invalid settings do not partially update; incompatible installs save and r
   assert.equal(saved.status, 200);
   assert.deepEqual(h.registry.get('doubao'), { ...h.instance, env: { ...h.instance.env, CALLI_DOUBAO_STREAM: '1' } });
   // Changed output seams are reported by the status endpoint, but saving consent never fails.
-  const bundlePath = join(h.root, 'resources/js_app/entry-cli-router/main.js'), bundle = readFileSync(bundlePath, 'utf8');
-  writeFileSync(bundlePath, fakeDoubaoBundle('entry-cli-router').replace('case"stream-json":', 'case"new":'));
-  writeFakeDoubaoManifest(h.root);
+  const originalBin = readFileSync(h.bin, 'utf8');
+  writeFileSync(h.bin, originalBin.replace('FAKE_DOUBAO_RUNTIME=', 'FAKE_DOUBAO_LEGACY=1 FAKE_DOUBAO_RUNTIME='));
   const status = await (await h.api('/api/agents/doubao/stream-bridge')).json() as any;
-  assert.equal(status.compatible, false); assert.match(status.reason, /输出结构/);
+  assert.equal(status.compatible, false); assert.match(status.reason, /原生流式输出/);
   assert.equal((await h.api('/api/agents/doubao/stream-bridge', 'GET', undefined, false)).status, 401);
   assert.equal((await h.api('/api/agents/pi/stream-bridge')).status, 400);
   assert.equal((await h.api('/api/agents/missing/stream-bridge')).status, 404);
   assert.equal((await h.api('/api/agents/doubao', 'PATCH', { streamBridge: false })).status, 200, 'disabling works on incompatible installs');
   assert.equal((await h.api('/api/agents/doubao', 'PATCH', { streamBridge: true })).status, 200, 'enabling saves even when incompatible');
   assert.equal(h.registry.adapters.get('doubao')!.streamBridgeEnabled, true);
-  writeFileSync(bundlePath, bundle); writeFakeDoubaoManifest(h.root); writeFileSync(manifestPath, JSON.stringify(manifest));
+  writeFileSync(h.bin, originalBin); writeFileSync(manifestPath, JSON.stringify(manifest));
   assert.deepEqual(await (await h.api('/api/agents/doubao/stream-bridge')).json(), { compatible: true });
   assert.deepEqual(h.calls(), []);
 });
@@ -135,14 +134,15 @@ test('a saved bridge switch does not interrupt the current turn and applies on t
   assert.equal(h.manager.getThread(thread.id).agentSessionId, sid);
   assert.ok(h.store.listTurnEvents(thread.id, next.turnId).some(e => e.type === 'tool.start'));
   const bridged = h.calls()[1];
-  assert.notEqual(bridged.runtime, h.bin);
+  assert.equal(bridged.runtime, h.bin);
+  assert.ok(bridged.args.includes('--output-format'));
   assert.ok(bridged.args.includes(sid));
   await h.api('/api/agents/doubao', 'PATCH', { streamBridge: false });
   await h.manager.startTurn(thread.id, { text: 'after disable' });
   await wait(() => h.manager.threadView(thread.id).status !== 'running');
   assert.equal(h.calls()[2].runtime, h.bin);
   assert.equal(h.manager.getThread(thread.id).agentSessionId, sid);
-  assert.equal(existsSync(dirname(dirname(bridged.runtime))), false, 'replacing the idle handle releases the patched copy');
+  assert.equal(existsSync(h.bin), true, 'changing settings preserves the original runtime');
 });
 
 test('an explicit disabled setting overrides an inherited global bridge default', async t => {

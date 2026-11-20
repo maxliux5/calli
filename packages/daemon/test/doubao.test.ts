@@ -73,8 +73,11 @@ test('Doubao argv preserves opaque prompt text and maps safe and full-access per
     'wrapper.mjs', '-C', '/project', '--permission-mode', 'ask_risky', '--model', 'new', '--effort', 'high', '-p', 'new text',
   ]);
   assert.deepEqual(doubaoArgs({ cwd: '/project' }, text, ['wrapper.mjs', '--model', 'configured', '--effort=low']), [
-    'wrapper.mjs', '--model', 'configured', '--effort=low', '-C', '/project', '--permission-mode', 'ask_risky', '-p', text,
+    'wrapper.mjs', '-C', '/project', '--permission-mode', 'ask_risky', '--model', 'configured', '--effort=low', '-p', text,
   ]);
+  const full = doubaoArgs({ cwd: '/project', permissionMode: 'full_access' }, 'hi', ['wrapper.mjs', '--model', 'configured'], true);
+  assert.ok(full.indexOf('--dangerously-bypass-approvals-and-sandbox') < full.indexOf('--model'));
+  assert.deepEqual(full.slice(-2), ['--output-format', 'stream-json']);
   assert.throws(() => doubaoArgs({ cwd: '/project', permissionMode: 'ask' }, text), /不能请求人工审批/);
 });
 
@@ -229,9 +232,9 @@ test('Doubao configuration has a PATH default and an executable override', () =>
   assert.deepEqual(loadConfig({ CALLI_TOKEN: 'test-token-0123456789', CALLI_DOUBAO_BIN: '/opt/doubao' }).doubaoCommand, ['/opt/doubao']);
 });
 
-async function apiSetup(t: { after(fn: () => unknown): void }) {
+async function apiSetup(t: { after(fn: () => unknown): void }, legacy = false) {
   const h = setup(t);
-  const registry = new AgentRegistry([{ id: 'doubao', adapter: 'doubao', command, env: { FAKE_DOUBAO_LOG: h.log, CALLI_DOUBAO_RUNTIME: join(h.dir, 'native') } }], null);
+  const registry = new AgentRegistry([{ id: 'doubao', adapter: 'doubao', command, env: { FAKE_DOUBAO_LOG: h.log, CALLI_DOUBAO_RUNTIME: join(h.dir, 'native'), ...(legacy ? { FAKE_DOUBAO_LEGACY: '1', CALLI_DOUBAO_STREAM: '1' } : {}) } }], null);
   const store = new Store(h.dir);
   let manager = new ThreadManager(store, registry.adapters, [h.dir], new AttachmentStore(h.dir));
   let server = createHttpServer({ manager, registry, token: 'test-token', webDir: null, version: 'test' });
@@ -345,4 +348,24 @@ test('Doubao API selects real models and efforts, switches on the next turn and 
   assert.equal(h.calls()[5].args.includes('--model'), false);
   assert.equal(h.calls()[5].args.includes('--effort'), false);
   assert.equal(h.manager.getThread(thread.id).agentSessionId, id);
+});
+
+test('legacy Doubao remains usable through HTTP without model probes or runtime copies', async t => {
+  const h = await apiSetup(t, true);
+  const agents = await (await h.api('/api/agents')).json() as any[];
+  assert.equal(agents[0].available, true);
+  assert.equal(agents[0].capabilities.modelCatalog, false);
+  assert.deepEqual(await (await h.api('/api/agents/doubao/models')).json(), []);
+  const diagnostic = await (await h.api('/api/agents/doubao/diagnostics')).json() as any;
+  assert.equal(diagnostic.state, 'cli_only');
+  assert.equal(diagnostic.protocol, 'doubao -p (text)');
+  assert.deepEqual(h.calls(), []);
+  const made = await h.api('/api/threads', 'POST', { agent: 'doubao', cwd: h.dir });
+  assert.equal(made.status, 201);
+  const thread = await made.json() as { id: string };
+  assert.equal((await h.api(`/api/threads/${thread.id}/turns`, 'POST', { text: 'hello' })).status, 202);
+  await wait(() => h.manager.threadView(thread.id).status !== 'running');
+  assert.equal(h.manager.threadView(thread.id).status, 'idle');
+  assert.equal(h.calls().length, 1);
+  assert.equal(h.calls()[0].args.includes('--output-format'), false);
 });

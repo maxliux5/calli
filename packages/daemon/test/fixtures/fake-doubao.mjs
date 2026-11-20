@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // The public Doubao CLI surface: one -p turn, a text reply, and a stderr session announcement.
-import { appendFileSync, fstatSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { appendFileSync, fstatSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { coordinationFixture } from './coordination.mjs';
@@ -15,33 +14,37 @@ if (process.env.FAKE_DOUBAO_LAUNCHER && !process.env.FAKE_DOUBAO_NATIVE_CHILD) {
 }
 
 if (args.includes('--version')) { console.log('doubao 2.31.2'); process.exit(0); }
+if (args.includes('--help')) {
+  console.log(process.env.FAKE_DOUBAO_LEGACY ? 'doubao -p <prompt>' : 'doubao model list; --output-format text|json|stream-json');
+  process.exit(0);
+}
 if (args[0] === 'login') { console.log('Doubao fixture login'); process.exit(0); }
 const flags = new Map();
-const values = new Set(['-C', '-p', '--resume', '--model', '--effort', '--permission-mode']);
-const booleans = new Set(['--list', '--dangerously-bypass-approvals-and-sandbox']);
+const values = new Set(['-C', '-p', '--resume', '--model', '--effort', '--permission-mode', '--output-format']);
+const booleans = new Set(['--list', '--json', '--dangerously-bypass-approvals-and-sandbox']);
 function fail(text, code = 1) { console.error(text); process.exit(code); }
 for (let index = 0; index < args.length; index++) {
+  if (args[index] === 'model' && args[index + 1] === 'list') { flags.set('model', true); index++; continue; }
   const arg = args[index], at = arg.indexOf('='), name = at < 0 ? arg : arg.slice(0, at);
   if (flags.has(name)) fail('invalid_arguments: Duplicate CLI option.');
   if (values.has(name)) flags.set(name, at < 0 ? args[++index] : arg.slice(at + 1));
   else if (booleans.has(name)) flags.set(name, true);
   else fail('invalid_arguments: Unknown CLI argument.');
 }
-if (flags.has('--list')) {
+if (flags.has('--list') || flags.has('model')) {
   const runtime = process.env.FAKE_DOUBAO_RUNTIME;
-  const source = runtime && readFileSync(join(dirname(runtime), 'resources/js_app/entry-cli-router/main.js'), 'utf8');
-  if (!source?.includes('type:"calli_models"')) { console.log('fixture-session  Fixture conversation'); process.exit(0); }
+  if (!flags.has('model')) { console.log('fixture-session  Fixture conversation'); process.exit(0); }
+  if (process.env.FAKE_DOUBAO_LEGACY) fail('invalid_arguments: Unknown model command.');
   if (process.env.FAKE_DOUBAO_MODEL_LOG) appendFileSync(process.env.FAKE_DOUBAO_MODEL_LOG, JSON.stringify({ args, runtime, marker: process.env.FAKE_DOUBAO_MARKER }) + '\n');
   if (process.env.FAKE_DOUBAO_IGNORE_SIGINT) process.on('SIGINT', () => undefined);
   await delay(Number(process.env.FAKE_DOUBAO_MODEL_DELAY ?? 0));
   if (process.env.FAKE_DOUBAO_MODEL_LARGE) { await new Promise(resolve => process.stdout.write('x'.repeat(1024 * 1024 + 1), resolve)); process.exit(0); }
   if (process.env.FAKE_DOUBAO_MODEL_ERROR) fail(process.env.FAKE_DOUBAO_MODEL_ERROR);
   if (process.env.FAKE_DOUBAO_MODEL_OUTPUT) { console.log(process.env.FAKE_DOUBAO_MODEL_OUTPUT); process.exit(0); }
-  console.log(JSON.stringify({ type: 'calli_models', models: [
-    { modelId: 'native-default', name: 'Doubao Default', available: true, isDefault: true, effortAdjustable: true, efforts: [{ level: 'none', name: 'None' }, { level: 'low', name: 'Low' }, { level: 'high', name: 'High' }] },
-    { modelId: 'native-fast', name: 'Doubao Fast', description: 'Fast task model', available: true, isDefault: false, effortAdjustable: false, efforts: [] },
-    { modelId: 'native-locked', name: 'Doubao Locked', available: false, isDefault: false, effortAdjustable: true, efforts: [] },
-  ] }));
+  console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: { type: 'model_list', models: [
+    { id: 'native-default', name: 'Doubao Default', is_default: true, efforts: ['none', 'low', 'high'] },
+    { id: 'native-fast', name: 'Doubao Fast', is_default: false, efforts: [] },
+  ] } }));
   process.exit(0);
 }
 if (!flags.get('-p')?.trim()) fail('invalid_arguments: A prompt must immediately follow -p.');
@@ -59,7 +62,8 @@ if (fstatSync(0).isFIFO()) fail('internal_error: Unable to connect standard inpu
 process.stdin.resume();
 await new Promise(resolve => process.stdin.on('end', resolve));
 const text = flags.get('-p');
-const stream = process.env.FAKE_DOUBAO_RUNTIME && readFileSync(join(dirname(process.env.FAKE_DOUBAO_RUNTIME), 'resources/js_app/entry-cli-router/main.js'), 'utf8').includes('output_format:"stream-json"');
+const stream = flags.get('--output-format') === 'stream-json';
+if (process.env.FAKE_DOUBAO_LEGACY && flags.has('--output-format')) fail('invalid_arguments: Unknown output format.');
 if (stream) {
   const body = text.split(/<calli-(?:tools|coordination|team)>/)[0].trim();
   const id = body === 'wrong-session' ? '38450000000000002' : flags.get('--resume') ?? '38450000000000001';
@@ -74,9 +78,9 @@ if (stream) {
   if (tools) {
     delta('Inspecting a file.');
     const step = { key: 'fake-read', title: 'Read fixture', finished: false, ...(body !== 'stream-unknown-tool' ? { call: { id: 'call-1', name: 'Read', input: { file_path: 'fixture.txt' } } } : {}) };
-    out({ type: 'calli_bridge_tool', message_id: messageId, phase: 'started', step });
+    out({ type: 'assistant', message: { id: `${messageId}:tool_use`, content: [{ type: 'tool_use', id: step.key, name: step.call?.name ?? 'Read fixture', ...(step.call ? { input: step.call.input } : { input_status: 'unavailable' }) }] } });
     await delay(25);
-    if (body !== 'slow') out({ type: 'calli_bridge_tool', message_id: messageId, phase: 'finished', step: { ...step, finished: true, ...(step.call ? { call: { ...step.call, result: { isError: false, text: 'fixture contents' } } } : {}) } });
+    if (body !== 'slow') out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: step.key, ...(step.call ? { is_error: false, content: 'fixture contents' } : { content_status: 'unavailable' }) }] } });
   }
   if (body === 'slow') {
     delta('working');

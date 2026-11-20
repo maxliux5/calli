@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import type { Readable } from 'node:stream';
 import { cliDiagnostic } from './diagnostics.js';
-import { DOUBAO_STREAM_BRIDGE, prepareDoubaoStreamRuntime, validateDoubaoStreamRuntime, type DoubaoStreamRuntime } from './doubao-runtime.js';
+import { DOUBAO_STREAM_BRIDGE, readDoubaoNativeCapabilities, validateDoubaoStreamRuntime, type DoubaoNativeCapabilities } from './doubao-runtime.js';
 import { DoubaoStream } from './doubao-stream.js';
 import { readDoubaoModels } from './doubao-models.js';
 import { DOUBAO_ICON } from './icons.js';
@@ -12,9 +12,8 @@ import { commandExists } from '../util.js';
 /**
  * Doubao CLI's public automation surface is one `-p` process per turn. Its text response is on
  * stdout; stderr announces the native conversation as {type:"session",session_id:"..."}.
- * The CLI exposes no ACP or output-format flag. An opt-in stream bridge enables the shipped JSON
- * printer in an isolated runtime copy, never modifying the installation. Compatibility follows
- * the patch anchors rather than a pinned version; incompatible installs fall back to text output.
+ * 原生 model list / stream-json 接口按帮助内容检测。旧版沿用默认模型和文本输出，
+ * 不启动安装副本，避免共享服务的可执行文件及脚本身份校验冲突。
  */
 export const DOUBAO_METADATA = {
   adapter: 'doubao' as const,
@@ -24,7 +23,7 @@ export const DOUBAO_METADATA = {
 };
 
 const BYPASS = '--dangerously-bypass-approvals-and-sandbox';
-const VALUE_OPTIONS = new Set(['-C', '-p', '--resume', '--model', '--effort', '--permission-mode']);
+const VALUE_OPTIONS = new Set(['-C', '-p', '--resume', '--model', '--effort', '--permission-mode', '--output-format']);
 const CANCEL_GRACE_MS = 5_000;
 const STDERR_LIMIT = 8_192;
 const STREAM_LINE_LIMIT = 8 * 1024 * 1024;
@@ -41,19 +40,23 @@ function withoutOptions(args: string[], removed: Set<string>): string[] {
 }
 
 /** The CLI rejects duplicate options, including defaults supplied in an instance's command. */
-export function doubaoArgs(opts: StartOptions, text: string, base: string[] = []): string[] {
-  const removed = new Set(['-C', '-p', '--resume', '--list', '--service-start', '--permission-mode', BYPASS]);
+export function doubaoArgs(opts: StartOptions, text: string, base: string[] = [], stream = false): string[] {
+  const removed = new Set(['-C', '-p', '--resume', '--list', '--service-start', '--permission-mode', '--output-format', '--json', BYPASS]);
   if (opts.model) removed.add('--model');
   if (opts.effort) removed.add('--effort');
   if (opts.permissionMode === 'ask') throw new Error('Doubao 无界面模式不能请求人工审批');
+  const kept = withoutOptions(base, removed), business = kept.findIndex(arg => VALUE_OPTIONS.has(arg.split('=')[0]));
+  // 新版要求 -C 位于业务参数之前；包装器参数仍保留在可执行入口之后。
   return [
-    ...withoutOptions(base, removed),
+    ...(business < 0 ? kept : kept.slice(0, business)),
     '-C', opts.cwd,
     ...(opts.permissionMode === 'full_access' ? [BYPASS] : ['--permission-mode', 'ask_risky']),
+    ...(business < 0 ? [] : kept.slice(business)),
     ...(opts.model ? ['--model', opts.model] : []),
     ...(opts.effort ? ['--effort', opts.effort === 'off' ? 'none' : opts.effort] : []),
     ...(opts.resumeId ? ['--resume', opts.resumeId] : []),
     '-p', text,
+    ...(stream ? ['--output-format', 'stream-json'] : []),
   ];
 }
 
@@ -90,14 +93,27 @@ export class DoubaoAdapter implements AgentAdapter {
 
   private modelCache: { at: number; value: ModelOption[] } | null = null;
   private modelLoad: Promise<ModelOption[]> | null = null;
+  private nativeOutput: { at: number; value: Promise<DoubaoNativeCapabilities> } | null = null;
   onModelsChanged?: (models: ModelOption[]) => void;
 
-  available(): Promise<boolean> { return Promise.resolve(commandExists(this.command[0])); }
+  private nativeCapabilities(refresh = false): Promise<DoubaoNativeCapabilities> {
+    if (!refresh && this.nativeOutput && Date.now() - this.nativeOutput.at < 60_000) return this.nativeOutput.value;
+    const value = readDoubaoNativeCapabilities([this.command[0], ...this.cliPrefix()], sessionEnvironment(this.env), process.cwd())
+      .then(capabilities => { this.capabilities.modelCatalog = capabilities.models; return capabilities; });
+    this.nativeOutput = { at: Date.now(), value };
+    return value;
+  }
+  async available(): Promise<boolean> {
+    if (!commandExists(this.command[0])) return false;
+    await this.nativeCapabilities();
+    return true;
+  }
   models(refresh = false): Promise<ModelOption[]> {
     if (this.modelLoad) return this.modelLoad;
     if (!refresh && this.modelCache && Date.now() - this.modelCache.at < 60_000) return Promise.resolve(this.modelCache.value);
     // Strip every business flag: a catalog process cannot inherit a prompt or resume a conversation.
-    this.modelLoad = readDoubaoModels([this.command[0], ...this.cliPrefix()], sessionEnvironment(this.env), process.cwd())
+    this.modelLoad = this.nativeCapabilities(refresh).then(capabilities => capabilities.models
+      ? readDoubaoModels([this.command[0], ...this.cliPrefix()], sessionEnvironment(this.env), process.cwd()) : [])
       .then(models => {
         const configured = this.command.slice(1).flatMap((arg, index, args) =>
           arg === '--model' ? [args[index + 1]] : arg.startsWith('--model=') ? [arg.slice(8)] : []).at(-1);
@@ -122,11 +138,14 @@ export class DoubaoAdapter implements AgentAdapter {
       return { environment, incompatible: error instanceof Error ? error.message : String(error) };
     }
   }
-  diagnose() { return cliDiagnostic([this.command[0], ...this.cliPrefix()], this.env, this.streamBridgeEnabled ? 'doubao stream-json bridge (experimental)' : 'doubao -p (text)'); }
+  async diagnose() {
+    const native = await this.nativeCapabilities();
+    return cliDiagnostic([this.command[0], ...this.cliPrefix()], this.env, this.streamBridgeEnabled && native.stream ? 'doubao --output-format stream-json' : 'doubao -p (text)');
+  }
 
   /** Account-directory settings only; neither shell command carries scoped Calli credentials. */
   private cliPrefix(): string[] {
-    return withoutOptions(this.command.slice(1), new Set([...VALUE_OPTIONS, '--list', '--service-start', BYPASS]));
+    return withoutOptions(this.command.slice(1), new Set([...VALUE_OPTIONS, '--list', '--service-start', '--json', BYPASS]));
   }
   loginCommand(): string {
     const variables = ['HOME', 'XDG_DATA_HOME', 'LOCALAPPDATA'].flatMap(key => this.env[key] ? [`${key}=${quoteArg(this.env[key])}`] : []);
@@ -143,13 +162,9 @@ export class DoubaoAdapter implements AgentAdapter {
     if (opts.workMode === 'plan') throw new Error('此 agent 不支持计划模式');
     if (opts.permissionMode === 'ask') throw new Error('Doubao 无界面模式不能请求人工审批');
     // A new native id exists only after the first real prompt, never an empty probing session.
-    // A bridge that cannot be prepared right now degrades to the public text surface, not an error.
-    let runtime: DoubaoStreamRuntime | undefined;
-    if (this.streamBridgeEnabled) {
-      try { runtime = await prepareDoubaoStreamRuntime(this.command, sessionEnvironment(this.env, opts.coordinationEnv), opts.cwd); }
-      catch (error) { console.warn(`[doubao] stream bridge unavailable, falling back to text output: ${error instanceof Error ? error.message : error}`); }
-    }
-    return new DoubaoSession(runtime?.command ?? this.command, { ...opts }, this.env, runtime);
+    // 旧版没有原生流式选项时沿用文本输出，不启动副本或重发用户任务。
+    const stream = this.streamBridgeEnabled && (await this.nativeCapabilities()).stream;
+    return new DoubaoSession(this.command, { ...opts }, this.env, stream);
   }
 }
 
@@ -165,7 +180,7 @@ class DoubaoSession implements AgentSession {
   private active: RunningTurn | null = null;
   private closed = false;
 
-  constructor(private readonly command: string[], private readonly opts: StartOptions, private readonly env: Record<string, string>, private readonly runtime?: DoubaoStreamRuntime) {
+  constructor(private readonly command: string[], private readonly opts: StartOptions, private readonly env: Record<string, string>, private readonly nativeStream = false) {
     this.agentSessionId = opts.resumeId ?? '';
   }
 
@@ -189,7 +204,7 @@ class DoubaoSession implements AgentSession {
 
     const [bin, ...base] = this.command;
     hooks.emit({ type: 'session.lifecycle', data: { action: 'start', reason: 'per_turn_process' } });
-    const child = spawn(bin, doubaoArgs({ ...this.opts, resumeId: this.agentSessionId || undefined }, input.text, base), {
+    const child = spawn(bin, doubaoArgs({ ...this.opts, resumeId: this.agentSessionId || undefined }, input.text, base, this.nativeStream), {
       cwd: this.opts.cwd,
       env: sessionEnvironment(this.env, this.opts.coordinationEnv),
       // Native print mode rejects a closed pipe during startup. A null input works without
@@ -211,7 +226,7 @@ class DoubaoSession implements AgentSession {
         catch (error) { this.closed = true; throw error; }
       }
     };
-    const stream = this.runtime ? new DoubaoStream(event => hooks.emit(event), identity) : undefined;
+    const stream = this.nativeStream ? new DoubaoStream(event => hooks.emit(event), identity) : undefined;
     const nativeRecord = (record: string) => {
       if (error || !record.trim()) return;
       try { stream!.record(record); }
@@ -291,6 +306,5 @@ class DoubaoSession implements AgentSession {
   async close(): Promise<void> {
     this.closed = true;
     await this.cancel();
-    await this.runtime?.close();
   }
 }

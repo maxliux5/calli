@@ -1,14 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { EmittedEvent } from '../src/events.js';
 import { replaceMessageTail } from '../src/events.js';
 import { DoubaoStream } from '../src/adapters/doubao-stream.js';
 import { DoubaoAdapter } from '../src/adapters/doubao.js';
-import { patchDoubaoStreamBundle, prepareDoubaoStreamRuntime } from '../src/adapters/doubao-runtime.js';
-import { createFakeDoubaoRuntime, fakeDoubaoBundle, writeFakeDoubaoManifest } from './fixtures/doubao-runtime.mjs';
+import { createFakeDoubaoRuntime } from './fixtures/doubao-runtime.mjs';
 
 const sid = '38450000000000001';
 const delta = (text: string, id = 'message-1') => ({ type: 'stream_event', session_id: sid, message_id: id, event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } });
@@ -94,18 +93,6 @@ test('stream errors, permission denials and incomplete output do not pretend to 
   for (const line of ['not json', 'null', '[]', '{"session_id":123}', '{"session_id":"bad id"}']) assert.throws(() => collector().stream.record(line));
 });
 
-test('the isolated output patch rejects version-shape drift and adds no permission or API override', () => {
-  for (const bundle of ['entry-cli-router', 'entry-cli-chat'] as const) {
-    const source = fakeDoubaoBundle(bundle), patched = patchDoubaoStreamBundle(source, bundle);
-    assert.ok(patched.includes('output_format:"stream-json"'));
-    assert.ok(patched.includes('type:"calli_bridge_tool"'));
-    assert.equal(patched.includes('permission'), false);
-    assert.equal(patched.includes('fetch('), false);
-    assert.throws(() => patchDoubaoStreamBundle(patched, bundle), /输出入口/);
-    for (const broken of [source + 'output_format:"text"', source.replace('case"stream-json":', 'case"new":'), source.replace('onEvent:e=>', 'onEvent:other=>')]) assert.throws(() => patchDoubaoStreamBundle(broken, bundle));
-  }
-});
-
 function setup(t: { after(fn: () => unknown): void }) {
   const dir = mkdtempSync(join(tmpdir(), 'calli-doubao-stream-test-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -113,62 +100,12 @@ function setup(t: { after(fn: () => unknown): void }) {
   return { dir, root, bin };
 }
 
-test('native runtime snapshots verify manifest files, patch only copies and remove only their own directory', async t => {
-  const h = setup(t), original = readFileSync(join(h.root, 'resources/js_app/entry-cli-router/main.js'), 'utf8');
-  writeFileSync(join(h.root, 'credentials-not-in-manifest.txt'), 'must not be copied');
-  const runtime = await prepareDoubaoStreamRuntime([h.bin, '--model', 'configured'], {}, h.dir);
-  t.after(() => runtime.close());
-  assert.notEqual(dirname(runtime.command[0]), h.root);
-  assert.deepEqual(runtime.command.slice(1), ['--model', 'configured']);
-  assert.ok(readFileSync(join(dirname(runtime.command[0]), 'resources/js_app/entry-cli-router/main.js'), 'utf8').includes('output_format:"stream-json"'));
-  assert.equal(readFileSync(join(h.root, 'resources/js_app/entry-cli-router/main.js'), 'utf8'), original);
-  assert.equal(existsSync(join(dirname(runtime.command[0]), 'credentials-not-in-manifest.txt')), false);
-  await runtime.close(); assert.equal(existsSync(runtime.directory), false); assert.ok(existsSync(h.bin));
-});
-
-test('the bridge resolves npm launchers using the selected instance home and preserves model flags', async t => {
-  const h = setup(t), packageRoot = join(h.dir, 'npm-package'), script = join(packageRoot, 'scripts/run.cjs');
-  mkdirSync(dirname(script), { recursive: true });
-  writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@bytedance-dev/doubao-cli' }));
-  writeFileSync(script, '#!/usr/bin/env node\n'); chmodSync(script, 0o755);
-  const selectedHome = join(h.dir, 'account-two');
-  createFakeDoubaoRuntime(join(selectedHome, '.local/share/doubao_cli/app/current'));
-  const runtime = await prepareDoubaoStreamRuntime([process.execPath, script, '--model', 'configured'], { HOME: selectedHome }, h.dir);
-  t.after(() => runtime.close()); assert.deepEqual(runtime.command.slice(1), ['--model', 'configured']);
-  await assert.rejects(prepareDoubaoStreamRuntime([script], { HOME: join(h.dir, 'not-signed-in') }, h.dir));
-});
-
-test('a moved version still prepares, but tampered files, symlinks and unsafe manifests are rejected before native execution', async t => {
-  const h = setup(t), manifestPath = join(h.root, 'manifest.json');
-  const original = JSON.parse(readFileSync(manifestPath, 'utf8'));
-  // The version number alone is not compatibility: matching seams keep the bridge usable.
-  writeFileSync(manifestPath, JSON.stringify({ ...original, version: '2.32.0' }));
-  const updated = await prepareDoubaoStreamRuntime([h.bin], {}, h.dir);
-  assert.notEqual(dirname(updated.command[0]), h.root); await updated.close();
-  for (const manifest of [
-    { ...original, files: [...original.files, original.files[0]] },
-    { ...original, files: [{ ...original.files[0], path: '../escape' }, ...original.files.slice(1)] },
-    { ...original, files: original.files.filter((file: any) => !file.path.includes('entry-cli-chat')) },
-  ]) {
-    writeFileSync(manifestPath, JSON.stringify(manifest));
-    await assert.rejects(prepareDoubaoStreamRuntime([h.bin], {}, h.dir));
-  }
-  writeFileSync(manifestPath, JSON.stringify(original));
-  const resource = join(h.root, 'resources/native-resource.txt');
-  writeFileSync(resource, 'tampered'); await assert.rejects(prepareDoubaoStreamRuntime([h.bin], {}, h.dir), /校验失败/);
-  const outside = join(h.dir, 'outside.txt'); writeFileSync(outside, 'outside'); rmSync(resource); symlinkSync(outside, resource);
-  writeFakeDoubaoManifest(h.root); await assert.rejects(prepareDoubaoStreamRuntime([h.bin], {}, h.dir), /普通文件/);
-});
-
 test('an enabled bridge on an incompatible install reports why and falls back to the text surface', async t => {
   const h = setup(t), log = join(h.dir, 'calls.jsonl');
-  const bundlePath = join(h.root, 'resources/js_app/entry-cli-router/main.js'), bundle = readFileSync(bundlePath, 'utf8');
-  writeFileSync(bundlePath, bundle.replace('case"stream-json":', 'case"new":'));
-  writeFakeDoubaoManifest(h.root);
-  const adapter = new DoubaoAdapter([h.bin], { CALLI_DOUBAO_STREAM: '1', FAKE_DOUBAO_LOG: log });
+  const adapter = new DoubaoAdapter([h.bin], { CALLI_DOUBAO_STREAM: '1', FAKE_DOUBAO_LOG: log, FAKE_DOUBAO_LEGACY: '1' });
   const setting = await adapter.streamBridgeEnvironment(true);
   assert.equal(setting.environment.CALLI_DOUBAO_STREAM, '1');
-  assert.match(setting.incompatible ?? '', /输出结构/, 'the reason explains the fallback');
+  assert.match(setting.incompatible ?? '', /原生流式输出/, 'the reason explains the fallback');
   assert.equal((await adapter.streamBridgeEnvironment(false)).incompatible, undefined, 'disabling never reports incompatibility');
   const session = await adapter.start({ cwd: h.dir });
   t.after(() => session.close());
@@ -181,10 +118,10 @@ test('an enabled bridge on an incompatible install reports why and falls back to
   assert.equal(adapter.streamBridgeEnabled, true, 'the saved preference itself stays on');
 });
 
-test('streaming adapter uses an isolated copy, emits tools/deltas before result, resumes and cleans up', async t => {
+test('streaming adapter uses the native output protocol, emits tools/deltas before result, resumes and cleans up', async t => {
   const h = setup(t), log = join(h.dir, 'calls.jsonl');
   const adapter = new DoubaoAdapter([h.bin], { CALLI_DOUBAO_STREAM: '1', FAKE_DOUBAO_LOG: log, FAKE_DOUBAO_STREAM_DELAY: '80' });
-  assert.equal((await adapter.diagnose()).protocol, 'doubao stream-json bridge (experimental)');
+  assert.equal((await adapter.diagnose()).protocol, 'doubao --output-format stream-json');
   const ids: string[] = [];
   const session = await adapter.start({ cwd: h.dir, onSessionId: id => ids.push(id) }); t.after(() => session.close());
   const events: EmittedEvent[] = [];
@@ -204,8 +141,9 @@ test('streaming adapter uses an isolated copy, emits tools/deltas before result,
   const calls = readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line));
   assert.ok(calls[1].args.includes(sid));
   // The shim knows the actual runtime executable it came from.
-  const runtimeDirectory = dirname(dirname(calls[0].runtime));
-  assert.ok(existsSync(runtimeDirectory)); await session.close(); assert.equal(existsSync(runtimeDirectory), false);
+  assert.ok(calls.every(call => call.runtime === h.bin));
+  assert.ok(calls.every(call => call.args.includes('--output-format')));
+  await session.close(); assert.ok(existsSync(h.bin), 'closing a session retains the original installation');
 });
 
 test('cancellation in streaming mode waits for exit and interrupts pending tool snapshots', async t => {
