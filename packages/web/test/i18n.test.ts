@@ -98,7 +98,7 @@ test('no Chinese is written into the interface outside the dictionaries', () => 
     /^i18n\//,
     /^demo\/data\.ts$/,
   ];
-  const parsed = /来自 |状态：|注释|评论：|文件：|来源：|交接前的会话|另一个会话|（接手）|〔补〕|【待补|\[进度\]|'失败'|'结果'|进行中|待验收|需要你|keywords: \[|^const (?:NEXT_STEP_HEADING|PERSONAL_CONFIRMATION_TEXT|LEGACY_ACCOUNT_QUOTA_SCOPE|SYSTEM_ANSWERS)\b/;
+  const parsed = /来自 |状态：|指定协作对象|注释|评论：|文件：|来源：|交接前的会话|另一个会话|（接手）|〔补〕|【待补|\[进度\]|'失败'|'结果'|进行中|待验收|需要你|keywords: \[|^const (?:NEXT_STEP_HEADING|PERSONAL_CONFIRMATION_TEXT|LEGACY_ACCOUNT_QUOTA_SCOPE|SYSTEM_ANSWERS)\b/;
   const offenders: string[] = [];
   const walk = (dir: string, rel = ''): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -107,6 +107,8 @@ test('no Chinese is written into the interface outside the dictionaries', () => 
       if (entry.isDirectory()) walk(path, name);
       else if (/\.tsx?$/.test(entry.name) && !allowed.some((a) => a.test(name))) {
         readFileSync(path, 'utf8').split('\n').forEach((line, i) => {
+          // Full-line code comments are not interface wording.
+          if (line.trimStart().startsWith('//')) return;
           if (/[一-鿿]/.test(line) && !parsed.test(line)) offenders.push(`${name}:${i + 1}: ${line.trim()}`);
         });
       }

@@ -3,6 +3,7 @@
  * Pure: no React, no I/O, so it can be unit-tested directly.
  */
 import { diffStats } from './diff';
+import { historicalCollaborators, type CollaborationTarget } from './collaboration-history';
 import { IMAGE_FILE, relativePath } from './paths';
 import type { TurnChannel, TurnPart, VideoRef } from './api';
 import { formatDate, formatList, t } from './i18n';
@@ -248,7 +249,7 @@ export type Item =
    */
   | { kind: 'input'; key: string; turnId: string; inputId: string; title: string; inputKind?: string; plan?: string; questions: import('./api').UserQuestion[]; answer: import('./api').UserInputAnswer | { cancelled: true; ended: true } | null; auto?: boolean }
   | { kind: 'voice-recap'; key: string; turnId: null; sessionId: string; seconds: number; count: number }
-  | { kind: 'user'; voice?: boolean; background?: boolean; streaming?: boolean; handoverCollapsed?: boolean; workMode?: string; key: string; turnId: string; text: string; images: ImageRef[]; videos?: VideoRef[]; fromTerminal?: boolean; scheduled?: boolean; coordination?: CoordinationNote; channel?: TurnChannel }
+  | { kind: 'user'; voice?: boolean; background?: boolean; streaming?: boolean; handoverCollapsed?: boolean; workMode?: string; key: string; turnId: string; text: string; images: ImageRef[]; videos?: VideoRef[]; fromTerminal?: boolean; scheduled?: boolean; coordination?: CoordinationNote; collaborators?: CollaborationTarget[]; channel?: TurnChannel }
   /** The turn's answer: the text after everything the agent did. */
   | { kind: 'assistant'; key: string; turnId: string; text: string; done: boolean }
   /**
@@ -650,6 +651,7 @@ export function buildTimeline(events: StoredEvent[], speech: readonly VoiceTrans
         if (ev.data.imported) imported.add(turn);
         const shown = String(ev.data.displayText ?? ev.data.text ?? '');
         const delivered = ev.data.coordination ? coordinationNote(shown) : null;
+        const collaborators = historicalCollaborators(String(ev.data.text ?? ''));
         items.push({
           kind: 'user',
           ...(ev.data.voiceSummary ? { handoverCollapsed: true } : {}),
@@ -664,6 +666,7 @@ export function buildTimeline(events: StoredEvent[], speech: readonly VoiceTrans
           ...(ev.data.scheduled ? { scheduled: true } : {}),
           ...(ev.data.source === 'background' ? { background: true } : {}),
           ...(delivered ? { coordination: delivered.note } : {}),
+          ...(collaborators.length ? { collaborators } : {}),
           ...(turnChannel(ev.data.channel) ? { channel: turnChannel(ev.data.channel)! } : {}),
         });
         break;

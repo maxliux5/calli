@@ -76,7 +76,7 @@ import { MachineUsagePage } from './components/MachineUsagePage';
 import { QuotaBoard } from './components/QuotaBoard';
 import { QuotaNavigation, quotaPushed } from './quota-reading';
 import { noteSource, SelectionMenu } from './components/SelectionMenu';
-import { AgentPanel } from './components/AgentPanel';
+import { AgentPanel, memberStatus } from './components/AgentPanel';
 import { memberProgress, ThreadOverview, type OverviewSection } from './components/ThreadOverview';
 import { prepareOverview } from './overview-reading';
 import { ChangeDiffDialog } from './components/ChangeDiffDialog';
@@ -2830,11 +2830,18 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const takeoverLabel = takeoverChoice ? [agents.find(a => a.id === takeoverChoice.agent)?.label ?? takeoverChoice.agent, takeoverChoice.model].filter(Boolean).join(' · ') : undefined;
 
   const teamWaiting = Boolean(coordination?.members.some((m) => m.thread?.waiting));
+  // 成员入口放在页头，避免悬浮输入区里的成员长名单遮挡正文。
   const teamShown = Boolean(selected?.coordination && (selected.coordination.rootId !== selected.id || selected.coordination.children > 0) && !onPage && hostUp);
-  // The overview is a panel from one top-bar button now; the button carries only what asks for the
-  // person. The team it opens is the lead's own (a member's thread has none to show).
+  // 协作概况只属于当前主线程，切换会话时不能显示上一个团队的成员。
   const overviewTeam = teamShown && coordination?.rootId === selected?.id ? coordination : null;
   const teamNeeds = overviewTeam?.members.filter((member) => memberProgress(member) === 'need').length ?? 0;
+  const teamRunning = overviewTeam?.members.filter(member => member.thread?.status === 'running').length ?? 0;
+  const teamFailures = overviewTeam?.members.filter(member => memberProgress(member) === 'failed').length ?? 0;
+  const teamAttention = overviewTeam?.members.filter(member => member.thread?.waiting || memberProgress(member) === 'need').length ?? 0;
+  const teamNote = [overviewTeam?.paused ? t('team.paused') : '', teamAttention ? t('overview.needsYou', teamAttention) : '', teamFailures ? t('overview.failedCount', teamFailures) : '', teamRunning ? t('team.running', teamRunning) : ''].filter(Boolean).join(' · ');
+  // 页头只露出最需要处理的状态，完整状态与成员名单仍在提示和面板里。
+  const teamStatus = teamAttention ? t('overview.needsYou', teamAttention) : teamFailures ? t('overview.failedCount', teamFailures)
+    : overviewTeam?.paused ? t('team.paused') : teamRunning ? t('team.running', teamRunning) : '';
   // The conversation's turns, for naming the section each change belongs to in the diff dialog.
   const turnOrder = useMemo(() => {
     const seen = new Set<string>();
@@ -3153,6 +3160,13 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           {onDesk && !selected && <div className="topbar-desk" ref={setDeskSlot} />}
           {selected && (
             <div className="topbar-actions">
+              {teamShown && !atMember && <button type="button" className={`coord-status${teamAttention || teamFailures ? ' attention' : ''}`} aria-label={t('team.view')} aria-pressed={agentsOpen}
+                title={[teamNote, ...(overviewTeam?.members.map(member => `${member.name} · ${memberStatus(member)}`) ?? [])].filter(Boolean).join('\n') || t('team.view')}
+                onClick={() => { setAgentsStart(null); setAgentsOpen(value => !value); setFiles(null); }}>
+                <IconAgents size={15} />
+                <span className="coord-status-count">{t('team.count', overviewTeam?.members.length ?? selected.coordination!.children)}</span>
+                {teamStatus && <span className="coord-status-note">{teamStatus}</span>}
+              </button>}
               {/* The thread at a glance: one panel for the team, the plan, the changes, the pictures
                   and the files. The badge is only ever what needs the person. */}
               {api && hostUp && (overviewDock ? (
@@ -3192,7 +3206,8 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
               {/* A phone keeps its plan button: it has no margin card, and the lead's list of what
                   leaves the bar was the desktop's. The overview has the plan too, one tap away. */}
               {compact && topPlan && !onPage && <PlanButton item={topPlan} />}
-              {compact && (
+              {/* On phones New thread stays in the list, leaving room for the title and member entry. */}
+              {compact && !teamShown && (
                 <button className="icon-btn topbar-new" aria-label={t('sidebar.newThread')} onClick={() => newThread()}>
                   <IconEdit />
                 </button>

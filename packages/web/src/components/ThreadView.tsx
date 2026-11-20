@@ -1,5 +1,6 @@
 import { referencePreview, splitReferences, withReferences } from '../context-references';
 import { ReferenceChips } from './ContextReferences';
+import type { CollaborationTarget } from '../collaboration-history';
 import { MessageActionButton, MessageMore, PointMessageMenu, SelectMessage, useMessageGestures, type MessageAction } from './MessageActions';
 import { channelRows, hydrateHistoryFiles } from '../timeline';
 import { advanceStatus } from '../advance';
@@ -58,7 +59,7 @@ import {
 import { VoiceCloud } from './VoiceOrb';
 import { Lightbox } from './Lightbox';
 import { PlanCopyButton, PlanDownloadButton } from './plan-tools';
-import { IconBell, ActivityIcon, IconArrowRight, IconCheck, IconChevron, IconClipboard, IconClose, IconCompact, IconCopy, IconEdit, IconExternal, IconFile, IconFork, IconHand, IconHandover, IconInfo, IconPaperclip, IconQuote, IconRead, IconSparkle, IconTray, IconWorktree } from './icons';
+import { IconBell, ActivityIcon, IconAgents, IconArrowRight, IconCheck, IconChevron, IconClipboard, IconClose, IconCompact, IconCopy, IconEdit, IconExternal, IconFile, IconFork, IconHand, IconHandover, IconInfo, IconPaperclip, IconQuote, IconRead, IconSparkle, IconTray, IconWorktree } from './icons';
 import { t } from '../i18n';
 
 // The daemon's confirmation marker is replaced by the localized notice label.
@@ -372,6 +373,7 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
                   {item.scheduled && <span className="term-chip" title={t('view.fromSchedule')}>{t('view.scheduled')}</span>}
                 </div>
               )}
+              {item.collaborators && <SentCollaborators targets={item.collaborators} onOpen={onOpenMemberThread} />}
               <div className="user-message-actions">
               {onEdit && (body || item.images.length > 0 || referenced.references.length > 0) && !item.voice && !item.fromTerminal && !item.scheduled && !item.coordination && (
                 <EditMessage
@@ -1743,6 +1745,18 @@ export function optionLabel(option: ApprovalOption): string {
     default:
       return option.name;
   }
+}
+
+// 对象和单独分工属于这条用户消息；成员链接沿用保存的线程 ID，避免历史记录跟着换人。
+function SentCollaborators({ targets, onOpen }: { targets: CollaborationTarget[]; onOpen?: (threadId: string) => void }) {
+  return <div className="sent-collaborators" role="group" aria-label={t('team.collaborators')}>
+    {targets.map((target, index) => <div className="sent-collaborator" key={index}>
+      <div className="sent-collaborator-heading"><IconAgents size={14} /><span>@{target.name}</span>
+        {target.threadId && onOpen && <button type="button" className="icon-btn" title={t('view.openMember')} aria-label={t('view.openMember')} onClick={() => onOpen(target.threadId!)}><IconExternal size={13} /></button>}
+      </div>
+      {target.task && <p>{target.task}</p>}
+    </div>)}
+  </div>;
 }
 
 /** The notes a message went out with: one quiet chip, opened to read them, like Codex. */
