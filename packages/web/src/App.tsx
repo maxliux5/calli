@@ -1273,6 +1273,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   const [advanceBusy, setAdvanceBusy] = useState(false);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLElement>(null);
+  const [rulerShown, setRulerShown] = useState(false);
   useLayoutEffect(() => {
     const el = mainRef.current;
     if (!el) return;
@@ -1283,6 +1284,14 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       // What the column's lean toward the middle of the screen is worked out from (see styles.css).
       // clientWidth includes the padding the lean adds, so the two do not chase each other.
       el.style.setProperty('--main-w', `${el.clientWidth}px`);
+      // 历史刻度只占正文外的留白：侧栏和概览挤窄正文时，窗口仍可能很宽。
+      const content = el.querySelector<HTMLElement>(':scope > .scroller > .merged-history, :scope > .scroller > .thread');
+      const gutter = content ? content.getBoundingClientRect().left - el.getBoundingClientRect().left - el.clientLeft : 0;
+      // 6px 边距 + 34px 点击区 + 8px 正文间隔；显隐不改变正文布局。
+      el.style.setProperty('--ruler-left', `${Math.max(6, Math.min(44, gutter - 34 - 8))}px`);
+      const hasRulerRoom = gutter >= 48 && window.matchMedia('(min-width: 901px)').matches;
+      el.style.setProperty('--ruler-display', hasRulerRoom ? 'block' : 'none');
+      setRulerShown(hasRulerRoom);
       // Let the conversation pass behind glass controls. Padding keeps both ends readable;
       // measure the slot because queues, attachments and the phone keyboard change its height.
       // Notices keep their place in the flow, and an installed window keeps its native title band.
@@ -1298,6 +1307,8 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     if (topbar) watch.observe(topbar);
     if (composer) watch.observe(composer);
     if (box) watch.observe(box);
+    const content = el.querySelector<HTMLElement>(':scope > .scroller > .merged-history, :scope > .scroller > .thread');
+    if (content) watch.observe(content);
     return () => watch.disconnect();
   });
   const [agentsStart, setAgentsStart] = useState<string | null>(null);
@@ -3402,7 +3413,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           </div>
         ) : (
         <div key="thread" className="scroller" ref={scrollerRef} onScroll={onScroll} {...gestureProps}>
-          {selected && <TurnRuler key={selected.id} threadId={selected.id} scrollerRef={scrollerRef} previews={turnPreviewMap} turnIds={rulerTurnIds} onJump={turnId => setJump({ threadId: selected.id, turnId })} />}
+          {selected && <TurnRuler key={selected.id} threadId={selected.id} shown={rulerShown} scrollerRef={scrollerRef} previews={turnPreviewMap} turnIds={rulerTurnIds} onJump={turnId => setJump({ threadId: selected.id, turnId })} />}
           {onRouterThread && petStatus?.installed && <PetPortrait api={api} status={petStatus} onAway={setPortraitAway} />}
           {selected && eventsLoading && <div className="loading-note">{t('common.loading')}</div>}
           {showcase && selected && !eventsLoading && !timeline.items.length && showcase.intro(selected.id)}

@@ -4,6 +4,8 @@ import { t } from '../i18n';
 
 interface Props {
   threadId?: string;
+  /** The measured gutter has enough room for the entire hit area. */
+  shown: boolean;
   /** The scroll container holding the thread. A ref, because it mounts with the app. */
   scrollerRef: RefObject<HTMLDivElement | null>;
   /** Preview text per turn id, from the timeline. */
@@ -33,9 +35,9 @@ const HANDS_OFF_MS = 2500;
  * shows a window of its turns: the wheel scrolls it, and dragging along it scrubs through the
  * turns, previewing each, past either end too, and jumps where it is let go. The ticks read the
  * lightweight full turn index, including turns whose bodies have not loaded yet.
- * Desktop only; CSS hides it on narrow screens.
+ * Desktop only, and only when the measured gutter beside the content has room.
  */
-export function TurnRuler({ threadId, scrollerRef, previews, turnIds, onJump }: Props) {
+export function TurnRuler({ threadId, shown, scrollerRef, previews, turnIds, onJump }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [activeIdx, setActiveIdx] = useState(-1);
@@ -130,6 +132,22 @@ export function TurnRuler({ threadId, scrollerRef, previews, turnIds, onJump }: 
   // Dragging: the tick under the pointer is previewed, past an end the window scrolls on (faster
   // the further out), and letting go jumps there. A press that hardly moves is a plain click.
   const drag = useRef<{ id: number; y: number; moved: boolean; overshoot: number; raf: number } | null>(null);
+  useEffect(() => {
+    if (shown) return;
+    // 收起时结束预览和拖拽，恢复宽度后不会继续旧拖拽或误跳转。
+    setHoverIdx(-1);
+    setDragging(false);
+    const current = drag.current;
+    if (current) {
+      window.clearTimeout(current.raf);
+      drag.current = null;
+      const track = trackRef.current;
+      if (track?.hasPointerCapture(current.id)) track.releasePointerCapture(current.id);
+    }
+  }, [shown]);
+  useEffect(() => () => {
+    if (drag.current) window.clearTimeout(drag.current.raf);
+  }, []);
   const indexAt = (clientY: number) => {
     const top = trackRef.current?.getBoundingClientRect().top ?? 0;
     const { first: f, visible: v } = view.current;
@@ -191,11 +209,11 @@ export function TurnRuler({ threadId, scrollerRef, previews, turnIds, onJump }: 
   };
 
   // The rail itself must render (empty) so it can be measured before ticks appear.
-  if (count < MIN_TURNS) return <div className="turn-ruler" ref={rootRef} style={{ pointerEvents: 'none' }} aria-hidden />;
+  if (count < MIN_TURNS) return <div className="turn-ruler" ref={rootRef} hidden={!shown} style={{ pointerEvents: 'none' }} aria-hidden />;
 
-  const shown = turnIds.slice(first, first + visible);
+  const shownTurns = turnIds.slice(first, first + visible);
   return (
-    <div className="turn-ruler" ref={rootRef} onMouseLeave={() => { if (!drag.current) setHoverIdx(-1); }}>
+    <div className="turn-ruler" ref={rootRef} hidden={!shown} onMouseLeave={() => { if (!drag.current) setHoverIdx(-1); }}>
       <div
         ref={trackRef}
         className={`ruler-track${first > 0 ? ' more-above' : ''}${first + visible < count ? ' more-below' : ''}${dragging ? ' dragging' : ''}`}
@@ -205,7 +223,7 @@ export function TurnRuler({ threadId, scrollerRef, previews, turnIds, onJump }: 
         onPointerUp={e => endDrag(e)}
         onPointerCancel={e => endDrag(e, true)}
       >
-        {shown.map((turnId, k) => {
+        {shownTurns.map((turnId, k) => {
           const i = first + k;
           return (
             <button

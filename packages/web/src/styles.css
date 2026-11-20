@@ -1815,17 +1815,22 @@ html.list-open body {
   }
 }
 
-/* The turn ruler along the thread's left edge. Hidden on narrow screens (see the media block). */
+/* The turn ruler uses the measured gutter beside the content, including its desktop lean. */
 /* Placed in .main (the scroller is not positioned), so it starts below the top bar, and only the
    ticks take the pointer: the empty rail must not cover the buttons beside it. */
 .turn-ruler {
+  display: var(--ruler-display, none);
   position: absolute;
   top: 70px;
   bottom: 120px;
   pointer-events: none;
-  left: clamp(6px, calc(50% - var(--content-w) / 2 - 44px), 44px);
+  left: var(--ruler-left, 6px);
   width: 34px;
   z-index: 5;
+}
+
+.turn-ruler[hidden] {
+  display: none;
 }
 
 /* The window of ticks: it takes the pointer for hovering and dragging. Its ends fade out when

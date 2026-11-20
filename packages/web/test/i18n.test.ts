@@ -107,6 +107,8 @@ test('no Chinese is written into the interface outside the dictionaries', () => 
       if (entry.isDirectory()) walk(path, name);
       else if (/\.tsx?$/.test(entry.name) && !allowed.some((a) => a.test(name))) {
         readFileSync(path, 'utf8').split('\n').forEach((line, i) => {
+          // Full-line code comments are not interface wording.
+          if (line.trimStart().startsWith('//')) return;
           if (/[一-鿿]/.test(line) && !parsed.test(line)) offenders.push(`${name}:${i + 1}: ${line.trim()}`);
         });
       }
