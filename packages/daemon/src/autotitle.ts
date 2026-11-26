@@ -3,7 +3,7 @@ import { turnAnswer } from './coordination.js';
 import { HttpError } from './errors.js';
 import type { ExtensionHost } from './extension-host.js';
 import type { Store } from './store.js';
-import type { ThreadManager } from './threads.js';
+import type { ThreadManager, ThreadView } from './threads.js';
 import { askedText } from './util.js';
 
 /**
@@ -18,7 +18,9 @@ import { askedText } from './util.js';
 export const AUTOTITLE_ID = 'autotitle';
 
 export interface AutoTitleSettings {
-  /** The agent instance that names threads. Null: nothing is named until one is chosen. */
+  /** Where the naming agent and model come from: a fixed choice, or the thread being named. */
+  modelSource: 'fixed' | 'session';
+  /** The agent instance that names threads in fixed mode. Null: nothing is named until one is chosen. */
   agent: string | null;
   /** Its model; null for the agent's default. */
   model: string | null;
@@ -26,8 +28,12 @@ export interface AutoTitleSettings {
   rules: string;
   /** Name when the first message is sent, or once the first turn has its answer. */
   trigger: 'sent' | 'finished';
-  /** Name once more after the third turn, if the title is still an automatic one. */
+  /** Legacy one-off pass after the third turn; kept so settings saved before intervals keep working. */
   again: boolean;
+  /** Rename every N user turns while the title is still automatic; null turns the periodic pass off. */
+  every: number | null;
+  /** Optional task-title template. Null keeps the original short-title path. */
+  titleFormat: string | null;
 }
 
 export interface AutoTitleStatus {
@@ -48,7 +54,7 @@ export const DEFAULT_RULES = [
   '- 说清楚要做的事，不要客套话',
   '- 不加标点和引号',
 ].join('\n');
-const DEFAULTS: AutoTitleSettings = { agent: null, model: null, rules: DEFAULT_RULES, trigger: 'finished', again: false };
+const DEFAULTS: AutoTitleSettings = { modelSource: 'fixed', agent: null, model: null, rules: DEFAULT_RULES, trigger: 'finished', again: false, every: null, titleFormat: null };
 /** How much of the first message and of its answer the naming agent reads. */
 const EXCERPT = 1500;
 const MAX_TITLE = 40;
@@ -91,6 +97,88 @@ export function namingPrompt(rules: string, question: string, answer: string | n
   ].join('\n');
 }
 
+export const DEFAULT_TASK_TITLE_FORMAT = '{state} [#{number}] [{topic}] {mandate} · {focus}';
+const MAX_TASK_TITLE = 256;
+const TITLE_PLACEHOLDER = /\{(state|number|topic|mandate|focus)\}/g;
+export interface TaskTitleFields {
+  topic: string;
+  mandate: string;
+  focus: string;
+}
+
+/** A small, single-line template, not an expression language or a recursive prompt engine. */
+export function validateTitleFormat(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value !== 'string' || !value.trim() || value.length > MAX_TASK_TITLE || /[\u0000-\u001f\u007f]|\p{Zl}|\p{Zp}/u.test(value)) {
+    throw new HttpError(400, 'titleFormat must be null or a nonempty single line of at most 256 characters');
+  }
+  if (/[{}]/.test(value.replace(TITLE_PLACEHOLDER, '')) || !/\{(?:topic|mandate|focus)\}/.test(value)) {
+    throw new HttpError(400, 'titleFormat accepts only {state}, {number}, {topic}, {mandate}, {focus}, and needs a topic, mandate or focus');
+  }
+  return value.trim();
+}
+
+/** Task fields and final titles are bounded by graphemes, so emoji are never cut in half. */
+function titleExcerpt(value: string, max: number): string {
+  const parts: string[] = [];
+  for (const part of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value)) {
+    parts.push(part.segment);
+    if (parts.length === max) break;
+  }
+  return parts.join('');
+}
+
+/** Only task-title mode requests JSON; the existing short-title prompt is left unchanged. */
+export function taskNamingPrompt(rules: string, currentTitle: string, firstQuestion: string, recent: Array<{ question: string; answer: string | null }>): string {
+  return [
+    '给下面这段对话起一个线程标题。',
+    '本次使用任务标题，保留仍有效的任务主线，只更新主题和当前重点。',
+    '规则：', rules.trim() || DEFAULT_RULES,
+    '当前标题：', titleExcerpt(currentTitle, EXCERPT),
+    '最初用户请求：', titleExcerpt(firstQuestion, EXCERPT),
+    '最近对话：',
+    ...recent.flatMap(turn => [`用户：${titleExcerpt(turn.question, EXCERPT)}`, ...(turn.answer ? [`回复：${titleExcerpt(turn.answer, EXCERPT)}`] : [])]),
+    '任务标题字段（JSON）：只输出 {"topic":"主题","mandate":"任务主线","focus":"当前重点"}，三个字段必须是非空字符串。',
+    '与对话同语言；主题最多16字，主线最多34字，重点最多30字。不要在字段中放 emoji、编号或格式占位符。',
+    '上面的简短标题风格规则仅用于措辞，输出协议以此处的JSON为准；不要输出状态、编号、完整标题、解释或使用工具。',
+  ].join('\n');
+}
+
+/** Reject malformed results instead of falling back to another agent or overwriting the title. */
+export function parseTaskTitle(answer: string): TaskTitleFields {
+  let parsed: unknown;
+  try { parsed = JSON.parse(answer.trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```$/, '').trim()); }
+  catch { throw new HttpError(502, '取名的 agent 没有给出有效的任务标题字段'); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new HttpError(502, '取名的 agent 没有给出有效的任务标题字段');
+  const fields = parsed as Record<string, unknown>;
+  const result = {} as TaskTitleFields;
+  for (const [key, max] of [['topic', 16], ['mandate', 34], ['focus', 30]] as const) {
+    if (typeof fields[key] !== 'string') throw new HttpError(502, '取名的 agent 没有给出有效的任务标题字段');
+    const text = (fields[key] as string).replace(/\[#\d+\]/g, '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/[{}<>\[\]]/g, '').replace(/\s+/g, ' ').trim();
+    if (!text) throw new HttpError(502, '取名的 agent 没有给出有效的任务标题字段');
+    result[key] = titleExcerpt(text, max);
+  }
+  return result;
+}
+
+/** A finished reply is not a finished task: only the person's explicit done mark yields a check. */
+export function taskTitleState(view: Pick<ThreadView, 'waiting' | 'status' | 'doneAt'>): string {
+  if (view.waiting) return '🙋';
+  if (view.status === 'running') return '🔄';
+  if (view.status === 'error') return '❌';
+  return view.doneAt ? '✅' : '🔄';
+}
+
+/** One substitution pass: model text never becomes another placeholder or an assigned number. */
+export function renderTaskTitle(format: string, fields: TaskTitleFields, state: string, number: number | null): string {
+  const values = { ...fields, state, number: number === null ? '?' : String(number) };
+  const title = format.replace(TITLE_PLACEHOLDER, (_, key: keyof typeof values) => values[key]).trim();
+  if ([...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(title)].length > MAX_TASK_TITLE) {
+    throw new HttpError(502, '任务标题过长，请缩短标题格式');
+  }
+  return title;
+}
+
 export class AutoTitle implements DaemonExtension {
   readonly manifest: ExtensionManifest;
   /** One naming at a time, in the order asked; a thread already waiting is not asked twice. */
@@ -111,7 +199,11 @@ export class AutoTitle implements DaemonExtension {
   }
 
   settings(): AutoTitleSettings {
-    return { ...DEFAULTS, ...this.store.hubSetting<Partial<AutoTitleSettings>>('autotitle', {}) };
+    const stored = this.store.hubSetting<Partial<AutoTitleSettings>>('autotitle', {});
+    const settings = { ...DEFAULTS, ...stored };
+    // Before intervals, the only second pass was a one-off at the third turn.
+    if (stored.every === undefined && stored.again === true) settings.every = 3;
+    return settings;
   }
 
   configure(patch: unknown): AutoTitleSettings {
@@ -133,6 +225,19 @@ export class AutoTitle implements DaemonExtension {
       } else if (key === 'again') {
         if (typeof value !== 'boolean') throw new HttpError(400, 'again must be true or false');
         next.again = value;
+        // The old one-off pass is the interval's default when the patch does not pick one.
+        if (value && !('every' in (patch as object))) next.every = next.every ?? 3;
+      } else if (key === 'every') {
+        if (value !== null && (typeof value !== 'number' || !Number.isInteger(value) || value < 2 || value > 50)) {
+          throw new HttpError(400, 'every must be null or a whole number from 2 to 50');
+        }
+        next.every = value as number | null;
+        next.again = false; // The interval replaces the legacy one-off pass.
+      } else if (key === 'titleFormat') {
+        next.titleFormat = validateTitleFormat(value);
+      } else if (key === 'modelSource') {
+        if (value !== 'fixed' && value !== 'session') throw new HttpError(400, 'modelSource must be fixed or session');
+        next.modelSource = value;
       } else throw new HttpError(400, `unknown setting: ${key}`);
     }
     this.store.saveHubSetting('autotitle', next);
@@ -159,14 +264,17 @@ export class AutoTitle implements DaemonExtension {
     const origin = turn.origin;
     if (origin.initiator !== 'user' || origin.imported || origin.fromTerminal || origin.control) return;
     const settings = this.settings();
-    if (!settings.agent || !this.allowed()) return;
+    // The session source takes its agent from the thread, so no fixed agent is needed.
+    if (!this.allowed() || (settings.modelSource === 'fixed' && !settings.agent)) return;
     const index = this.userTurns(turn.threadId).findIndex(t => t.turnId === turn.turnId) + 1;
+    // A periodic pass is a second (or later) naming, so it may revise the extension's own title.
+    const periodic = settings.every !== null && index > 0 && index % settings.every === 0;
     let wanted = false;
     if (event.hook === 'turn.started') wanted = settings.trigger === 'sent' && index === 1;
     // A first turn that was stopped, failed or whose naming failed leaves the default title: the
     // next turn that ends well names it instead, a few tries at most per thread.
-    else if (turn.outcome === 'ok') wanted = (this.manager.titleBy(turn.threadId) === 'default' && (this.tries.get(turn.threadId) ?? 0) < MAX_TRIES) || (settings.again && index === 3);
-    if (!wanted || !this.renamable(turn.threadId, index === 3)) return;
+    else if (turn.outcome === 'ok') wanted = (this.manager.titleBy(turn.threadId) === 'default' && (this.tries.get(turn.threadId) ?? 0) < MAX_TRIES) || periodic;
+    if (!wanted || !this.renamable(turn.threadId, periodic)) return;
     this.tries.set(turn.threadId, (this.tries.get(turn.threadId) ?? 0) + 1);
     // On send the answer is still streaming: name from the message alone, as that setting says.
     void this.queue(turn.threadId, true, true, null, event.hook === 'turn.finished').catch(() => undefined);
@@ -191,7 +299,8 @@ export class AutoTitle implements DaemonExtension {
   /** Names a thread now: for the person's 「重新取名」, or to try the rules (`apply: false`). */
   async name(threadId: string, opts: { apply: boolean }): Promise<{ title: string }> {
     if (!this.allowed()) throw new HttpError(403, '自动取名扩展未安装、已停用或缺少权限');
-    if (!this.settings().agent) throw new HttpError(409, '先在自动取名的设置里选一个取名用的 agent');
+    const settings = this.settings();
+    if (settings.modelSource === 'fixed' && !settings.agent) throw new HttpError(409, '先在自动取名的设置里选一个取名用的 agent');
     // What the title is when the person asks: if they rename it while the agent thinks, theirs stays.
     const before = (() => { try { return { title: this.manager.threadView(threadId).title }; } catch { return null; } })();
     return this.queue(threadId, false, opts.apply, before, true);
@@ -206,7 +315,8 @@ export class AutoTitle implements DaemonExtension {
    */
   organize(): { queued: number } {
     if (!this.allowed()) throw new HttpError(403, '自动取名扩展未安装、已停用或缺少权限');
-    if (!this.settings().agent) throw new HttpError(409, '先在自动取名的设置里选一个取名用的 agent');
+    const settings = this.settings();
+    if (settings.modelSource === 'fixed' && !settings.agent) throw new HttpError(409, '先在自动取名的设置里选一个取名用的 agent');
     if (this.pass) throw new HttpError(409, '整理已在进行中');
     const threads = this.manager.listThreads().filter(view => {
       const by = this.manager.titleBy(view.id);
@@ -240,26 +350,54 @@ export class AutoTitle implements DaemonExtension {
     // Checked again here, not only when the turn ended: namings queue behind each other, and the
     // grant or the chosen agent may have been taken away while this one waited.
     const settings = this.settings();
-    if (!this.allowed() || !settings.agent) {
+    if (!this.allowed()) {
       if (automatic) return { title: '' };
-      if (!this.allowed()) throw new HttpError(403, '自动取名扩展未安装、已停用或缺少权限');
+      throw new HttpError(403, '自动取名扩展未安装、已停用或缺少权限');
+    }
+    // Session mode reads the thread's own agent and current model; fixed mode uses the chosen pair.
+    let source: ThreadView | null = null;
+    if (settings.modelSource === 'session') {
+      try { source = this.manager.threadView(threadId); } catch { source = null; }
+    }
+    const agent = settings.modelSource === 'session' ? source?.agent ?? null : settings.agent;
+    const model = settings.modelSource === 'session' ? source?.model ?? null : settings.model;
+    if (!agent) {
+      if (automatic) return { title: '' };
       throw new HttpError(409, '先在自动取名的设置里选一个取名用的 agent');
     }
-    const first = this.userTurns(threadId)[0];
+    const turns = this.userTurns(threadId);
+    const first = turns[0];
     if (!first) throw new HttpError(409, '这个线程还没有对话');
+    const events = this.store.listEvents(threadId, 0, -1);
     // On send the answer is still streaming; a finished turn, the second pass and a manual ask see it.
-    const firstAnswer = answer ? turnAnswer(this.store.listEvents(threadId, 0, -1), first.turnId).trim() || null : null;
+    const firstAnswer = answer ? turnAnswer(events, first.turnId).trim() || null : null;
+    const sourceTitle = this.manager.threadView(threadId).title;
+    const sourceTurn = turns.at(-1)!.turnId;
+    const prompt = settings.titleFormat === null
+      ? namingPrompt(settings.rules, first.text, firstAnswer)
+      : taskNamingPrompt(settings.rules, sourceTitle, first.text, turns.slice(-3).map(turn => ({ question: turn.text, answer: answer ? turnAnswer(events, turn.turnId).trim() || null : null })));
     try {
-      const reply = await this.manager.askOnce(settings.agent!, namingPrompt(settings.rules, first.text, firstAnswer), {
-        model: settings.model, title: `${this.manifest.name.zh} · ${threadId.slice(0, 8)}`, timeoutMs: 120_000,
+      const reply = await this.manager.askOnce(agent, prompt, {
+        model, title: `${this.manifest.name.zh} · ${threadId.slice(0, 8)}`, timeoutMs: 120_000,
       });
-      const title = cleanTitle(reply);
+      const fields = settings.titleFormat === null ? null : parseTaskTitle(reply);
+      let title = fields
+        ? renderTaskTitle(settings.titleFormat!, fields, taskTitleState(this.manager.threadView(threadId)), this.store.titleNumber(threadId))
+        : cleanTitle(reply);
       if (!title) throw new HttpError(502, '取名的 agent 没有给出标题');
       if (apply) {
         // The person may have renamed it while the agent was thinking: theirs stays, on both paths.
         if (automatic && !this.renamable(threadId, true)) return { title };
         if (!automatic && before && this.manager.titleBy(threadId) === 'user' && this.manager.threadView(threadId).title !== before.title) return { title };
-        this.manager.autoRename(threadId, title);
+        if (fields) {
+          // An obsolete task title must neither write nor consume a number. Short titles keep their old behavior.
+          if (!this.allowed() || this.settings().titleFormat !== settings.titleFormat || this.manager.threadView(threadId).title !== sourceTitle || this.userTurns(threadId).at(-1)?.turnId !== sourceTurn) return { title };
+          this.store.transaction(() => {
+            const number = settings.titleFormat!.includes('{number}') ? this.store.allocateTitleNumber(threadId) : this.store.titleNumber(threadId);
+            title = renderTaskTitle(settings.titleFormat!, fields, taskTitleState(this.manager.threadView(threadId)), number);
+            this.manager.autoRename(threadId, title);
+          });
+        } else this.manager.autoRename(threadId, title);
         this.store.saveHubSetting('autotitle.status', { ...this.status(), last: { threadId, title, at: new Date().toISOString() } });
       }
       return { title };
