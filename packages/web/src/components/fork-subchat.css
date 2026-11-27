@@ -50,6 +50,21 @@
   box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 10%, transparent);
 }
 
+.fork-subchat-mode button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.choice-row:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.choice-row:disabled:hover,
+.choice-row:disabled:focus-visible {
+  background: transparent;
+}
+
 .fork-subchat-mode-hint {
   margin: 0;
   font-size: 12px;
@@ -127,4 +142,85 @@
 .handover-members .fork-add-row:hover {
   background: var(--hover);
   color: var(--text);
+}
+
+.handover-member.is-done .handover-member-name {
+  color: var(--muted);
+}
+
+.handover-member .fork-done-mark {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  color: var(--muted);
+}
+
+/* Quick row actions on desktop hover (lightweight fork, done toggle, more); touch keeps only more. */
+.thread-row .row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.row-quick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.row-quick:hover {
+  background: var(--active);
+  color: var(--text);
+}
+
+.row-quick.is-done {
+  color: var(--text);
+}
+
+@media (hover: none) {
+  .thread-row .row-quick,
+  .compact .thread-row .row-actions {
+    display: none;
+  }
+}
+
+@media (hover: hover) {
+  .thread-row .row-actions {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    padding: 0 3px 0 18px;
+    border-radius: 0 9px 9px 0;
+    background: linear-gradient(90deg, transparent, var(--hover) 24%);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .thread-row.active .row-actions {
+    background: linear-gradient(90deg, transparent, var(--active) 24%);
+  }
+
+  .thread-row:hover .row-actions,
+  .thread-row:focus-within .row-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .thread-row .row-actions .row-more {
+    position: static;
+    margin-right: 0;
+    opacity: 1;
+  }
 }

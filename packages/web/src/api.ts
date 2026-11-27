@@ -1914,8 +1914,9 @@ export class Api {
   }
 
   /** What forking this thread can offer besides a copy in the same directory. */
-  forkOptions(threadId: string): Promise<ForkOptions> {
-    return this.request('GET', `/api/threads/${threadId}/fork-options`);
+  forkOptions(threadId: string, opts?: { lightweight?: boolean }): Promise<ForkOptions> {
+    const query = opts?.lightweight ? '?lightweight=1' : '';
+    return this.request('GET', `/api/threads/${threadId}/fork-options${query}`);
   }
 
   /** Pulls in turns the terminal added to this thread's session. */

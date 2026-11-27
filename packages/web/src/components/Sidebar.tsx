@@ -57,6 +57,10 @@ interface Props {
   forks?: Map<string, ForkSubchatItem[]>;
   /** Opens the one-step grouped sub-conversation fork dialog for a thread. */
   onForkSubchat?: (thread: Thread) => void;
+  /** Starts a grouped lightweight sub-conversation immediately from a row. */
+  onQuickFork?: (thread: Thread) => void;
+  /** Toggles a thread's done state immediately from a row. */
+  onToggleDone?: (thread: Thread) => void;
   sections: Section[];
   /** For the mark each row shows in place of its agent's name; null while not known, so no name stands in. */
   agents: AgentMarkInfo[] | null;
@@ -160,6 +164,8 @@ export function Sidebar({
   members,
   forks,
   onForkSubchat,
+  onQuickFork,
+  onToggleDone,
   sections,
   agents,
   selectedId,
@@ -347,11 +353,33 @@ export function Sidebar({
           {offline ? <span className="dot offline" role="img" aria-label={offline} title={offline} /> : mark && <span className={`dot ${mark}`} role="img" aria-label={mark === 'waiting' ? waitingLabel(thread) : MARK_LABELS[mark]} title={mark === 'waiting' ? waitingLabel(thread) : MARK_LABELS[mark]} />}
         </span>
       </button>
-      {(
+      <div className="row-actions">
+        {!thread.archivedAt && !on && onQuickFork && (
+          <button
+            type="button"
+            className="row-quick"
+            aria-label={t('actions.forkLightweight')}
+            title={t('actions.forkLightweight')}
+            onClick={(e) => { e.stopPropagation(); onQuickFork(thread); }}
+          >
+            <IconFork size={14} />
+          </button>
+        )}
+        {!thread.archivedAt && onToggleDone && (
+          <button
+            type="button"
+            className={`row-quick${thread.doneAt ? ' is-done' : ''}`}
+            aria-label={thread.doneAt ? t('actions.unmarkDone') : t('actions.markDone')}
+            title={thread.doneAt ? t('actions.unmarkDone') : t('actions.markDone')}
+            onClick={(e) => { e.stopPropagation(); onToggleDone(thread); }}
+          >
+            <IconCheck size={14} />
+          </button>
+        )}
         <button className="row-more" aria-label={t('sidebar.more', thread.title)} onClick={(e) => onThreadMenu(thread, ...below(e))}>
           <IconMore size={16} />
         </button>
-      )}
+      </div>
     </div>
     );
   };
@@ -465,20 +493,23 @@ export function Sidebar({
   const parallelList = (keyThread: Thread, forkItems: ForkSubchatItem[], team: Thread[]) => {
     const allThreads = [...forkItems.map((f) => f.thread), ...team];
     if (!parallelOpenFor(keyThread.id, allThreads)) return null;
+    const sortedForks = [...forkItems].sort((a, b) => Number(Boolean(a.thread.doneAt)) - Number(Boolean(b.thread.doneAt)));
     const sortedTeam = [...team].sort(teamOrder);
     return <div className="handover-members">
-      {forkItems.map(({ thread: f, handedOver }) => {
+      {sortedForks.map(({ thread: f, handedOver }) => {
         const mark = threadMark(f, f.id === selectedId, hasDraft(f.id));
         return <button
           key={f.id}
-          className={`handover-member${f.id === selectedId ? ' active' : ''}`}
+          className={`handover-member${f.id === selectedId ? ' active' : ''}${f.doneAt ? ' is-done' : ''}`}
           aria-current={f.id === selectedId ? 'true' : undefined}
           title={f.forkTag ? `${f.forkTag} · ${f.title}` : f.title}
           onClick={() => onSelect(f.id)}
           onContextMenu={(e) => { e.preventDefault(); onThreadMenu(f, e.clientX, e.clientY); }}
           {...longPress(f)}
         >
-          <span className={`dot ${mark ?? 'idle'}`} role="img" aria-label={mark === 'waiting' ? waitingLabel(f) : mark ? MARK_LABELS[mark] : t('status.idle')} />
+          {f.doneAt
+            ? <span className="fork-done-mark" role="img" aria-label={t('sidebar.done')} title={t('sidebar.done')}><IconCheck size={12} /></span>
+            : <span className={`dot ${mark ?? 'idle'}`} role="img" aria-label={mark === 'waiting' ? waitingLabel(f) : mark ? MARK_LABELS[mark] : t('status.idle')} />}
           {f.forkTag ? <span className="fork-tag-pill">{f.forkTag}</span> : null}
           {(!f.forkTag || f.title !== f.forkTag) ? <span className="handover-member-name">{f.title}</span> : <span className="handover-member-name" />}
           {handedOver ? <span className="fork-handed-mark" title={t('sidebar.forkHandedOver')} aria-label={t('sidebar.forkHandedOver')}><IconHandover size={12} /></span> : null}

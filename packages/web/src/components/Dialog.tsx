@@ -117,7 +117,7 @@ export function Dialog({ title, message, input, options = [], confirmLabel, dang
 
 interface ChoiceProps {
   title: string;
-  choices: Array<{ id: string; icon: ReactNode; label: string; hint: string }>;
+  choices: Array<{ id: string; icon: ReactNode; label: string; hint: string; disabled?: boolean }>;
   onPick: (id: string) => void;
   onCancel: () => void;
 }
@@ -132,6 +132,7 @@ export function ChoiceDialog({ title, choices, onPick, onCancel }: ChoiceProps) 
     return () => document.removeEventListener('keydown', onKey);
   }, [onCancel]);
 
+  const firstEnabled = choices.findIndex((c) => !c.disabled);
   return (
     <div className="dialog-scrim" onClick={onCancel}>
       <div className="dialog choice-dialog" role="dialog" aria-modal="true" aria-labelledby="choice-title" onClick={(e) => e.stopPropagation()}>
@@ -140,7 +141,7 @@ export function ChoiceDialog({ title, choices, onPick, onCancel }: ChoiceProps) 
         </h2>
         <div className="choice-list">
           {choices.map((c, i) => (
-            <button key={c.id} type="button" className="choice-row" autoFocus={i === 0} onClick={() => onPick(c.id)}>
+            <button key={c.id} type="button" className="choice-row" disabled={c.disabled} autoFocus={i === firstEnabled} onClick={() => !c.disabled && onPick(c.id)}>
               <span className="choice-icon">{c.icon}</span>
               <span className="choice-text">
                 <span className="choice-label">{c.label}</span>

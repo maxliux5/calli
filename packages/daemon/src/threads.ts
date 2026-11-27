@@ -825,7 +825,7 @@ export class ThreadManager {
       const forkRef = !lightweight && cut ? await this.agentForkRef(thread, adapter, cut.hubIndex, cut.hubKeys) : undefined;
       if (opts.worktree) {
         if (!lightweight && across && !this.adapters.get(opts.agent!)?.capabilities.forkInto) throw new HttpError(400, WORKTREE_REFUSALS.agent);
-        const plan = await this.worktreePlan(thread);
+        const plan = await this.worktreePlan(thread, lightweight);
         if (!plan.checkout) throw new HttpError(400, WORKTREE_REFUSALS[plan.reason]);
         const tree = await addWorktree(plan.checkout, copyId.slice(0, 8)).catch((err) => {
           throw new HttpError(500, `could not add a git worktree: ${err instanceof Error ? err.message : err}`);
@@ -988,8 +988,8 @@ export class ThreadManager {
   }
 
   /** What forking this thread can offer. Asked when the user reaches for the fork button, not before. */
-  async forkOptions(id: string): Promise<ForkOptions> {
-    const plan = await this.worktreePlan(this.getThread(id));
+  async forkOptions(id: string, opts: { lightweight?: boolean } = {}): Promise<ForkOptions> {
+    const plan = await this.worktreePlan(this.getThread(id), opts.lightweight === true);
     if (!plan.checkout) return { worktree: { available: false, reason: plan.reason } };
     return {
       worktree: {
@@ -1003,8 +1003,9 @@ export class ThreadManager {
   /** Whether a copy of this thread could get a worktree of its own, and where its directory stands in git. */
   private async worktreePlan(
     thread: ThreadRecord,
+    lightweight = false,
   ): Promise<{ checkout: Checkout; reason?: undefined } | { checkout: null; reason: NonNullable<ForkOptions['worktree']['reason']> }> {
-    if (!this.adapters.get(thread.agent)?.capabilities.forkInto) return { checkout: null, reason: 'agent' };
+    if (!lightweight && !this.adapters.get(thread.agent)?.capabilities.forkInto) return { checkout: null, reason: 'agent' };
     return this.checkoutFor(thread.cwd);
   }
 

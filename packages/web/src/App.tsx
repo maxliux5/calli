@@ -2536,6 +2536,12 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     ...(selected
       ? [
           { id: 'new-beside', label: t('actions.newBeside'), hint: t('app.cmd.newBeside'), keywords: ['new', 'here', 'same', 'worktree', 'clear', '新线程', '同目录'] },
+          ...(!selected.archivedAt
+            ? [
+                { id: 'fork-lightweight', label: t('actions.forkLightweight'), hint: t('app.cmd.forkLightweight'), keywords: ['fork', 'light', 'branch', 'subchat', '轻量', '分叉'] },
+                { id: 'done', label: selected.doneAt ? t('actions.unmarkDone') : t('actions.markDone'), hint: selected.doneAt ? t('app.cmd.undone') : t('app.cmd.done'), keywords: ['done', 'complete', 'finish', 'reopen', '完成'] },
+              ]
+            : []),
           { id: 'rename', label: t('actions.rename'), hint: t('app.cmd.rename'), keywords: ['rename', 'name'] },
           { id: 'pin', label: selected.pinned ? t('actions.unpin') : t('actions.pin'), hint: t('app.cmd.pin'), keywords: ['pin'] },
           ...(activeCaps?.fork && !forkBlocked(selected)
@@ -2573,7 +2579,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     if (id === 'permission') return setPermissionSignal((n) => n + 1);
     if (id === 'import') return openSettings('import');
     if (id === 'appearance') return openSettings('appearance');
-    if (selected && (id === 'rename' || id === 'pin' || id === 'fork' || id === 'archive')) threadActions.run(id, selected);
+    if (selected && (id === 'rename' || id === 'pin' || id === 'done' || id === 'fork' || id === 'fork-lightweight' || id === 'archive')) threadActions.run(id, selected);
     if (selected && id === 'new-beside') return newThread({ beside: selected });
     if (selected && id === 'handover') return threadActions.handover(selected);
     if (selected && id === 'chain') return threadActions.chain(selected);
@@ -2954,6 +2960,8 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           members={teamMembers}
           forks={forkMembers}
           onForkSubchat={threadActions.forkSubchat}
+          onQuickFork={(thread) => threadActions.run('fork-lightweight', thread)}
+          onToggleDone={(thread) => void patchBoardThread(thread.id, { done: !thread.doneAt }).catch(handleError)}
           sections={sections}
           agents={sidebarAgents}
           selectedId={selectedId}
@@ -3368,7 +3376,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
               onFocus={setChainFocus}
               onOpenFinds={onRouterThread ? () => openDesk(true) : undefined}
               onBrowseOlder={() => { stickToBottom.current = false; setAtBottom(false); }}
-              canFork={thread => ({ enabled: Boolean(thread.agentSessionId && capsOf(thread.agent)?.fork), any: Boolean(capsOf(thread.agent)?.forkAt) })}
+              canFork={thread => ({ enabled: Boolean(thread.agentSessionId), any: Boolean(capsOf(thread.agent)?.forkAt) })}
               onSegmentFork={(thread, turn) => threadActions.forkAt(thread, turn)}
               onSegmentFile={async (thread, raw) => {
                 const ref = fileRef(raw);
@@ -3434,8 +3442,11 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
               // The button appears the moment the log says a turn is over; the thread list hears of it
               // a beat later, so the log's word on whether a turn is running is the one to go by.
               onFork={
-                selected.agentSessionId && activeCaps?.fork
-                  ? (turnId) => threadActions.forkAt(timeline.running ? selected : { ...selected, status: 'idle' }, turnId)
+                selected.agentSessionId
+                  ? (turnId) => threadActions.forkAt(
+                      { ...selected, status: timeline.running || (!historyReady && selected.status === 'running') ? 'running' : 'idle' },
+                      turnId,
+                    )
                   : undefined
               }
               forkAnyTurn={Boolean(activeCaps?.forkAt)}

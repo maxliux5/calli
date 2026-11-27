@@ -177,3 +177,74 @@ test('grouped fork keeps same cwd, supports optional firstMessage and forkTag, a
     await h.close();
   }
 });
+
+test('lightweight fork succeeds while the source thread is running (including before its first turn finishes)', async () => {
+  const h = await setup();
+  try {
+    // 1. Start a slow first turn so the root thread is actively running before any turn has completed.
+    const root = await h.manager.createThread({ agent: 'pi-a', cwd: h.dir, title: '运行中主线' });
+    await h.manager.startTurn(root.id, { text: 'slow 正在执行长任务', fromUser: true });
+    for (let i = 0; i < 100 && h.manager.getThread(root.id).status !== 'running'; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(h.manager.getThread(root.id).status, 'running');
+
+    // Full fork before agentSessionId exists (400) or while a later turn runs (409) is still refused.
+    const fullBeforeSession = await h.req('POST', `/api/threads/${root.id}/fork`, { grouped: true });
+    assert.ok(fullBeforeSession.status === 400 || fullBeforeSession.status === 409, `expected 400 or 409, got ${fullBeforeSession.status}`);
+
+    // 2. Quick lightweight fork (no firstMessage) succeeds immediately while root is running.
+    const quickRes = await h.req('POST', `/api/threads/${root.id}/fork`, {
+      grouped: true,
+      lightweight: true,
+    });
+    assert.equal(quickRes.status, 201);
+    const quick = await quickRes.json();
+    assert.equal(quick.forkGroup, root.id);
+    assert.equal(quick.agentSessionId, null);
+    assert.equal(quick.status, 'idle');
+    assert.equal(h.manager.getThread(root.id).status, 'running');
+
+    // 3. Lightweight fork with firstMessage runs concurrently in the background while root keeps running.
+    const bgRes = await h.req('POST', `/api/threads/${root.id}/fork`, {
+      grouped: true,
+      lightweight: true,
+      forkTag: '并行查问题',
+      firstMessage: '帮我查个无关的小问题',
+    });
+    assert.equal(bgRes.status, 201);
+    const bg = await bgRes.json();
+    await h.idle(bg.id);
+    assert.equal(h.manager.getThread(root.id).status, 'running');
+
+    const bgTurn = h.store.listEventsOfType(bg.id, 'turn.started').at(-1)!;
+    assert.match(String(bgTurn.data.text), /<calli-forks>[\s\S]*运行中主线[\s\S]*运行中[\s\S]*<\/calli-forks>/);
+    const bgReadsRoot = (await h.manager.references.command(bg.id, { op: 'history', target: root.id, userInputs: true })) as any;
+    assert.ok(Array.isArray(bgReadsRoot.inputs) && bgReadsRoot.inputs.some((i: any) => String(i.text).includes('正在执行长任务')));
+
+    // 4. fork-options accepts ?lightweight=1 cleanly.
+    const optsRes = await h.req('GET', `/api/threads/${root.id}/fork-options?lightweight=1`);
+    assert.equal(optsRes.status, 200);
+    const opts = await optsRes.json();
+    assert.equal(opts.worktree.available, false);
+
+    // 5. After a turn finishes (agentSessionId established) and a second turn runs, full fork returns 409 while lightweight still returns 201.
+    await h.manager.cancelTurn(root.id);
+    await h.idle(root.id);
+    await h.manager.startTurn(root.id, { text: '建立会话', fromUser: true });
+    await h.idle(root.id);
+    assert.ok(h.manager.getThread(root.id).agentSessionId);
+    await h.manager.startTurn(root.id, { text: 'slow 二轮运行中', fromUser: true });
+    for (let i = 0; i < 100 && h.manager.getThread(root.id).status !== 'running'; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal((await h.req('POST', `/api/threads/${root.id}/fork`, { grouped: true })).status, 409);
+    assert.equal((await h.req('POST', `/api/threads/${root.id}/fork`, { grouped: true, lightweight: true })).status, 201);
+
+    // Cleanly stop the slow turn on root.
+    await h.manager.cancelTurn(root.id);
+    await h.idle(root.id);
+  } finally {
+    await h.close();
+  }
+});

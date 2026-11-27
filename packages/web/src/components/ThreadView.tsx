@@ -323,11 +323,9 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
       scroller.removeEventListener('pointerdown', onPointerDown);
     };
   }, [chain]);
-  // A fork from the last answer copies the whole thread; it is offered while that answer is the
-  // last thing in it. Where the agent can end a copy at an earlier turn, every answer offers one.
-  // The mark a fork starts with is not part of the conversation: the answer above it is still the last.
-  const tail = [...items].reverse().find((it) => it.kind !== 'fork');
-  const lastKey = tail?.kind === 'actions' ? tail.key : null;
+  // A fork from the last answer copies the whole thread (or starts a lightweight branch while a
+  // newer turn is running). Where the agent can end a copy at an earlier turn, every answer offers one.
+  const lastActionsKey = [...items].reverse().find((it) => it.kind === 'actions')?.key ?? null;
 
   const renderItems = (list: Item[]) =>
     list.map((item, idx) => {
@@ -449,12 +447,12 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
               <CopyButton text={item.text} label={t('view.copyAnswer')} />
               {onQuote && <button type="button" className="quiet-btn" aria-label={t('references.quote')} title={t('references.quote')} onClick={() => onQuote(item.text, item.turnId, historyThreadId)}><IconQuote size={15} /></button>}
               {actionsFor(item.text, item.turnId).filter(action => action.key === 'assistant' || action.key === 'context').map(action => <MessageActionButton key={action.key} action={action} />)}
-              {onFork && (forkAnyTurn || item.key === lastKey) && (
+              {onFork && (forkAnyTurn || item.key === lastActionsKey) && (
                 <button
                   type="button"
                   className="quiet-btn"
                   aria-label={t('sidebar.fork')}
-                  title={item.key === lastKey ? t('view.forkLast') : t('view.forkHere')}
+                  title={item.key === lastActionsKey ? t('view.forkLast') : t('view.forkHere')}
                   onClick={() => onFork(item.turnId)}
                 >
                   <IconFork size={15} />

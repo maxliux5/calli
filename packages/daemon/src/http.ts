@@ -1611,7 +1611,9 @@ export function createHttpServer(deps: HttpDeps): Server {
         return sendJson(res, 200, await manager.syncThread(threadId));
       }
 
-      if (method === 'GET' && sub === 'fork-options') return sendJson(res, 200, await manager.forkOptions(threadId));
+      if (method === 'GET' && sub === 'fork-options') {
+        return sendJson(res, 200, await manager.forkOptions(threadId, { lightweight: url.searchParams.get('lightweight') === '1' }));
+      }
 
       if (method === 'POST' && sub === 'fork') {
         // An empty body copies the whole thread; `turnId` names the turn the copy ends with;
