@@ -157,7 +157,11 @@
   color: var(--muted);
 }
 
-/* Quick row actions on desktop hover (lightweight fork, done toggle, more); touch keeps only more. */
+/* Apple Mail style row hover actions (desktop): borderless circular glyphs seamlessly replacing trailing meta. */
+.thread-row {
+  position: relative;
+}
+
 .thread-row .row-actions {
   display: inline-flex;
   align-items: center;
@@ -173,22 +177,87 @@
   height: 26px;
   flex-shrink: 0;
   border: 0;
-  border-radius: var(--radius-xs);
+  border-radius: 50%;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, transform 0.12s ease;
 }
 
 .row-quick:hover {
-  background: var(--active);
-  color: var(--text);
+  background: color-mix(in srgb, var(--positive) 13%, transparent);
+  color: var(--positive);
+}
+
+.row-quick:active {
+  transform: scale(0.92);
 }
 
 .row-quick.is-done {
+  color: var(--positive);
+}
+
+/* Mobile right-swipe reveal strip (Apple Mail / Things 3 pattern) */
+.thread-row.swiping {
+  overflow: hidden;
+}
+
+.thread-row.swiping .thread-item {
+  will-change: transform;
+}
+
+.row-swipe-reveal {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  border-radius: 9px 0 0 9px;
+  background: var(--positive-bg);
+  color: var(--positive);
+  pointer-events: none;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.row-swipe-reveal.ready {
+  --check-cutout: var(--positive);
+  background: var(--positive);
+  color: var(--on-color);
+}
+
+.row-swipe-reveal.is-undo {
+  background: var(--hover);
   color: var(--text);
 }
 
+.row-swipe-reveal.is-undo.ready {
+  --check-cutout: var(--accent-soft);
+  background: var(--accent-soft);
+  color: var(--accent-fg);
+}
+
+.row-swipe-reveal-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding-left: 12px;
+  font-size: 12.5px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+.row-swipe-reveal.ready .row-swipe-reveal-inner svg {
+  transform: scale(1.08);
+  transition: transform 0.12s ease;
+}
+
 @media (hover: none) {
+  .thread-row {
+    touch-action: pan-y;
+  }
+
   .thread-row .row-quick,
   .compact .thread-row .row-actions {
     display: none;
@@ -196,20 +265,29 @@
 }
 
 @media (hover: hover) {
+  .thread-row:hover .thread-dir,
+  .thread-row:focus-within .thread-dir,
+  .thread-row:hover .thread-host,
+  .thread-row:focus-within .thread-host {
+    visibility: hidden;
+  }
+
+  /* Fade row text out cleanly before the right-hand actions — transparent over any row tint, palette, or glass surface. */
+  .thread-row:hover .thread-item,
+  .thread-row:focus-within .thread-item {
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 76px), transparent calc(100% - 56px));
+    mask-image: linear-gradient(90deg, #000 calc(100% - 76px), transparent calc(100% - 56px));
+  }
+
   .thread-row .row-actions {
     position: absolute;
     right: 0;
     top: 0;
     bottom: 0;
-    padding: 0 3px 0 18px;
-    border-radius: 0 9px 9px 0;
-    background: linear-gradient(90deg, transparent, var(--hover) 24%);
+    padding: 0 4px;
+    background: transparent;
     opacity: 0;
     pointer-events: none;
-  }
-
-  .thread-row.active .row-actions {
-    background: linear-gradient(90deg, transparent, var(--active) 24%);
   }
 
   .thread-row:hover .row-actions,
@@ -220,7 +298,24 @@
 
   .thread-row .row-actions .row-more {
     position: static;
+    width: 26px;
+    height: 26px;
     margin-right: 0;
+    border-radius: 50%;
     opacity: 1;
+    transition: background 0.14s ease, color 0.14s ease;
+  }
+
+  .thread-row .row-actions .row-more:hover {
+    background: color-mix(in srgb, var(--text) 7%, transparent);
+    color: var(--text);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row-quick,
+  .row-swipe-reveal,
+  .row-swipe-reveal.ready .row-swipe-reveal-inner svg {
+    transition: none;
   }
 }

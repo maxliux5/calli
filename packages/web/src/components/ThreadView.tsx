@@ -201,28 +201,117 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
     return client;
   }, [historyApi, historyThreadId, chain]);
   const items = useMemo(() => loadedFiles.client === historyClient ? hydrateHistoryFiles(originalItems, loadedFiles.files) : originalItems, [originalItems, loadedFiles, historyClient]);
-  const [lightbox, setLightbox] = useState<{ url: string; name?: string } | null>(null);
-  const show = useCallback((url: string, name?: string) => setLightbox({ url, name }), []);
-  // A picture opened from a link in an answer is fetched for the occasion, and let go of when it is closed.
+  type LightboxState = { url: string; name?: string; gallery?: { images: ImageRef[]; index: number; failed?: boolean } };
+  const [lightbox, setLightbox] = useState<LightboxState | null>(null);
+  const lightboxRef = useRef<LightboxState | null>(null);
+  lightboxRef.current = lightbox;
+  // A picture opened from a link in an answer or stepped to in a multi-image gallery is fetched on demand
+  // and revoked when the viewer closes or switches away.
   const fetched = useRef<string | null>(null);
-  const release = () => {
+  const galleryCache = useRef<Map<string, string>>(new Map());
+  const galleryOwned = useRef<Set<string>>(new Set());
+  const gallerySeq = useRef(0);
+  const release = useCallback(() => {
+    gallerySeq.current += 1;
     if (fetched.current) URL.revokeObjectURL(fetched.current);
     fetched.current = null;
-  };
+    for (const url of galleryOwned.current) URL.revokeObjectURL(url);
+    galleryOwned.current.clear();
+    galleryCache.current.clear();
+  }, []);
+  const show = useCallback((url: string, name?: string) => {
+    release();
+    const next: LightboxState = { url, name };
+    lightboxRef.current = next;
+    setLightbox(next);
+  }, [release]);
   const closeLightbox = useCallback(() => {
+    lightboxRef.current = null;
     setLightbox(null);
     release();
-  }, []);
+  }, [release]);
   const openPicture = useCallback(
     async (path: string) => {
       const url = await pictureUrl(await loadFile(path));
       release();
       fetched.current = url;
-      setLightbox({ url, name: path });
+      const next: LightboxState = { url, name: path };
+      lightboxRef.current = next;
+      setLightbox(next);
     },
-    [loadFile],
+    [loadFile, release],
   );
-  useEffect(() => release, []);
+  const loadGalleryEntry = useCallback(
+    (images: ImageRef[], index: number) => {
+      const target = images[index];
+      if (!target) return;
+      const cached = galleryCache.current.get(target.id);
+      if (cached) {
+        gallerySeq.current += 1;
+        const next: LightboxState = { url: cached, gallery: { images, index } };
+        lightboxRef.current = next;
+        setLightbox(next);
+        return;
+      }
+      const seq = ++gallerySeq.current;
+      const pending: LightboxState = { url: '', gallery: { images, index } };
+      lightboxRef.current = pending;
+      setLightbox(pending);
+      loadImage(target.id)
+        .then((blob) => {
+          if (gallerySeq.current !== seq) return;
+          const url = URL.createObjectURL(blob);
+          galleryOwned.current.add(url);
+          galleryCache.current.set(target.id, url);
+          const loaded: LightboxState = { url, gallery: { images, index } };
+          lightboxRef.current = loaded;
+          setLightbox(loaded);
+        })
+        .catch(() => {
+          if (gallerySeq.current !== seq) return;
+          const failed: LightboxState = { url: '', gallery: { images, index, failed: true } };
+          lightboxRef.current = failed;
+          setLightbox(failed);
+        });
+    },
+    [loadImage],
+  );
+  const openSentGallery = useCallback(
+    (images: ImageRef[], index: number, initialUrl?: string) => {
+      release();
+      if (images.length <= 1) {
+        if (initialUrl) {
+          const next: LightboxState = { url: initialUrl };
+          lightboxRef.current = next;
+          setLightbox(next);
+        }
+        return;
+      }
+      const target = images[index];
+      if (!target) return;
+      if (initialUrl) {
+        galleryCache.current.set(target.id, initialUrl);
+        const next: LightboxState = { url: initialUrl, gallery: { images, index } };
+        lightboxRef.current = next;
+        setLightbox(next);
+        return;
+      }
+      loadGalleryEntry(images, index);
+    },
+    [loadGalleryEntry, release],
+  );
+  const stepGallery = useCallback(
+    (delta: -1 | 1) => {
+      const current = lightboxRef.current;
+      if (!current?.gallery) return;
+      const { images, index } = current.gallery;
+      const next = index + delta;
+      if (next < 0 || next >= images.length) return;
+      loadGalleryEntry(images, next);
+    },
+    [loadGalleryEntry],
+  );
+  useEffect(() => release, [release]);
   const pictures = useMemo(() => ({ openFile: openPicture, show, openText: onOpenFile }), [openPicture, show, onOpenFile]);
   const groups = useMemo(() => groupByTurn(items), [items]);
   // "Show everything" is remembered per thread; switching threads starts folded again. Not keyed
@@ -362,11 +451,7 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
           return (
             <div key={item.key} className={`row user${item.voice ? ' voice' : ''}${item.streaming ? ' draft' : ''}`} data-turn={item.turnId} data-message-key={item.key} {...(item.optimistic ? { 'data-optimistic': 'true' } : {})}>
               {item.images.length > 0 && (
-                <div className="sent-images">
-                  {item.images.map((img) => (
-                    <SentImage key={img.id} image={img} load={loadImage} onOpen={show} />
-                  ))}
-                </div>
+                <SentImages images={item.images} load={loadImage} onOpen={openSentGallery} />
               )}
               <ReferenceChips references={draft.references} />
               {draft.notes.length > 0 && <SentNotes notes={draft.notes} />}
@@ -545,7 +630,14 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
       </Pictures.Provider>
       </ThreadJump.Provider>
       </HistoryContext.Provider>
-      {lightbox && <Lightbox url={lightbox.url} name={lightbox.name} onClose={closeLightbox} />}
+      {lightbox && (
+        <Lightbox
+          url={lightbox.url}
+          name={lightbox.name}
+          gallery={lightbox.gallery ? { index: lightbox.gallery.index, total: lightbox.gallery.images.length, failed: lightbox.gallery.failed, onStep: stepGallery } : undefined}
+          onClose={closeLightbox}
+        />
+      )}
       {contextMenu && <PointMessageMenu key={contextMenu.nonce} point={contextMenu} actions={actionsFor(contextMenu.text, contextMenu.turnId, contextMenu.element)} />}
       {selection && <SelectMessage text={selection.text} onClose={() => setSelection(null)} onQuote={onQuote ? text => onQuote(text, selection.turnId, historyThreadId) : undefined} />}
     </div>
@@ -1371,13 +1463,36 @@ function PlanCard({ item }: { item: Extract<Item, { kind: 'plan' }> }) {
   );
 }
 
-function SentImage({ image, load, onOpen }: { image: ImageRef; load: (id: string) => Promise<Blob>; onOpen: (url: string) => void }) {
+const MAX_SENT_IMAGES = 4;
+
+function SentImages({ images, load, onOpen }: { images: ImageRef[]; load: (id: string) => Promise<Blob>; onOpen: (images: ImageRef[], index: number, url?: string) => void }) {
+  const multi = images.length > 1;
+  const shown = images.length > MAX_SENT_IMAGES ? images.slice(0, MAX_SENT_IMAGES) : images;
+  const extra = images.length - shown.length;
+  return (
+    <div className={`sent-images ${multi ? 'sent-images-multi' : 'sent-images-single'}`}>
+      {shown.map((img, index) => (
+        <SentImage
+          key={img.id}
+          image={img}
+          load={load}
+          more={index === shown.length - 1 ? extra : 0}
+          onOpen={(url) => onOpen(images, index, url)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function SentImage({ image, load, onOpen, more = 0 }: { image: ImageRef; load: (id: string) => Promise<Blob>; onOpen: (url?: string) => void; more?: number }) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let alive = true;
     let made: string | null = null;
+    setUrl(null);
+    setFailed(false);
     load(image.id)
       .then((blob) => {
         if (!alive) return;
@@ -1391,11 +1506,31 @@ function SentImage({ image, load, onOpen }: { image: ImageRef; load: (id: string
     };
   }, [image.id, load]);
 
-  if (failed) return <div className="sent-image missing">{t('view.imageFailed')}</div>;
-  if (!url) return <div className="sent-image loading" aria-label={t('view.imageLoading')} />;
+  const overlay = more > 0 ? <span className="sent-image-more" aria-hidden="true">+{more}</span> : null;
+  const label = more > 0 ? t('view.moreImages', more) : t('view.enlarge');
+
+  if (failed) {
+    if (more > 0) {
+      return (
+        <button type="button" className="sent-image missing" onClick={() => onOpen()} aria-label={label}>
+          {t('view.imageFailed')}
+          {overlay}
+        </button>
+      );
+    }
+    return <div className="sent-image missing">{t('view.imageFailed')}</div>;
+  }
+  if (!url) {
+    return (
+      <div className="sent-image loading" aria-label={t('view.imageLoading')}>
+        {overlay}
+      </div>
+    );
+  }
   return (
-    <button type="button" className="sent-image" onClick={() => onOpen(url)} aria-label={t('view.enlarge')}>
+    <button type="button" className="sent-image" onClick={() => onOpen(url)} aria-label={label}>
       <img src={url} alt={t('view.sentImage')} />
+      {overlay}
     </button>
   );
 }

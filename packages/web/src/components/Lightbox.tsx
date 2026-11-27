@@ -2,8 +2,15 @@ import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type Poi
 import { createPortal } from 'react-dom';
 import { savePicture, savePictureAsPng } from '../images';
 import { MAX_ZOOM, REST, fitted, panBy, zoomAt, type View } from '../zoom';
-import { IconClose, IconDownload, IconMinus, IconPlus } from './icons';
+import { IconArrowLeft, IconArrowRight, IconClose, IconDownload, IconMinus, IconPlus } from './icons';
 import { t } from '../i18n';
+
+export interface LightboxGallery {
+  index: number;
+  total: number;
+  onStep: (delta: -1 | 1) => void;
+  failed?: boolean;
+}
 
 interface Props {
   url?: string;
@@ -11,6 +18,8 @@ interface Props {
   svg?: string;
   /** What the picture is called, for saving it. A path will do: its last part is used. */
   name?: string;
+  /** Present when browsing multiple images in one message. */
+  gallery?: LightboxGallery;
   onClose: () => void;
 }
 
@@ -24,7 +33,7 @@ const STEP = 1.5;
  * wheel, a pinch or the buttons zoom towards the pointer; zoomed in, a drag moves the picture.
  * Diagrams stay open on single taps so that double taps can toggle between fit and detail.
  */
-export function Lightbox({ url = '', svg, name, onClose }: Props) {
+export function Lightbox({ url = '', svg, name, gallery, onClose }: Props) {
   const [view, setView] = useState<View>(REST);
   /** Why the picture could not be saved, shown for a moment. */
   const [note, setNote] = useState<string | null>(null);
@@ -33,6 +42,8 @@ export function Lightbox({ url = '', svg, name, onClose }: Props) {
   const drawingRef = useRef<HTMLDivElement>(null);
   const natural = useRef({ width: 0, height: 0 });
   const isSvg = url.startsWith('data:image/svg+xml');
+  const galleryRef = useRef(gallery);
+  galleryRef.current = gallery;
 
   // The size the picture rests at, worked out from its shape and the room above the bar. Left to
   // the stylesheet, a drawing that names no size would come out small, or taller than the screen.
@@ -51,6 +62,12 @@ export function Lightbox({ url = '', svg, name, onClose }: Props) {
   const fitRef = useRef(fit);
   fitRef.current = fit;
   useLayoutEffect(() => { fitRef.current(); }, [svg]);
+  useLayoutEffect(() => {
+    if (svg) return;
+    setView(REST);
+    setRest(null);
+    if (url && imgRef.current?.complete && imgRef.current.naturalWidth) fitRef.current();
+  }, [url, svg]);
   useEffect(() => {
     const onResize = () => {
       fitRef.current();
@@ -78,6 +95,22 @@ export function Lightbox({ url = '', svg, name, onClose }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose(); }
+      else if (e.key === 'ArrowLeft') {
+        const g = galleryRef.current;
+        if (g && g.total > 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (g.index > 0) g.onStep(-1);
+        }
+      }
+      else if (e.key === 'ArrowRight') {
+        const g = galleryRef.current;
+        if (g && g.total > 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (g.index < g.total - 1) g.onStep(1);
+        }
+      }
       else if (e.key === 'Tab') {
         const buttons = [...(rootRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])];
         const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
@@ -120,9 +153,9 @@ export function Lightbox({ url = '', svg, name, onClose }: Props) {
     return () => clearTimeout(timer);
   }, [note]);
 
-  // Fingers and the mouse alike: one pointer drags, two pinch.
+  // Fingers and the mouse alike: one pointer drags (or swipes between gallery images at 1x), two pinch.
   const pointers = useRef(new Map<number, { x: number; y: number }>());
-  const gesture = useRef({ moved: false, onPicture: false });
+  const gesture = useRef({ moved: false, multi: false, onPicture: false, startX: 0, startY: 0 });
   const lastTap = useRef<{ time: number; x: number; y: number } | null>(null);
   const onControls = (target: EventTarget) => target instanceof Element && target.closest('.lightbox-bar, .lightbox-close') !== null;
   const spread = () => {
@@ -132,9 +165,17 @@ export function Lightbox({ url = '', svg, name, onClose }: Props) {
 
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
     if (onControls(e.target) || (e.pointerType === 'mouse' && e.button !== 0)) return;
-    if (pointers.current.size === 0) gesture.current = { moved: false, onPicture: e.target === imgRef.current || !!drawingRef.current?.contains(e.target as Node) };
+    if (pointers.current.size === 0) {
+      gesture.current = {
+        moved: false,
+        multi: false,
+        onPicture: e.target === imgRef.current || !!drawingRef.current?.contains(e.target as Node),
+        startX: e.clientX,
+        startY: e.clientY,
+      };
+    }
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointers.current.size > 1) { gesture.current.moved = true; lastTap.current = null; }
+    if (pointers.current.size > 1) { gesture.current.moved = true; gesture.current.multi = true; lastTap.current = null; }
     e.currentTarget.setPointerCapture(e.pointerId);
   };
   const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
@@ -143,11 +184,10 @@ export function Lightbox({ url = '', svg, name, onClose }: Props) {
     const before = pointers.current.size === 2 ? spread() : null;
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     const f = frame();
-    if (!f) return;
     if (before) {
       const now = spread();
       gesture.current.moved = true;
-      if (before.distance > 0) {
+      if (f && before.distance > 0) {
         setView((v) => panBy(zoomAt(v, now.distance / before.distance, { x: before.x - f.cx, y: before.y - f.cy }, f.size, maximum), now.x - before.x, now.y - before.y, f.size));
       }
     } else if (pointers.current.size === 1) {
@@ -159,17 +199,27 @@ export function Lightbox({ url = '', svg, name, onClose }: Props) {
         return;
       }
       gesture.current.moved = true;
-      setView((v) => panBy(v, dx, dy, f.size));
+      if (f) setView((v) => panBy(v, dx, dy, f.size));
     }
   };
   const onPointerEnd = (e: PointerEvent<HTMLDivElement>) => {
-    if (svg && pointers.current.has(e.pointerId) && !gesture.current.moved && e.type !== 'pointercancel') {
-      const last = lastTap.current;
-      if (last && Date.now() - last.time < 350 && Math.hypot(last.x - e.clientX, last.y - e.clientY) < 24) {
-        if (view.scale > 1) setView(REST);
-        else zoom(Math.max(2, actualScale), { x: e.clientX, y: e.clientY });
-        lastTap.current = null;
-      } else lastTap.current = { time: Date.now(), x: e.clientX, y: e.clientY };
+    if (pointers.current.has(e.pointerId) && e.type !== 'pointercancel') {
+      if (svg && !gesture.current.moved) {
+        const last = lastTap.current;
+        if (last && Date.now() - last.time < 350 && Math.hypot(last.x - e.clientX, last.y - e.clientY) < 24) {
+          if (view.scale > 1) setView(REST);
+          else zoom(Math.max(2, actualScale), { x: e.clientX, y: e.clientY });
+          lastTap.current = null;
+        } else lastTap.current = { time: Date.now(), x: e.clientX, y: e.clientY };
+      } else if (!svg && !gesture.current.multi && gesture.current.moved && view.scale === 1 && gallery && gallery.total > 1) {
+        const dx = e.clientX - gesture.current.startX;
+        const dy = e.clientY - gesture.current.startY;
+        if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+          const delta = dx < 0 ? 1 : -1;
+          const next = gallery.index + delta;
+          if (next >= 0 && next < gallery.total) gallery.onStep(delta);
+        }
+      }
     }
     if (e.type === 'pointercancel') { gesture.current.moved = true; lastTap.current = null; }
     pointers.current.delete(e.pointerId);
@@ -188,6 +238,8 @@ export function Lightbox({ url = '', svg, name, onClose }: Props) {
   };
 
   const zoomed = view.scale > 1;
+  const hasGallery = !svg && !!gallery && gallery.total > 1;
+  const ready = Boolean(svg || url);
   return createPortal(
     <div
       ref={rootRef}
@@ -204,7 +256,7 @@ export function Lightbox({ url = '', svg, name, onClose }: Props) {
       <div className="lightbox-stage" ref={stageRef}>
         {svg ? <div ref={drawingRef} className="lightbox-vector"
           style={{ ...(rest ? { width: rest.width, height: rest.height } : { visibility: 'hidden' }), transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
-          dangerouslySetInnerHTML={{ __html: svg }} /> : <img
+          dangerouslySetInnerHTML={{ __html: svg }} /> : url ? <img
           ref={imgRef}
           src={url}
           alt={t('lightbox.alt')}
@@ -214,7 +266,11 @@ export function Lightbox({ url = '', svg, name, onClose }: Props) {
             ...(rest ? { width: rest.width, height: rest.height } : { visibility: 'hidden' }),
             ...(zoomed ? { transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` } : {}),
           }}
-        />}
+        /> : gallery?.failed ? (
+          <div className="lightbox-status" role="status">{t('view.imageFailed')}</div>
+        ) : (
+          <span className="spinner lightbox-spinner" role="status" aria-label={t('view.imageLoading')} />
+        )}
       </div>
       <div className="lightbox-bar" role="toolbar" aria-label={t('lightbox.toolbar')}>
         {note && (
@@ -222,31 +278,45 @@ export function Lightbox({ url = '', svg, name, onClose }: Props) {
             {note}
           </span>
         )}
-        <button type="button" aria-label={t('lightbox.zoomOut')} title={t('lightbox.zoomOutKey')} disabled={!zoomed} onClick={() => zoom(1 / STEP)}>
+        {hasGallery && (
+          <>
+            <button type="button" aria-label={t('lightbox.prev')} title={t('lightbox.prevKey')} disabled={gallery.index <= 0} onClick={() => gallery.onStep(-1)}>
+              <IconArrowLeft size={17} />
+            </button>
+            <span className="lightbox-count" aria-live="polite">
+              {gallery.index + 1} / {gallery.total}
+            </span>
+            <button type="button" aria-label={t('lightbox.next')} title={t('lightbox.nextKey')} disabled={gallery.index >= gallery.total - 1} onClick={() => gallery.onStep(1)}>
+              <IconArrowRight size={17} />
+            </button>
+            <span className="lightbox-sep" aria-hidden="true" />
+          </>
+        )}
+        <button type="button" aria-label={t('lightbox.zoomOut')} title={t('lightbox.zoomOutKey')} disabled={!zoomed || !ready} onClick={() => zoom(1 / STEP)}>
           <IconMinus size={17} />
         </button>
         {svg ? <>
           <button type="button" onClick={() => setView(REST)}>{t('lightbox.fit')}</button>
           <button type="button" aria-label={t('lightbox.actual')} onClick={() => setView({ scale: actualScale, x: 0, y: 0 })}>{t('lightbox.percent', 100)}</button>
-        </> : <button type="button" className="lightbox-scale" aria-label={t('lightbox.reset')} title={t('lightbox.resetKey')} disabled={!zoomed} onClick={() => setView(REST)}>
+        </> : <button type="button" className="lightbox-scale" aria-label={t('lightbox.reset')} title={t('lightbox.resetKey')} disabled={!zoomed || !ready} onClick={() => setView(REST)}>
           {Math.round(view.scale * 100)}%
         </button>}
-        <button type="button" aria-label={t('lightbox.zoomIn')} title={t('lightbox.zoomInKey')} disabled={view.scale >= maximum} onClick={() => zoom(STEP)}>
+        <button type="button" aria-label={t('lightbox.zoomIn')} title={t('lightbox.zoomInKey')} disabled={view.scale >= maximum || !ready} onClick={() => zoom(STEP)}>
           <IconPlus size={17} />
         </button>
         {!svg && <>
         <span className="lightbox-sep" aria-hidden="true" />
         {isSvg ? (
           <>
-            <button type="button" className="lightbox-save" aria-label={t('lightbox.svg')} title={t('lightbox.svg')} onClick={save(savePicture)}>
+            <button type="button" className="lightbox-save" aria-label={t('lightbox.svg')} title={t('lightbox.svg')} disabled={!url} onClick={save(savePicture)}>
               <IconDownload size={16} /> SVG
             </button>
-            <button type="button" className="lightbox-save" aria-label={t('lightbox.png')} title={t('lightbox.png')} onClick={save(savePictureAsPng)}>
+            <button type="button" className="lightbox-save" aria-label={t('lightbox.png')} title={t('lightbox.png')} disabled={!url} onClick={save(savePictureAsPng)}>
               <IconDownload size={16} /> PNG
             </button>
           </>
         ) : (
-          <button type="button" aria-label={t('common.download')} title={t('common.download')} onClick={save(savePicture)}>
+          <button type="button" aria-label={t('common.download')} title={t('common.download')} disabled={!url} onClick={save(savePicture)}>
             <IconDownload size={17} />
           </button>
         )}

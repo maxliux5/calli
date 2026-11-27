@@ -240,19 +240,23 @@ test('lightweight fork works while running, and quick fork / quick done work acr
       await api(daemon, `/api/threads/${agyRunning.id}/cancel`, { method: 'POST' }).catch(() => undefined);
     }
 
-    // 3. Desktop sidebar row hover quick fork works while the source thread is still running.
+    // 3. Desktop sidebar row hover shows only clean done toggle + more (no fork icon, and hides trailing dir cleanly).
     const rootRow = page.locator('.sidebar-inner .thread-row', { hasText: '长任务主线' }).first();
     await rootRow.hover();
+    assert.equal(await rootRow.locator('.row-quick[aria-label="轻量分叉"]').count(), 0, 'sidebar hover omits fork button');
+    await rootRow.locator('.row-quick[aria-label="标记为已完成"]').waitFor({ timeout: 5_000 });
     if (shotDir) {
       await page.screenshot({ path: `${shotDir}/row-hover-light.png` });
       await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
       await page.screenshot({ path: `${shotDir}/row-hover-dark.png` });
       await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
     }
-    await rootRow.locator('.row-quick[aria-label="轻量分叉"]').click();
+
+    // 4. Sidebar context menu shows top-level "轻量分叉" and "标记为已完成"; quick fork works while source is running.
+    await rootRow.click({ button: 'right' });
+    await page.locator('.menu-float').getByRole('menuitem', { name: '轻量分叉' }).click();
     await page.locator('.topbar-title', { hasText: '长任务主线（分叉）' }).waitFor({ timeout: 10_000 });
 
-    // 3. Sidebar context menu shows top-level "轻量分叉" and "标记为已完成"; quick done moves thread to the Done pill.
     const finishTarget = await (await api(daemon, '/api/threads', {
       method: 'POST',
       body: JSON.stringify({ agent: 'pi', cwd: daemon.workdir, title: '待快速完成任务' }),
@@ -285,30 +289,74 @@ test('lightweight fork works while running, and quick fork / quick done work acr
     await page.locator('.sidebar-inner .thread-row', { hasText: '待快速完成任务' }).first().waitFor({ timeout: 10_000 });
     assert.equal((await (await api(daemon, `/api/threads/${finishTarget.id}`)).json()).doneAt, null, 'thread reopened via quick done button');
 
-    // 4. Quick done from page menu ("...") and mobile viewport check (no hover quick buttons on touch, no overflow).
+    // 5. Quick done from page menu ("...") and mobile viewport check (touch swipe-right marks done, no hover quick buttons, no overflow).
     await page.locator('.sidebar-inner .thread-row', { hasText: '待快速完成任务' }).first().click();
     await page.locator('.topbar-more').click();
     await page.locator('.menu-float').getByRole('menuitem', { name: '标记为已完成' }).click();
     assert.ok((await (await api(daemon, `/api/threads/${finishTarget.id}`)).json()).doneAt, 'thread marked done via page menu');
+
+    const swipeTarget = await (await api(daemon, '/api/threads', {
+      method: 'POST',
+      body: JSON.stringify({ agent: 'pi', cwd: daemon.workdir, title: '手机右滑完成测试' }),
+    })).json();
 
     const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
     try {
       const pPage = await phoneCtx.newPage();
       await openUi(pPage, daemon);
       await pPage.locator('.topbar button').first().click();
-      const mRow = pPage.locator('.sidebar-inner .thread-row', { hasText: '长任务主线' }).first();
+      const mRow = pPage.locator('.sidebar-inner .thread-row', { hasText: '手机右滑完成测试' }).first();
       await mRow.waitFor({ timeout: 10_000 });
       assert.equal(await mRow.locator('.row-quick').first().isVisible(), false, 'touch rows hide desktop hover quick buttons');
-      await mRow.click({ button: 'right' });
+
+      const dispatchSwipe = async (locator, startX, endX, release = true) => {
+        await locator.evaluate((el, { sx, ex, end }) => {
+          const rect = el.getBoundingClientRect();
+          const y = rect.top + rect.height / 2;
+          const touch = (x) => new Touch({ identifier: 1, target: el, clientX: x, clientY: y, pageX: x, pageY: y });
+          el.dispatchEvent(new TouchEvent('touchstart', { touches: [touch(sx)], targetTouches: [touch(sx)], changedTouches: [touch(sx)], bubbles: true, cancelable: true }));
+          const steps = 6;
+          for (let i = 1; i <= steps; i++) {
+            const x = sx + ((ex - sx) * i) / steps;
+            el.dispatchEvent(new TouchEvent('touchmove', { touches: [touch(x)], targetTouches: [touch(x)], changedTouches: [touch(x)], bubbles: true, cancelable: true }));
+          }
+          if (end) {
+            el.dispatchEvent(new TouchEvent('touchend', { touches: [], targetTouches: [], changedTouches: [touch(ex)], bubbles: true, cancelable: true }));
+          }
+        }, { sx: startX, ex: endX, end: release });
+      };
+
+      // Short right swipe (< trigger) snaps back without marking done.
+      await dispatchSwipe(mRow, 60, 95, true);
+      await pPage.waitForTimeout(150);
+      assert.equal((await (await api(daemon, `/api/threads/${swipeTarget.id}`)).json()).doneAt ?? null, null, 'short swipe does not mark done');
+
+      // Full right swipe (>= 68px) reveals green "完成" strip and marks thread done on release.
+      await dispatchSwipe(mRow, 60, 155, false);
+      await mRow.locator('.row-swipe-reveal.ready').waitFor({ timeout: 3_000 });
+      if (shotDir) {
+        await pPage.screenshot({ path: `${shotDir}/phone-swipe-done-light.png` });
+        await pPage.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+        await pPage.screenshot({ path: `${shotDir}/phone-swipe-done-dark.png` });
+        await pPage.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
+      }
+      await mRow.evaluate((el) => {
+        const rect = el.getBoundingClientRect();
+        const y = rect.top + rect.height / 2;
+        const t = new Touch({ identifier: 1, target: el, clientX: 155, clientY: y, pageX: 155, pageY: y });
+        el.dispatchEvent(new TouchEvent('touchend', { touches: [], targetTouches: [], changedTouches: [t], bubbles: true, cancelable: true }));
+      });
+      await pPage.waitForFunction(async (id) => {
+        const res = await fetch(`/api/threads/${id}`, { headers: { Authorization: `Bearer ${localStorage.getItem('calli.token')}` } });
+        return Boolean((await res.json()).doneAt);
+      }, swipeTarget.id, { timeout: 10_000 });
+      assert.ok((await (await api(daemon, `/api/threads/${swipeTarget.id}`)).json()).doneAt, 'phone swipe-right marked thread done');
+
+      const otherRow = pPage.locator('.sidebar-inner .thread-row', { hasText: '长任务主线' }).first();
+      await otherRow.click({ button: 'right' });
       await pPage.locator('.menu-float').getByRole('menuitem', { name: '轻量分叉' }).waitFor({ timeout: 5_000 });
       await pPage.locator('.menu-float').getByRole('menuitem', { name: '标记为已完成' }).waitFor({ timeout: 5_000 });
       assert.equal(await pPage.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false, 'no horizontal overflow on phone menu');
-      if (shotDir) {
-        await pPage.waitForTimeout(250);
-        await pPage.screenshot({ path: `${shotDir}/phone-menu-light.png` });
-        await pPage.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
-        await pPage.screenshot({ path: `${shotDir}/phone-menu-dark.png` });
-      }
     } finally {
       await phoneCtx.close();
     }

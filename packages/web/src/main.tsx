@@ -8,6 +8,7 @@ import { localeTag } from './i18n';
 import './styles.css';
 import './liquid-glass.css';
 import './markdown-html.css';
+import './components/sent-images.css';
 
 // The language was settled when the i18n module loaded; the page says so for fonts, screen readers and spell check.
 document.documentElement.lang = localeTag();

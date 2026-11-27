@@ -291,6 +291,18 @@ export const IconCheck = (p: { size?: number }) => (
     <path d="M5 12.5l4.5 4.5L19 7.5" />
   </Svg>
 );
+export const IconCheckCircle = ({ size = 16, filled = false }: { size?: number; filled?: boolean }) =>
+  filled ? (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" fill="currentColor" />
+      <path d="M8.7 12.3l2.2 2.2 4.5-4.7" stroke="var(--check-cutout, var(--sidebar))" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  ) : (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.55" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.75" />
+      <path d="M8.7 12.3l2.2 2.2 4.5-4.7" />
+    </svg>
+  );
 export const IconPin = (p: { size?: number }) => (
   <Svg {...p}>
     <path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7" />

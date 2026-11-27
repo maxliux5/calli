@@ -2960,7 +2960,6 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           members={teamMembers}
           forks={forkMembers}
           onForkSubchat={threadActions.forkSubchat}
-          onQuickFork={(thread) => threadActions.run('fork-lightweight', thread)}
           onToggleDone={(thread) => void patchBoardThread(thread.id, { done: !thread.doneAt }).catch(handleError)}
           sections={sections}
           agents={sidebarAgents}

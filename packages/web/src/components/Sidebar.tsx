@@ -1,5 +1,5 @@
 import brandIcon from '../assets/calli.svg';
-import { Fragment, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type MouseEvent, type ReactNode, type TouchEvent } from 'react';
 import type { ExternalSession, HostInfo, SearchHit, Section, Thread } from '../api';
 import type { AgentMarkInfo } from '../thread-cache';
 import { clockLabel } from '../timeline';
@@ -14,7 +14,7 @@ import { Menu } from './Menu';
 import { PetBustImage, type PetBust } from './Pet';
 import type { HostIconName } from '@calli/extension-api';
 import { HostIcon } from '../extensions/ui';
-import { AgentMark, IconAgents, IconBell, IconCheck, IconChevron, IconClock, IconClose, IconDesktop, IconEdit, IconFork, IconHandover, IconFolder, IconList, IconMore, IconPin, IconPlus, IconSearch, IconSettings, IconSidebar, IconSparkle, IconServer } from './icons';
+import { AgentMark, IconAgents, IconBell, IconCheck, IconCheckCircle, IconChevron, IconClock, IconClose, IconDesktop, IconEdit, IconFork, IconHandover, IconFolder, IconList, IconMore, IconPin, IconPlus, IconSearch, IconSettings, IconSidebar, IconSparkle, IconServer } from './icons';
 import { t } from '../i18n';
 import './fork-subchat.css';
 import './done-fold.css';
@@ -57,8 +57,6 @@ interface Props {
   forks?: Map<string, ForkSubchatItem[]>;
   /** Opens the one-step grouped sub-conversation fork dialog for a thread. */
   onForkSubchat?: (thread: Thread) => void;
-  /** Starts a grouped lightweight sub-conversation immediately from a row. */
-  onQuickFork?: (thread: Thread) => void;
   /** Toggles a thread's done state immediately from a row. */
   onToggleDone?: (thread: Thread) => void;
   sections: Section[];
@@ -164,7 +162,6 @@ export function Sidebar({
   members,
   forks,
   onForkSubchat,
-  onQuickFork,
   onToggleDone,
   sections,
   agents,
@@ -236,6 +233,93 @@ export function Sidebar({
   };
   // A long press on a row is the phone's right click.
   const longPress = useLongPress<Thread>(onThreadMenu);
+  // Touch right-swipe on a thread row toggles done (Apple Mail / Things 3 pattern), leaving left-swipe to close the drawer.
+  const [swipe, setSwipe] = useState<{ id: string; dx: number; ready: boolean } | null>(null);
+  const swipeRef = useRef<{
+    id: string;
+    thread: Thread;
+    startX: number;
+    startY: number;
+    dx: number;
+    mode: 'idle' | 'swipe' | 'other';
+  } | null>(null);
+  const swipeSwallowClick = useRef(false);
+  const SWIPE_EDGE_PX = 20;
+  const SWIPE_LOCK_PX = 10;
+  const SWIPE_TRIGGER_PX = 68;
+  const SWIPE_MAX_PX = 104;
+
+  const rowTouchHandlers = (thread: Thread, canSwipeDone: boolean) => {
+    const lp = longPress(thread);
+    if (!canSwipeDone) return lp;
+    return {
+      onTouchStart: (e: TouchEvent) => {
+        lp.onTouchStart(e);
+        swipeRef.current = null;
+        if (e.touches.length !== 1) return;
+        const t0 = e.touches[0];
+        if (t0.clientX <= SWIPE_EDGE_PX) return;
+        swipeRef.current = { id: thread.id, thread, startX: t0.clientX, startY: t0.clientY, dx: 0, mode: 'idle' };
+      },
+      onTouchMove: (e: TouchEvent) => {
+        lp.onTouchMove(e);
+        const cur = swipeRef.current;
+        const t0 = e.touches[0];
+        if (!cur || !t0 || cur.id !== thread.id || cur.mode === 'other') return;
+        const dx = t0.clientX - cur.startX;
+        const dy = t0.clientY - cur.startY;
+        if (cur.mode === 'idle') {
+          if (Math.abs(dy) > SWIPE_LOCK_PX && Math.abs(dy) >= Math.abs(dx)) {
+            cur.mode = 'other';
+            return;
+          }
+          if (dx < -SWIPE_LOCK_PX) {
+            cur.mode = 'other';
+            return;
+          }
+          if (dx > SWIPE_LOCK_PX && dx > Math.abs(dy) * 1.3) {
+            cur.mode = 'swipe';
+          } else {
+            return;
+          }
+        }
+        const clamped = Math.max(0, dx);
+        cur.dx = clamped;
+        const visualDx = Math.min(SWIPE_MAX_PX, clamped <= 76 ? clamped : 76 + (clamped - 76) * 0.35);
+        const ready = clamped >= SWIPE_TRIGGER_PX;
+        setSwipe((prev) => {
+          if (ready && !prev?.ready) navigator.vibrate?.(10);
+          return { id: thread.id, dx: Math.round(visualDx), ready };
+        });
+      },
+      onTouchEnd: (e: TouchEvent) => {
+        lp.onTouchEnd(e);
+        const cur = swipeRef.current;
+        swipeRef.current = null;
+        if (!cur || cur.id !== thread.id || cur.mode !== 'swipe') return;
+        const shouldToggle = cur.dx >= SWIPE_TRIGGER_PX;
+        setSwipe(null);
+        swipeSwallowClick.current = true;
+        window.setTimeout(() => { swipeSwallowClick.current = false; }, 320);
+        if (shouldToggle) onToggleDone?.(cur.thread);
+      },
+      onTouchCancel: () => {
+        lp.onTouchCancel();
+        if (swipeRef.current?.id === thread.id) {
+          swipeRef.current = null;
+          setSwipe(null);
+        }
+      },
+      onClickCapture: (e: MouseEvent) => {
+        lp.onClickCapture(e);
+        if (swipeSwallowClick.current) {
+          swipeSwallowClick.current = false;
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      },
+    };
+  };
   const inTitlebar = useInTitlebar() && !compact;
   const [collapsed, toggle] = useStoredSet(`${storagePrefix}.collapsed`);
   // The other way to read the list: by what is going on, not by where a thread is filed. Like Codex's activity view.
@@ -311,19 +395,38 @@ export function Sidebar({
     const detail = flat || query ? preview : null;
     const back = snoozed(thread);
     const note = mark === 'waiting' ? waitingLabel(thread) : mark === 'error' ? t('sidebar.failed') : back ? t('sidebar.snoozedNote', snoozeTimeLabel(back)) : null;
+    const canToggleDone = !thread.archivedAt && Boolean(onToggleDone);
+    const activeSwipe = swipe?.id === thread.id ? swipe : null;
     return (
     <div
       key={thread.id}
-      className={`thread-row${thread.id === selectedId ? ' active' : ''}${mark === 'unread' || mark === 'waiting' ? ' attention' : ''}`}
+      className={`thread-row${thread.id === selectedId ? ' active' : ''}${mark === 'unread' || mark === 'waiting' ? ' attention' : ''}${activeSwipe ? ' swiping' : ''}`}
       onContextMenu={(e) => {
         e.preventDefault();
         onThreadMenu(thread, e.clientX, e.clientY);
       }}
-      {...longPress(thread)}
+      {...rowTouchHandlers(thread, canToggleDone)}
     >
+      {activeSwipe && (
+        <span
+          className={`row-swipe-reveal${activeSwipe.ready ? ' ready' : ''}${thread.doneAt ? ' is-undo' : ''}`}
+          style={{ width: activeSwipe.dx }}
+          aria-hidden="true"
+        >
+          <span className="row-swipe-reveal-inner">
+            <IconCheckCircle size={15} filled={activeSwipe.ready} />
+            <span>{thread.doneAt ? t('actions.reopenShort') : t('actions.doneShort')}</span>
+          </span>
+        </span>
+      )}
       {/* Two accounts of one agent share a mark; which one runs the thread shows on hover and in the
           open thread's top bar, not as text on every row. */}
-      <button className="thread-item" onClick={() => (open ? open() : onSelect(thread.id))} title={[on?.label && open ? t('sidebar.merged.openOn', on.label) : null, hint].filter(Boolean).join(' · ') || undefined}>
+      <button
+        className="thread-item"
+        style={activeSwipe ? { transform: `translateX(${activeSwipe.dx}px)` } : undefined}
+        onClick={() => (open ? open() : onSelect(thread.id))}
+        title={[on?.label && open ? t('sidebar.merged.openOn', on.label) : null, hint].filter(Boolean).join(' · ') || undefined}
+      >
         <span className="thread-text">
           <span className="thread-head">
             <span className="thread-title">{title}</span>
@@ -354,26 +457,15 @@ export function Sidebar({
         </span>
       </button>
       <div className="row-actions">
-        {!thread.archivedAt && !on && onQuickFork && (
-          <button
-            type="button"
-            className="row-quick"
-            aria-label={t('actions.forkLightweight')}
-            title={t('actions.forkLightweight')}
-            onClick={(e) => { e.stopPropagation(); onQuickFork(thread); }}
-          >
-            <IconFork size={14} />
-          </button>
-        )}
-        {!thread.archivedAt && onToggleDone && (
+        {canToggleDone && (
           <button
             type="button"
             className={`row-quick${thread.doneAt ? ' is-done' : ''}`}
             aria-label={thread.doneAt ? t('actions.unmarkDone') : t('actions.markDone')}
             title={thread.doneAt ? t('actions.unmarkDone') : t('actions.markDone')}
-            onClick={(e) => { e.stopPropagation(); onToggleDone(thread); }}
+            onClick={(e) => { e.stopPropagation(); onToggleDone?.(thread); }}
           >
-            <IconCheck size={14} />
+            <IconCheckCircle size={15} filled={Boolean(thread.doneAt)} />
           </button>
         )}
         <button className="row-more" aria-label={t('sidebar.more', thread.title)} onClick={(e) => onThreadMenu(thread, ...below(e))}>
