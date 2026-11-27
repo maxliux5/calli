@@ -24,7 +24,7 @@ import { turnAnswer, type CoordinationManager, type CoordinationSetup } from './
 import { Injections, type InjectionGate } from './injections.js';
 import { parseProgress, progressInstructions, PROGRESS_STAGES, type ProgressStage } from './progress-report.js';
 import { habitsPath, isEditableArticle, isWritingStage, newestArticle, noteFile, saveArticle, writingInstructions, type WritingState } from './writing.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
@@ -1778,13 +1778,32 @@ export class ThreadManager {
     return { root: real, ...(await findFiles(real, query)) };
   }
 
-  /** A text file in the thread's directory, for the file viewer. A binary one comes back without text. */
-  /** One file of the thread's directory (or an artifact dir), resolved and checked, for previews. */
-  threadFile(threadId: string, rawPath: unknown): { real: string; rel: string } {
+  /** One file of the thread's directory (or another allowed browse root), resolved and checked, for previews. */
+  threadFile(threadId: string, rawPath: unknown, rootKey?: string): { real: string; rel: string; rootKey: string | null } {
     const notFound = new HttpError(404, 'no such file in this thread');
+    const keyOf = (rootPath: string) => createHash('sha256').update(rootPath).digest('hex').slice(0, 12);
+    if (rootKey !== undefined) {
+      const thread = this.getThread(threadId);
+      if (typeof rawPath !== 'string' || !rawPath || rawPath.length > 4096 || isAbsolute(rawPath)) throw notFound;
+      const target = this.browseRoots(thread).find((r) => keyOf(r.path) === rootKey);
+      if (!target) throw notFound;
+      let real: string;
+      try {
+        real = realpathSync(resolve(target.path, rawPath));
+      } catch {
+        throw notFound;
+      }
+      const prefix = target.path.endsWith(sep) ? target.path : target.path + sep;
+      if (real !== target.path && !real.startsWith(prefix)) throw notFound;
+      if (!statSync(real).isFile()) throw notFound;
+      return { real, rel: (real === target.path ? '' : real.slice(target.path.length + 1)).split(sep).join('/'), rootKey };
+    }
+    const thread = this.getThread(threadId);
     const { real, root } = this.resolveInThread(threadId, rawPath, notFound);
     if (!statSync(real).isFile()) throw notFound;
-    return { real, rel: real === root ? '' : real.slice(root.length + 1) };
+    const threadRoot = this.browseRoots(thread).find((r) => r.kind === 'thread')?.path;
+    const key = root === threadRoot ? null : keyOf(root);
+    return { real, rel: (real === root ? '' : real.slice(root.length + 1)).split(sep).join('/'), rootKey: key };
   }
 
   readThreadText(threadId: string, rawPath: unknown): { root: string; path: string; hash: string | null; editable: boolean } & TextFile {

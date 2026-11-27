@@ -84,3 +84,62 @@ test('the route serves a page and its assets to the cookie, and nothing else', a
   const missing = (await fetch(`${base}/api/threads/${thread.id}/preview-link?path=site/nope.html`, { headers: auth })).status;
   assert.equal(missing, 404);
 });
+
+test('previewing HTML under another browse root (e.g. home or another project) loads its folder assets and blocks sibling folders', async (t) => {
+  const workdir = mkdtempSync(join(tmpdir(), 'calli-preview-cwd-'));
+  const otherRoot = mkdtempSync(join(tmpdir(), 'calli-preview-other-'));
+  const dataDir = mkdtempSync(join(tmpdir(), 'calli-preview-data2-'));
+  t.after(() => {
+    rmSync(workdir, { recursive: true, force: true });
+    rmSync(otherRoot, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+  mkdirSync(join(otherRoot, 'playgrounds', 'p1', 'assets'), { recursive: true });
+  mkdirSync(join(otherRoot, 'private'), { recursive: true });
+  writeFileSync(join(otherRoot, 'playgrounds', 'p1', 'index.html'), '<!doctype html><link rel="stylesheet" href="./styles.css"><p>Playground</p>');
+  writeFileSync(join(otherRoot, 'playgrounds', 'p1', 'styles.css'), 'body { color: black; }');
+  writeFileSync(join(otherRoot, 'playgrounds', 'p1', 'assets', 'shot.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+  writeFileSync(join(otherRoot, 'private', 'secret.txt'), 'do not leak');
+
+  const store = new Store(dataDir);
+  const registry = new AgentRegistry(
+    defaultInstances({ claudeCommand: ['true'], piCommand: ['true'], agyCommand: ['true'], traexCommand: ['true'], codexCommand: ['true'] }),
+    null,
+  );
+  const manager = new ThreadManager(store, registry.adapters, [workdir, otherRoot], new AttachmentStore(dataDir));
+  const server = createHttpServer({ manager, registry, token: SECRET, webDir: null, version: 'test', previewPort: 9999 });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const auth = { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' };
+
+  const thread = (await (await fetch(`${base}/api/threads`, { method: 'POST', headers: auth, body: JSON.stringify({ agent: 'pi', cwd: workdir }) })).json()) as { id: string };
+  const htmlPath = join(otherRoot, 'playgrounds', 'p1', 'index.html');
+  const linkRes = await fetch(`${base}/api/threads/${thread.id}/preview-link?path=${encodeURIComponent(htmlPath)}`, { headers: auth });
+  assert.equal(linkRes.status, 200);
+  const link = (await linkRes.json()) as { url: string };
+  const setCookie = linkRes.headers.get('set-cookie') ?? '';
+  const cookie = setCookie.split(';')[0];
+
+  const parsed = new URL(link.url);
+  assert.match(parsed.pathname, new RegExp(`^/api/threads/${thread.id}/files/~r/[0-9a-f]{12}/playgrounds/p1/index\\.html$`));
+  assert.match(setCookie, new RegExp(`Path=/api/threads/${thread.id}/files/~r/[0-9a-f]{12}/playgrounds/p1`));
+
+  // HTML page and its relative subresources in the same folder load cleanly.
+  const pageRes = await fetch(`${base}${parsed.pathname}`, { headers: { Cookie: cookie } });
+  assert.equal(pageRes.status, 200);
+  assert.match(await pageRes.text(), /Playground/);
+
+  const rootPrefix = parsed.pathname.slice(0, parsed.pathname.indexOf('/playgrounds/'));
+  const cssRes = await fetch(`${base}${rootPrefix}/playgrounds/p1/styles.css`, { headers: { Cookie: cookie } });
+  assert.equal(cssRes.status, 200);
+  const imgRes = await fetch(`${base}${rootPrefix}/playgrounds/p1/assets/shot.svg`, { headers: { Cookie: cookie } });
+  assert.equal(imgRes.status, 200);
+
+  // Sibling folders under the same root are rejected even with the valid cookie, and an unscoped cwd cookie cannot access ~r/.
+  const siblingRes = await fetch(`${base}${rootPrefix}/private/secret.txt`, { headers: { Cookie: cookie } });
+  assert.equal(siblingRes.status, 403);
+  const cwdGrant = makeGrant(SECRET, thread.id).value;
+  const escalated = await fetch(`${base}${parsed.pathname}`, { headers: { Cookie: `${PREVIEW_COOKIE}=${cwdGrant}` } });
+  assert.equal(escalated.status, 403);
+});

@@ -28,35 +28,52 @@ export const PREVIEW_COOKIE = 'calli-preview';
 /** Its name before the rename to Calli; a grant set then still works until it expires. */
 export const LEGACY_PREVIEW_COOKIE = 'rah-preview';
 
-/** The cookie value: a grant for one thread's files, valid until it expires. */
-export function makeGrant(secret: string, threadId: string, now = Date.now()): { value: string; maxAge: number } {
+/** The cookie value: a grant for one thread's files (or a single previewed directory under another root), valid until it expires. */
+export function makeGrant(secret: string, threadId: string, now = Date.now(), scope = ''): { value: string; maxAge: number } {
   const exp = Math.floor((now + PREVIEW_TTL_S * 1000) / 1000);
-  return { value: `${exp}.${grantSignature(secret, threadId, exp)}`, maxAge: PREVIEW_TTL_S };
+  const sig = grantSignature(secret, threadId, exp, scope);
+  const value = scope ? `${exp}.${sig}.${Buffer.from(scope, 'utf8').toString('base64url')}` : `${exp}.${sig}`;
+  return { value, maxAge: PREVIEW_TTL_S };
 }
 
-/** Whether this cookie value still opens the thread's files. */
-export function checkGrant(secret: string, threadId: string, value: string | undefined, now = Date.now()): void {
+/** Whether this cookie value still opens the thread's files (and covers `targetPath` when scoped or cross-root). */
+export function checkGrant(secret: string, threadId: string, value: string | undefined, now = Date.now(), targetPath?: string): void {
   if (!value) throw new HttpError(403, 'this preview has expired; open it again from the thread');
-  const dot = value.indexOf('.');
-  if (dot <= 0) throw new HttpError(403, 'this preview has expired; open it again from the thread');
-  const exp = value.slice(0, dot);
-  const sig = value.slice(dot + 1);
-  if (!/^\d+$/.test(exp) || Number(exp) * 1000 < now) throw new HttpError(403, 'this preview has expired; open it again from the thread');
-  const want = grantSignature(secret, threadId, Number(exp));
+  const parts = value.split('.');
+  if (parts.length !== 2 && parts.length !== 3) throw new HttpError(403, 'this preview has expired; open it again from the thread');
+  const [exp, sig, rawScope] = parts;
+  if (!exp || !sig || !/^\d+$/.test(exp) || Number(exp) * 1000 < now) {
+    throw new HttpError(403, 'this preview has expired; open it again from the thread');
+  }
+  const scope = rawScope ? Buffer.from(rawScope, 'base64url').toString('utf8') : '';
+  const want = grantSignature(secret, threadId, Number(exp), scope);
   const a = Buffer.from(want, 'utf8');
   const b = Buffer.from(sig, 'utf8');
   if (a.length !== b.length || !timingSafeEqual(a, b)) throw new HttpError(403, 'this preview has expired; open it again from the thread');
+  if (targetPath !== undefined) {
+    const rooted = targetPath.startsWith('~r/');
+    if (rooted && !scope) throw new HttpError(403, 'this preview grant is scoped to the thread directory');
+    if (scope && targetPath !== scope && !targetPath.startsWith(`${scope}/`)) {
+      throw new HttpError(403, 'this file is outside the previewed folder');
+    }
+  }
+}
+
+/** Reads every cookie with `name` out of a Cookie header, in order. */
+export function cookieValues(header: string | undefined, name: string): string[] {
+  if (!header) return [];
+  const out: string[] = [];
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() === name) out.push(part.slice(eq + 1).trim());
+  }
+  return out;
 }
 
 /** Reads one cookie out of a Cookie header, the way node serves it. */
 export function cookieValue(header: string | undefined, name: string): string | undefined {
-  if (!header) return undefined;
-  for (const part of header.split(';')) {
-    const eq = part.indexOf('=');
-    if (eq < 0) continue;
-    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
-  }
-  return undefined;
+  return cookieValues(header, name)[0];
 }
 
 /** Content types a preview may carry; anything else is not something an iframe should run. */
@@ -94,6 +111,7 @@ export function readPreviewFile(real: string): { body: Buffer; contentType: stri
   return { body: readFileSync(real), contentType };
 }
 
-function grantSignature(secret: string, threadId: string, exp: number): string {
-  return createHmac('sha256', secret).update(`${threadId}\n${exp}`).digest('hex');
+function grantSignature(secret: string, threadId: string, exp: number, scope = ''): string {
+  const payload = scope ? `${threadId}\n${exp}\n${scope}` : `${threadId}\n${exp}`;
+  return createHmac('sha256', secret).update(payload).digest('hex');
 }

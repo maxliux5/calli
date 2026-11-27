@@ -18,7 +18,7 @@ import { HttpError } from './errors.js';
 import type { ExtensionHost } from './extension-host.js';
 import type { HostRegistry } from './hosts.js';
 import { PREVIEW_PICKER } from './preview-picker.js';
-import { checkGrant, cookieValue, LEGACY_PREVIEW_COOKIE, makeGrant, PREVIEW_COOKIE, readPreviewFile } from './preview.js';
+import { checkGrant, cookieValues, LEGACY_PREVIEW_COOKIE, makeGrant, PREVIEW_COOKIE, readPreviewFile } from './preview.js';
 import type { Scheduler } from './scheduler.js';
 import type { TerminalEvent, TerminalManager } from './terminals.js';
 import type { ThreadManager } from './threads.js';
@@ -1545,16 +1545,24 @@ export function createHttpServer(deps: HttpDeps): Server {
       // short-lived cookie that opens it. The iframe loads from the preview port and the cookie
       // rides along on every request the page makes under its own path, signature or not.
       if (method === 'GET' && sub === 'preview-link') {
-        const { rel } = manager.threadFile(threadId, url.searchParams.get('path'));
+        const { rel, rootKey } = manager.threadFile(threadId, url.searchParams.get('path'));
         if (!deps.previewPort) throw new HttpError(503, 'the preview port is not available on this daemon');
         const host = (req.headers.host ?? '').replace(/:\d+$/, '');
         if (!host) throw new HttpError(400, 'the request names no host');
-        const grant = makeGrant(token, threadId);
+        const encodePath = (p: string) => p.split('/').map(encodeURIComponent).join('/');
+        // Files outside the thread's own directory (e.g. home/session/project roots) get a rooted
+        // URL prefix and a directory-scoped grant so relative assets load while sibling folders stay unreachable.
+        const scopeDir = rootKey ? (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '') : '';
+        const scope = rootKey ? (scopeDir ? `~r/${rootKey}/${scopeDir}` : `~r/${rootKey}`) : '';
+        const grant = makeGrant(token, threadId, Date.now(), scope);
+        const cookiePath = rootKey
+          ? `/api/threads/${threadId}/files/~r/${rootKey}${scopeDir ? `/${encodePath(scopeDir)}` : ''}`
+          : `/api/threads/${threadId}/files`;
         res.setHeader(
           'Set-Cookie',
-          `${PREVIEW_COOKIE}=${grant.value}; Path=/api/threads/${threadId}/files; Max-Age=${grant.maxAge}; HttpOnly; SameSite=Lax`,
+          `${PREVIEW_COOKIE}=${grant.value}; Path=${cookiePath}; Max-Age=${grant.maxAge}; HttpOnly; SameSite=Lax`,
         );
-        const file = rel.split('/').map(encodeURIComponent).join('/');
+        const file = rootKey ? `~r/${rootKey}/${encodePath(rel)}` : encodePath(rel);
         return sendJson(res, 200, { url: `http://${host}:${deps.previewPort}/api/threads/${threadId}/files/${file}` });
       }
 
@@ -1562,18 +1570,38 @@ export function createHttpServer(deps: HttpDeps): Server {
       // preview-link is the auth here — subresources of a page carry no query string, but a
       // cookie scoped to this thread's path comes along on its own.
       if (method === 'GET' && sub === 'files' && parts[4]) {
-        const rel = parts
-          .slice(4)
-          .map((p) => {
+        const segments = parts.slice(4).map((p) => {
+          try {
+            return decodeURIComponent(p);
+          } catch {
+            return p;
+          }
+        });
+        const isRooted = segments[0] === '~r' && Boolean(segments[1]) && segments.length >= 3;
+        const rootKey = isRooted ? segments[1] : undefined;
+        const rel = (isRooted ? segments.slice(2) : segments).join('/');
+        const targetPath = isRooted ? `~r/${rootKey}/${rel}` : rel;
+        const candidates = [
+          ...cookieValues(req.headers.cookie, PREVIEW_COOKIE),
+          ...cookieValues(req.headers.cookie, LEGACY_PREVIEW_COOKIE),
+        ];
+        if (!candidates.length) {
+          checkGrant(token, threadId, undefined, Date.now(), targetPath);
+        } else {
+          let lastErr: unknown;
+          let ok = false;
+          for (const candidate of candidates) {
             try {
-              return decodeURIComponent(p);
-            } catch {
-              return p;
+              checkGrant(token, threadId, candidate, Date.now(), targetPath);
+              ok = true;
+              break;
+            } catch (err) {
+              lastErr = err;
             }
-          })
-          .join('/');
-        checkGrant(token, threadId, cookieValue(req.headers.cookie, PREVIEW_COOKIE) ?? cookieValue(req.headers.cookie, LEGACY_PREVIEW_COOKIE));
-        const { real } = manager.threadFile(threadId, rel);
+          }
+          if (!ok) throw lastErr;
+        }
+        const { real } = manager.threadFile(threadId, rel, rootKey);
         const file = readPreviewFile(real);
         let body = file.body;
         const contentType = file.contentType;
