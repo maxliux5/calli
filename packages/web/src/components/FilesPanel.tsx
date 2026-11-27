@@ -1,6 +1,8 @@
 import { Children, isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { remarkCjkEmphasis } from '../markdown-cjk';
+import { MATH_COMPONENTS, remarkMath } from '../markdown-math';
 import type { Api, FolderEntry, FolderListing, TextFile, WritingStage } from '../api';
 import { countWords, highlightWritingSource, isArticleFile, rehypeArticleMarks } from '../article';
 import { MARKDOWN_REHYPE_PLUGINS, preserveNonHtmlTags } from '../markdown-html';
@@ -16,7 +18,7 @@ import { Popover } from './Popover';
 import { IconChevron, IconClose, IconCopy, IconDownload, IconFile, IconFolder, IconFolders, IconMore, IconSearch, IconSidebar, IconWrap } from './icons';
 import { t } from '../i18n';
 
-const FILES_REMARK_PLUGINS = [remarkGfm, preserveNonHtmlTags];
+const FILES_REMARK_PLUGINS = [remarkGfm, remarkCjkEmphasis, remarkMath, preserveNonHtmlTags];
 const ARTICLE_REHYPE_PLUGINS = [...MARKDOWN_REHYPE_PLUGINS, rehypeArticleMarks];
 
 /** What the panel is asked to show: a file (at a line), a folder in the tree, or with no path, the thread's folder. */
@@ -533,6 +535,7 @@ export function FilesPanel({ api, threadId, target, phone, revision, writingStag
   // React treats each renderer as a component type. Stable types keep diagrams and pictures
   // mounted while unrelated panel state changes, including a theme switch.
   const markdownComponents = useMemo<Components>(() => ({
+    ...MATH_COMPONENTS,
     // The title says where the piece stands: the stage, and how much is written. The key must be
     // absent outside the article, not `undefined`: an own property with that value is taken as
     // the component itself, and any heading would bring the whole page down.

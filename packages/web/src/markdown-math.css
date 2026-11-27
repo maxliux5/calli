@@ -1,0 +1,51 @@
+/* KaTeX math blocks and inline expressions rendered by markdown-math.ts. */
+
+.math-display {
+  margin: 0.9em 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.math-display > .katex-display {
+  margin: 0;
+  padding: 4px 2px;
+  width: max-content;
+  min-width: 100%;
+  text-align: center;
+}
+
+.math-inline {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.math-inline .katex {
+  font-size: 1.05em;
+}
+
+.math-display .katex {
+  font-size: 1.08em;
+}
+
+@media (max-width: 600px) {
+  .math-display .katex {
+    font-size: 0.96em;
+  }
+}
+
+/* Let CJK text inside \text{...} fall back to the interface font instead of system serif. */
+.math-display .katex .text,
+.math-inline .katex .text {
+  font-family: KaTeX_Main, var(--font);
+}
+
+.math-fallback {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}

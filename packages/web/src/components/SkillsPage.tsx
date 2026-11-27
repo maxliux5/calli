@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { remarkCjkEmphasis } from '../markdown-cjk';
+import { MATH_COMPONENTS, remarkMath } from '../markdown-math';
 import { MARKDOWN_REHYPE_PLUGINS, preserveNonHtmlTags } from '../markdown-html';
 import { Api, type AgentInfo, type HostInfo, type SkillDetail, type SkillEntry, type SkillInstallOutcome, type SkillsListing, type SkillPayload } from '../api';
 import { copyText } from '../clipboard';
@@ -49,7 +51,7 @@ interface SkillRow {
 }
 
 const PLACE_KEY = '\u0000';
-const SKILL_REMARK_PLUGINS = [remarkGfm, preserveNonHtmlTags];
+const SKILL_REMARK_PLUGINS = [remarkGfm, remarkCjkEmphasis, remarkMath, preserveNonHtmlTags];
 
 function bytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -357,7 +359,7 @@ function SkillPreview({ row, column, clientFor, onClose, onError }: { row: Skill
         <div className="skill-dialog-body">
           {error && <div className="panel-empty">{t('skills.noDoc', error)}</div>}
           {!error && !detail && <div className="panel-empty">{t('activity.reading')}</div>}
-          {detail && <div className="markdown skill-md">{detail.skillMd ? <Markdown remarkPlugins={SKILL_REMARK_PLUGINS} rehypePlugins={MARKDOWN_REHYPE_PLUGINS}>{detail.skillMd}</Markdown> : <p className="panel-empty">{t('skills.noDescription')}</p>}</div>}
+          {detail && <div className="markdown skill-md">{detail.skillMd ? <Markdown remarkPlugins={SKILL_REMARK_PLUGINS} rehypePlugins={MARKDOWN_REHYPE_PLUGINS} components={MATH_COMPONENTS}>{detail.skillMd}</Markdown> : <p className="panel-empty">{t('skills.noDescription')}</p>}</div>}
         </div>
     </DialogSurface>
   );

@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import Markdown, { type Components } from 'react-markdown';
+import { remarkCjkEmphasis } from '../markdown-cjk';
+import { MATH_COMPONENTS, remarkMath } from '../markdown-math';
 import type { Api, MatterSignal, SignalMaterialRead } from '../api';
 import { formatDateTime, t } from '../i18n';
 import { signalDestination } from '../lark';
@@ -15,9 +17,11 @@ interface MaterialView {
 
 // Material text is not agent output: no HTML, images, interactive tasks, or navigable body links.
 const MATERIAL_COMPONENTS: Components = {
+  ...MATH_COMPONENTS,
   a: ({ children }) => <span>{children}</span>,
   img: ({ alt }) => alt ? <span>{alt}</span> : null,
 };
+const MATERIAL_PLUGINS = [remarkCjkEmphasis, remarkMath];
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 function MaterialDetails({ signal, view, partial, onRead }: { signal: MatterSignal; view: MaterialView; partial: boolean; onRead: () => void }) {
@@ -34,7 +38,7 @@ function MaterialDetails({ signal, view, partial, onRead }: { signal: MatterSign
       : !result || result.material.state === 'unread' ? <p className="desk-signals-note">{t('desk.material.unread')}</p>
       : result.material.state === 'not-ready' ? <p className="desk-signals-note">{t('desk.material.notReadyHint')}</p>
       : result.material.state === 'empty' || !body.trim() ? <p className="desk-signals-note">{t(partial ? 'desk.material.partialEmpty' : 'desk.material.empty')}</p>
-      : <div className="desk-material-text"><Markdown skipHtml components={MATERIAL_COMPONENTS}>{body}</Markdown></div>}
+      : <div className="desk-material-text"><Markdown skipHtml remarkPlugins={MATERIAL_PLUGINS} components={MATERIAL_COMPONENTS}>{body}</Markdown></div>}
     {!view.loading && !view.error && result && partial && <p className="desk-material-partial">{t('desk.material.partialHint')}</p>}
     {(view.error || result) && (view.error || canRefreshSignalMaterial(result?.material) || partial) && <button className="desk-material-retry" disabled={view.loading} onClick={onRead}>{t(view.error || result?.material.state === 'failed' ? 'common.retry' : 'desk.material.readAgain')}</button>}
   </>;

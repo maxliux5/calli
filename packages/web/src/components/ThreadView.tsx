@@ -10,7 +10,9 @@ import { hydrateWork, HistoryClient, type HistoryDetail, type HistoryWork, type 
 import { Children, createContext, Fragment, isValidElement, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { remarkCjkEmphasis } from '../markdown-cjk';
 import { threadLinkIndex, threadMentions, trimAutolinkJunk, type ThreadLinkIndex } from '../markdown-links';
+import { MATH_COMPONENTS, renderMathDiv, remarkMath } from '../markdown-math';
 import { MARKDOWN_REHYPE_PLUGINS, preserveNonHtmlTags } from '../markdown-html';
 import { placeImages, stripPaths } from '../image-places';
 import { highlightLanguage, languageName } from '../code-language';
@@ -1066,8 +1068,10 @@ function MarkdownLink({ href, title, children }: { href?: string; title?: string
 /** How a finished answer's own pictures are fetched and opened, for the strips placed in its text. */
 const FileImages = createContext<{ roots: string[]; load: (path: string) => Promise<Blob>; onOpen: (url: string, name?: string) => void } | null>(null);
 
-/** A `div` in an answer is a strip of its pictures, put after the passage that names them. */
+/** A `div` in an answer is either a display math block or a strip of its pictures. */
 function MarkdownDiv({ node: _node, ...props }: ComponentProps<'div'> & { node?: unknown }) {
+  const math = renderMathDiv(props);
+  if (math) return math;
   const images = useContext(FileImages);
   const paths = stripPaths(props as { className?: string; 'data-paths'?: unknown });
   if (!paths) return <div {...props} />;
@@ -1096,9 +1100,9 @@ function BreakableCode({ children, ...props }: ComponentProps<'code'>) {
   );
 }
 
-const MARKDOWN_COMPONENTS = { pre: CodeBlock, img: MarkdownImage, a: MarkdownLink, div: MarkdownDiv, code: BreakableCode };
-const MARKDOWN_PLUGINS = [remarkGfm, trimAutolinkJunk, preserveNonHtmlTags];
-const QUOTE_REMARK_PLUGINS = [remarkGfm, preserveNonHtmlTags];
+const MARKDOWN_COMPONENTS = { pre: CodeBlock, img: MarkdownImage, a: MarkdownLink, div: MarkdownDiv, span: MATH_COMPONENTS.span, code: BreakableCode };
+const MARKDOWN_PLUGINS = [remarkGfm, remarkCjkEmphasis, remarkMath, trimAutolinkJunk, preserveNonHtmlTags];
+const QUOTE_REMARK_PLUGINS = [remarkGfm, remarkCjkEmphasis, remarkMath, preserveNonHtmlTags];
 
 /**
  * A message as a block quote for another app's editor. Plain Markdown, none of this page's own

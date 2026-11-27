@@ -5,6 +5,8 @@ import { App, type AppStart } from './App';
 import { loadToken, saveToken } from './api';
 import { loadHost, saveHost } from './hosts';
 import { localeTag } from './i18n';
+import 'katex/dist/katex.min.css';
+import './markdown-math.css';
 import './styles.css';
 import './liquid-glass.css';
 import './markdown-html.css';

@@ -14,14 +14,17 @@ type Schema = NonNullable<Parameters<typeof rehypeSanitize>[0]>;
  *
  * Extends the default GFM schema only where this app already has its own trusted conventions:
  * - `file:` and `thread:` link/image protocols handled by `MarkdownLink` and `MarkdownImage`;
- * - `<div class="file-images" data-paths="...">` strips injected by `placeImages`.
+ * - `<div class="file-images" data-paths="...">` strips injected by `placeImages`;
+ * - `<div class="math-display" data-math="..." data-math-display="true">` and
+ *   `<span class="math-inline" data-math="...">` rendered safely by KaTeX (`trust: false`).
  */
 export const MARKDOWN_HTML_SCHEMA: Schema = {
   ...defaultSchema,
   tagNames: [...(defaultSchema.tagNames ?? []), 'mark', 'u'],
   attributes: {
     ...defaultSchema.attributes,
-    div: [...(defaultSchema.attributes?.div ?? []), ['className', IMAGE_STRIP_CLASS], 'dataPaths'],
+    div: [...(defaultSchema.attributes?.div ?? []), ['className', IMAGE_STRIP_CLASS, 'math-display'], 'dataPaths', 'dataMath', 'dataMathDisplay'],
+    span: [...(defaultSchema.attributes?.span ?? []), ['className', 'math-inline'], 'dataMath'],
   },
   protocols: {
     ...defaultSchema.protocols,

@@ -6,7 +6,9 @@ import { WorkSummary } from './work';
  */
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { useEffect, useState, type ComponentProps } from 'react';
+import { useEffect, useState, type ComponentProps, type ReactNode } from 'react';
+import { remarkCjkEmphasis } from '../markdown-cjk';
+import { MATH_COMPONENTS, remarkMath } from '../markdown-math';
 import type { ConfirmProps, PopoverOptionProps, PopoverProps, WebHostUi } from '@calli/extension-api/web';
 import type { AgentInfo } from '../api';
 import { createPortal } from 'react-dom';
@@ -125,9 +127,16 @@ function EmptyState({ text }: { text: string }) {
   );
 }
 
+const EXT_MARKDOWN_PLUGINS = [remarkGfm, remarkCjkEmphasis, remarkMath];
+const EXT_MARKDOWN_COMPONENTS = {
+  ...MATH_COMPONENTS,
+  a: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  img: ({ alt }: { alt?: string }) => <span>{alt}</span>,
+};
+
 function Markdown({ text }: { text: string }) {
-  return <div className="md"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml
-    components={{ a: ({ children }) => <span>{children}</span>, img: ({ alt }) => <span>{alt}</span> }}
+  return <div className="md"><ReactMarkdown remarkPlugins={EXT_MARKDOWN_PLUGINS} skipHtml
+    components={EXT_MARKDOWN_COMPONENTS}
   >{text}</ReactMarkdown></div>;
 }
 
