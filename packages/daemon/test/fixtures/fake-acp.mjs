@@ -440,8 +440,11 @@ rl.on('line', async (line) => {
         update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `**Warning:** ${refusedModelWarning}` }, _meta: { claudeCode: { kind: 'informational', level: 'warning' } } });
         refusedModelWarning = null;
       }
-      // Fixture commands belong to the current ask, not the interrupted request in its envelope.
+      // Fixture commands belong to the current ask, not the interrupted request or fork context envelopes.
       const text = rawText.includes('[Calli interrupted-turn context]\n') ? rawText.split('\nCurrent user message:\n').at(-1) : rawText;
+      const askBody = text
+        .replace(/<calli-fork-anchor>[\s\S]*?<\/calli-fork-anchor>/g, '')
+        .replace(/<calli-forks>[\s\S]*?<\/calli-forks>/g, '');
       const lifecycle = text.match(/approval lifecycle (after-cancel|error|end|exit)/)?.[1];
       if (lifecycle) {
         if (lifecycle === 'after-cancel') {
@@ -706,7 +709,7 @@ rl.on('line', async (line) => {
         });
       }
       // A provider error that is not about quota; its request number differs on every attempt.
-      if (text.includes('flaky')) {
+      if (askBody.includes('flaky')) {
         return out({ jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: `Internal error: upstream connection reset (request ${Math.floor(Math.random() * 90000) + 10000})` } });
       }
       // FAKE_ACP_PLAN_LEFT stands for another account whose plan still has room. With a
@@ -715,10 +718,10 @@ rl.on('line', async (line) => {
       const offPlanPool = !process.env.FAKE_ACP_MODELS
         || !currentModel.includes('/')
         || currentModel.startsWith((process.env.FAKE_ACP_PLAN_PREFIX ?? 'zcode') + '/');
-      if (text.includes('out of plan') && !process.env.FAKE_ACP_PLAN_LEFT && offPlanPool) {
+      if (askBody.includes('out of plan') && !process.env.FAKE_ACP_PLAN_LEFT && offPlanPool) {
         return out({ jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: "Internal error: You've hit your session limit · resets 10:10am (UTC)" } });
       }
-      if (text.includes('slow')) {
+      if (askBody.includes('slow')) {
         pendingPrompt = { id: msg.id };
         return;
       }

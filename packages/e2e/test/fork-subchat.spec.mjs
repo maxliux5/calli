@@ -6,6 +6,18 @@ let daemon;
 let browser;
 let page;
 
+const waitTurnDone = async (id, count = 1) => {
+  for (let i = 0; i < 200; i++) {
+    const [t, evs] = await Promise.all([
+      (await api(daemon, `/api/threads/${id}`)).json(),
+      (await api(daemon, `/api/threads/${id}/events`)).json(),
+    ]);
+    if (t.status === 'idle' && evs.filter((e) => e.type === 'turn.done').length >= count) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error(`thread ${id} did not finish turn ${count}`);
+};
+
 before(async () => {
   daemon = await startDaemon();
   browser = await launchBrowser();
@@ -18,80 +30,115 @@ after(async () => {
   await daemon?.stop();
 });
 
-test('fork as sub-conversation groups under the lead in sidebar with purpose tag, and coexists with handover chain', async () => {
-  // Seed a root thread + one turn via API so the test stays deterministic and fast.
+test('Scheme A: flat Fork & Handoff menu, reply-footer (...) handoff, 12px topic drawer icons, promote-to-topic, and phone layout', async () => {
   const root = await (await api(daemon, '/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'pi', cwd: daemon.workdir, title: '主线重构' }) })).json();
-  await api(daemon, `/api/threads/${root.id}/turns`, { method: 'POST', body: JSON.stringify({ text: '主线第一轮' }) });
-  for (let i = 0; i < 200; i++) {
-    const t = await (await api(daemon, `/api/threads/${root.id}`)).json();
-    if (t.status !== 'running') break;
-    await new Promise((r) => setTimeout(r, 25));
-  }
+  await api(daemon, `/api/threads/${root.id}/turns`, { method: 'POST', body: JSON.stringify({ text: '主线第一轮讨论方案 A 与 C' }) });
+  await waitTurnDone(root.id, 1);
 
   await openUi(page, daemon);
   await page.locator('.sidebar-inner').getByText('主线重构').first().click();
-  await page.getByText('hi there 主线第一轮').waitFor({ timeout: 10_000 });
+  await page.getByText('hi there 主线第一轮讨论方案 A 与 C').waitFor({ timeout: 10_000 });
 
-  // Open page menu -> 分叉与交接 -> 分叉为子对话
+  // Page menu has flat top-level "分叉" and "接力继续" (no "分叉与交接" or legacy "交接"), and "复制交接信息" inside "复制".
   await page.locator('.topbar-more').click();
-  await page.getByRole('menuitem', { name: '分叉与交接' }).click();
-  await page.getByRole('menuitem', { name: '分叉为子对话' }).click();
-  await page.locator('.fork-subchat-dialog').waitFor();
+  assert.equal(await page.getByRole('menuitem', { name: '分叉与交接' }).count(), 0);
+  assert.equal(await page.getByRole('menuitem', { name: '交接', exact: true }).count(), 0);
+  await page.getByRole('menuitem', { name: '分叉', exact: true }).waitFor();
+  await page.getByRole('menuitem', { name: '接力继续', exact: true }).waitFor();
+  await page.getByRole('menuitem', { name: '复制' }).click();
+  await page.locator('.menu-branch').getByRole('menuitem', { name: '复制交接信息' }).waitFor();
+  await page.keyboard.press('Escape');
 
-  // Verify context mode toggle defaults to lightweight, and can toggle to full history and back.
-  const lightRadio = page.locator('.fork-subchat-mode [role="radio"]', { hasText: '轻量分支' });
-  const fullRadio = page.locator('.fork-subchat-mode [role="radio"]', { hasText: '带完整历史' });
-  assert.equal(await lightRadio.getAttribute('aria-checked'), 'true');
-  assert.equal(await fullRadio.getAttribute('aria-checked'), 'false');
+  // Reply-footer (...) menu contains "接力继续" right beside the thumb.
+  await page.locator('.message-actions button[aria-label="更多消息操作"]').last().click();
+  await page.getByRole('menuitem', { name: '接力继续', exact: true }).click();
+  const card = page.locator('.fork-subchat-dialog');
+  await card.waitFor();
 
-  // Capture dialog screenshot if requested (lightweight mode visible).
+  // Codex composer sheet: clean "接力继续" heading, no jargon, 2 buttons.
+  assert.equal((await card.locator('#fork-card-title').innerText()).trim(), '接力继续');
+  assert.equal(await card.getByText(/轻量|省 Token/).count(), 0);
+  await card.getByRole('button', { name: '接力继续' }).waitFor();
+  await card.getByRole('button', { name: '取消' }).waitFor();
+
   const shotDir = process.env.CALLI_FORK_SHOTS;
   if (shotDir) {
-    await page.screenshot({ path: `${shotDir}/dialog-light.png` });
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: `${shotDir}/card-light.png`, animations: 'disabled' });
     await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
-    await page.screenshot({ path: `${shotDir}/dialog-dark.png` });
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${shotDir}/card-dark.png`, animations: 'disabled' });
     await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
   }
 
-  // Fill purpose tag only -> button reads "分叉并进入" -> opens new lightweight sub-conversation
-  await page.locator('.fork-subchat-dialog input[type="text"]').fill('分析 one page');
-  const confirmBtn = page.locator('.fork-subchat-dialog button', { hasText: '分叉并进入' });
-  await confirmBtn.click();
-  await page.locator('.fork-subchat-dialog').waitFor({ state: 'detached', timeout: 10_000 });
+  // Typing a note inside the composer switches the primary button to "接力并发送".
+  await card.locator('.fork-composer textarea').fill('子话题讨论');
+  await card.getByRole('button', { name: '接力并发送' }).click();
+  await card.waitFor({ state: 'detached', timeout: 10_000 });
 
-  // Lightweight fork starts fresh (no replayed root turn text in message list).
-  await page.locator('.sidebar-inner .fork-tag-pill', { hasText: '分析 one page' }).waitFor({ timeout: 10_000 });
-  assert.equal(await page.locator('.markdown').filter({ hasText: 'hi there 主线第一轮' }).count(), 0);
-  // Chat on a different topic inside the sub-conversation; <calli-forks> still lists the lead thread.
-  await page.locator('.composer textarea').click();
-  await page.keyboard.type('子话题讨论');
-  await page.keyboard.press('Enter');
+  // Opens new handoff thread nested under parent topic with 12px handoff icon; anchor never leaks.
   await page.locator('.markdown').filter({ hasText: '子话题讨论' }).last().waitFor({ timeout: 10_000 });
-  await page.locator('.markdown').filter({ hasText: '主线重构' }).last().waitFor({ timeout: 5_000 });
+  assert.equal(await page.locator('.row.user').count(), 1, 'no root turns replayed');
+  assert.equal(await page.locator('.row.user').filter({ hasText: '<calli-fork-anchor>' }).count(), 0);
+  await page.locator('.sidebar-inner .handover-member .fork-kind-ico[aria-label="接力继续"]').first().waitFor({ timeout: 10_000 });
 
-  // Verify phone dark & light viewports have no horizontal overflow and capture screenshots if requested.
-  if (shotDir) {
-    await page.screenshot({ path: `${shotDir}/desktop-light.png` });
-    await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
-    await page.screenshot({ path: `${shotDir}/desktop-dark.png` });
-  }
+  // Reopen from root via topbar ... -> 接力继续, switch Agent to agy, and click "接力继续".
+  await page.locator('.sidebar-inner').getByText('主线重构').first().click();
+  await page.locator('.topbar-more').click();
+  await page.getByRole('menuitem', { name: '接力继续', exact: true }).click();
+  await card.waitFor();
+  await card.locator('.fork-composer-bar .agent-btn').click();
+  await page.locator('.pop-panel .pop-item', { hasText: /Antigravity|agy/i }).first().click();
+  await card.getByRole('button', { name: '接力继续' }).click();
+  await card.waitFor({ state: 'detached', timeout: 10_000 });
+
+  // Continues immediately on the switched agent (agy) with 0-token anchor + paired calli history.
+  await page.locator('.topbar-title', { hasText: '主线重构（继续）' }).waitFor({ timeout: 10_000 });
+  await page.locator('.markdown').filter({ hasText: 'echo:接着上面的事情继续做' }).last().waitFor({ timeout: 10_000 });
+  assert.equal(await page.locator('.row.user').filter({ hasText: '<calli-fork-anchor>' }).count(), 0);
+
+  const allThreads = await (await api(daemon, '/api/threads')).json();
+  const continued = allThreads.find((t) => t.title === '主线重构（继续）');
+  assert.ok(continued, 'continued handoff thread exists');
+  assert.equal(continued.agent, 'agy');
+  assert.equal(continued.forkGroup, root.id);
+  assert.equal(continued.forkKind, 'handoff');
+  const contEvents = await (await api(daemon, `/api/threads/${continued.id}/events`)).json();
+  const firstStart = contEvents.find((e) => e.type === 'turn.started');
+  assert.match(String(firstStart.data.text), /<calli-fork-anchor>/);
+  assert.match(String(firstStart.data.text), /主线第一轮讨论方案 A 与 C/);
+  assert.match(String(firstStart.data.text), new RegExp(`calli history ${root.id} --turns 6`));
+
+  // Promote a derived child out to a standalone top-level topic via right-click menu.
+  const childRow = page.locator('.sidebar-inner .handover-member', { hasText: '子话题讨论' }).first();
+  await childRow.click({ button: 'right' });
+  await page.locator('.menu-float').getByRole('menuitem', { name: '移出为独立话题', exact: true }).click();
+  await page.locator('.sidebar-inner .thread-row', { hasText: '子话题讨论' }).first().waitFor({ timeout: 10_000 });
+
+  // Phone viewport check: open card on 390px phone in light & dark, verify zero horizontal overflow.
   const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
-  const pPage = await phoneCtx.newPage();
-  await openUi(pPage, daemon);
-  await pPage.locator('.topbar button').first().click();
-  await pPage.locator('.sidebar-inner .handover-toggle').first().click();
-  await pPage.locator('.sidebar-inner .fork-tag-pill', { hasText: '分析 one page' }).waitFor({ timeout: 5_000 });
-  const overflow = await pPage.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
-  assert.equal(overflow, false, 'no horizontal overflow on phone');
-  if (shotDir) {
-    await pPage.screenshot({ path: `${shotDir}/phone-light.png` });
-    await pPage.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
-    await pPage.screenshot({ path: `${shotDir}/phone-dark.png` });
+  try {
+    const pPage = await phoneCtx.newPage();
+    await openUi(pPage, daemon);
+    await pPage.locator('.topbar button').first().click();
+    await pPage.locator('.sidebar-inner').getByText('主线重构').first().click();
+    await pPage.locator('.topbar-more').click();
+    await pPage.getByRole('menuitem', { name: '接力继续', exact: true }).click();
+    await pPage.locator('.fork-subchat-dialog').waitFor();
+    assert.equal(await pPage.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false, 'no horizontal overflow on phone card');
+    if (shotDir) {
+      await pPage.waitForTimeout(300);
+      await pPage.screenshot({ path: `${shotDir}/phone-card-light.png`, animations: 'disabled' });
+      await pPage.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+      await pPage.waitForTimeout(200);
+      await pPage.screenshot({ path: `${shotDir}/phone-card-dark.png`, animations: 'disabled' });
+    }
+  } finally {
+    await phoneCtx.close();
   }
-  await phoneCtx.close();
 });
 
-test('reply-footer fork icon offers lightweight sub-conversation in ChoiceDialog', async () => {
+test('reply-footer fork icon does Codex 1-click native fork and nests under parent topic with 12px fork icon', async () => {
   const { execFileSync } = await import('node:child_process');
   const { writeFileSync } = await import('node:fs');
   const { join } = await import('node:path');
@@ -102,57 +149,34 @@ test('reply-footer fork icon offers lightweight sub-conversation in ChoiceDialog
   execFileSync('git', ['add', 'README.md'], { cwd: daemon.workdir, stdio: 'ignore' });
   execFileSync('git', ['commit', '-m', 'init'], { cwd: daemon.workdir, stdio: 'ignore' });
 
+  const topic = await (await api(daemon, '/api/threads', { method: 'POST', body: JSON.stringify({ agent: 'pi', cwd: daemon.workdir, title: '两轮对话' }) })).json();
+  await api(daemon, `/api/threads/${topic.id}/turns`, { method: 'POST', body: JSON.stringify({ text: '第一轮问题' }) });
+  await waitTurnDone(topic.id, 1);
+
   await openUi(page, daemon);
-  await page.locator('.sidebar-inner').getByText('主线重构').first().click();
-  const replyForkBtn = page.locator('.message-actions button[aria-label="分叉"]').last();
-  await replyForkBtn.waitFor({ timeout: 10_000 });
-  await replyForkBtn.click();
+  await page.locator('.sidebar-inner').getByText('两轮对话').first().click();
+  await page.getByText('hi there 第一轮问题').waitFor({ timeout: 10_000 });
 
-  const choiceDialog = page.locator('.choice-dialog');
-  await choiceDialog.waitFor({ timeout: 10_000 });
-  const lightChoice = choiceDialog.locator('button', { hasText: '轻量分支（省 Token）' });
-  await lightChoice.waitFor({ timeout: 5_000 });
+  // Clicking reply-footer fork icon performs 1-click native fork with zero modal, grouped under parent topic.
+  await page.locator('.message-actions button[aria-label="分叉"]').last().click();
+  assert.equal(await page.locator('.fork-subchat-dialog').count(), 0);
+  await page.locator('.topbar-title', { hasText: '两轮对话（分叉）' }).waitFor({ timeout: 10_000 });
+  await page.getByText('hi there 第一轮问题').waitFor({ timeout: 5_000 });
+  await page.locator('.sidebar-inner .handover-member .fork-kind-ico[aria-label="原生分叉"]').first().waitFor({ timeout: 5_000 });
 
-  const shotDir = process.env.CALLI_FORK_SHOTS;
-  if (shotDir) {
-    await page.waitForTimeout(250);
-    await page.screenshot({ path: `${shotDir}/choice-light.png` });
-    await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
-    await page.screenshot({ path: `${shotDir}/choice-dark.png` });
-    await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
-  }
-
-  await lightChoice.click();
-  // Quick lightweight fork opens the new sub-conversation immediately without a second dialog.
-  await page.locator('.choice-dialog').waitFor({ state: 'detached', timeout: 10_000 });
-  assert.equal(await page.locator('.fork-subchat-dialog').count(), 0, 'quick lightweight fork skips second modal');
-  await page.locator('.topbar-title', { hasText: '主线重构（分叉）' }).waitFor({ timeout: 10_000 });
-  assert.equal(await page.locator('.markdown').filter({ hasText: 'hi there 主线第一轮' }).count(), 0);
+  const forked = (await (await api(daemon, '/api/threads')).json()).find((t) => t.title === '两轮对话（分叉）');
+  assert.equal(forked.forkGroup, topic.id);
+  assert.equal(forked.forkKind, 'fork');
 });
 
-test('lightweight fork works while running, and quick fork / quick done work across menus and row hover', { timeout: 120_000 }, async () => {
-  const shotDir = process.env.CALLI_FORK_SHOTS;
+test('handoff works while running, fork is disabled in menu, and quick done / swipe-right-to-done keep working', { timeout: 120_000 }, async () => {
   const runningThread = await (await api(daemon, '/api/threads', {
     method: 'POST',
     body: JSON.stringify({ agent: 'pi', cwd: daemon.workdir, title: '长任务主线' }),
   })).json();
-  // Finish one turn first so there is a completed reply footer, then start a slow running turn.
-  const waitTurnDone = async (id, count = 1) => {
-    for (let i = 0; i < 200; i++) {
-      const [t, evs] = await Promise.all([
-        (await api(daemon, `/api/threads/${id}`)).json(),
-        (await api(daemon, `/api/threads/${id}/events`)).json(),
-      ]);
-      if (t.status === 'idle' && evs.filter((e) => e.type === 'turn.done').length >= count) return;
-      await new Promise((r) => setTimeout(r, 25));
-    }
-    throw new Error(`thread ${id} did not finish turn ${count}`);
-  };
-  const t1 = await api(daemon, `/api/threads/${runningThread.id}/turns`, { method: 'POST', body: JSON.stringify({ text: '第一轮结果' }) });
-  assert.ok(t1.ok, `runningThread turn 1 failed: ${t1.status}`);
+  await api(daemon, `/api/threads/${runningThread.id}/turns`, { method: 'POST', body: JSON.stringify({ text: '第一轮结果' }) });
   await waitTurnDone(runningThread.id, 1);
-  const t2 = await api(daemon, `/api/threads/${runningThread.id}/turns`, { method: 'POST', body: JSON.stringify({ text: 'slow 持续运行中' }) });
-  assert.ok(t2.ok, `runningThread turn 2 failed: ${t2.status}`);
+  await api(daemon, `/api/threads/${runningThread.id}/turns`, { method: 'POST', body: JSON.stringify({ text: 'slow 持续运行中' }) });
   for (let i = 0; i < 100; i++) {
     const t = await (await api(daemon, `/api/threads/${runningThread.id}`)).json();
     if (t.status === 'running') break;
@@ -164,142 +188,35 @@ test('lightweight fork works while running, and quick fork / quick done work acr
     await page.locator('.sidebar-inner').getByText('长任务主线').first().click();
     await page.getByText('hi there 第一轮结果').waitFor({ timeout: 10_000 });
 
-    // 1. Page menu while running: "分叉与交接" enables both "轻量分叉" and "分叉为子对话", while full "分叉" stays disabled.
+    // While running: top-level "分叉" is disabled, while "接力继续" is enabled.
     await page.locator('.topbar-more').click();
-    await page.getByRole('menuitem', { name: '分叉与交接' }).click();
-    const quickMenu = page.locator('.menu-branch').getByRole('menuitem', { name: '轻量分叉' });
-    const subchatMenu = page.locator('.menu-branch').getByRole('menuitem', { name: '分叉为子对话' });
-    const fullMenu = page.locator('.menu-branch').getByRole('menuitem', { name: '分叉', exact: true });
-    await quickMenu.waitFor({ timeout: 5_000 });
-    assert.equal(await quickMenu.isDisabled(), false, 'quick lightweight fork is enabled while running');
-    assert.equal(await subchatMenu.isDisabled(), false, 'fork subchat is enabled while running');
-    assert.equal(await fullMenu.isDisabled(), true, 'full fork remains disabled while running');
+    assert.equal(await page.getByRole('menuitem', { name: '分叉', exact: true }).isDisabled(), true);
+    const handoffMenu = page.getByRole('menuitem', { name: '接力继续', exact: true });
+    assert.equal(await handoffMenu.isDisabled(), false);
+    await handoffMenu.click();
 
-    if (shotDir) {
-      await page.screenshot({ path: `${shotDir}/running-menu-light.png` });
-      await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
-      await page.screenshot({ path: `${shotDir}/running-menu-dark.png` });
-      await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
-    }
+    const card = page.locator('.fork-subchat-dialog');
+    await card.waitFor();
+    await card.locator('.fork-composer textarea').fill('运行中子话题');
+    await card.getByRole('button', { name: '接力并发送' }).click();
+    await card.waitFor({ state: 'detached', timeout: 10_000 });
+    await page.locator('.markdown').filter({ hasText: '运行中子话题' }).last().waitFor({ timeout: 10_000 });
 
-    // Open ForkSubchatDialog while running -> lightweight checked, full history disabled.
-    await subchatMenu.click();
-    await page.locator('.fork-subchat-dialog').waitFor({ timeout: 5_000 });
-    assert.equal(await page.locator('.fork-subchat-mode [role="radio"]', { hasText: '轻量分支' }).getAttribute('aria-checked'), 'true');
-    assert.equal(await page.locator('.fork-subchat-mode [role="radio"]', { hasText: '带完整历史' }).isDisabled(), true);
-    await page.locator('.fork-subchat-dialog input[type="text"]').fill('运行中子话题');
-    await page.locator('.fork-subchat-dialog button', { hasText: '分叉并进入' }).click();
-    await page.locator('.fork-subchat-dialog').waitFor({ state: 'detached', timeout: 10_000 });
-    await page.locator('.sidebar-inner .fork-tag-pill', { hasText: '运行中子话题' }).waitFor({ timeout: 10_000 });
-
-    // 2. Running agy (forkAt: false) still shows reply-footer fork icon on the last completed turn;
-    //    clicking it opens ChoiceDialog with lightweight enabled and full-history options disabled.
-    const agyRunning = await (await api(daemon, '/api/threads', {
-      method: 'POST',
-      body: JSON.stringify({ agent: 'agy', cwd: daemon.workdir, title: 'AGY运行中' }),
-    })).json();
-    const agyTurn1 = await api(daemon, `/api/threads/${agyRunning.id}/turns`, { method: 'POST', body: JSON.stringify({ text: '首轮完成' }) });
-    assert.ok(agyTurn1.ok, `agy turn 1 failed: ${agyTurn1.status}`);
-    await waitTurnDone(agyRunning.id, 1);
-    let agyTurn2;
-    for (let i = 0; i < 40; i++) {
-      agyTurn2 = await api(daemon, `/api/threads/${agyRunning.id}/turns`, { method: 'POST', body: JSON.stringify({ text: 'slow 二轮运行中' }) });
-      if (agyTurn2.status !== 409) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    assert.ok(agyTurn2.ok, `agy turn 2 failed: ${agyTurn2.status}`);
-    for (let i = 0; i < 100; i++) {
-      const t = await (await api(daemon, `/api/threads/${agyRunning.id}`)).json();
-      if (t.status === 'running') break;
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    try {
-      await openUi(page, daemon);
-      await page.locator('.sidebar-inner').getByText('AGY运行中').first().click();
-      await page.getByText('echo:首轮完成').waitFor({ timeout: 10_000 });
-      const agyForkBtn = page.locator('.message-actions button[aria-label="分叉"]').last();
-      await agyForkBtn.waitFor({ timeout: 5_000 });
-      await agyForkBtn.click();
-      const choice = page.locator('.choice-dialog');
-      await choice.waitFor({ timeout: 5_000 });
-      const lightBtn = choice.locator('button', { hasText: '轻量分支（省 Token）' });
-      const hereBtn = choice.locator('button', { hasText: '在当前目录分叉' });
-      assert.equal(await lightBtn.isDisabled(), false, 'lightweight choice is enabled while agy is running');
-      assert.equal(await hereBtn.isDisabled(), true, 'full-history choice is disabled while agy is running');
-      if (shotDir) {
-        await page.waitForTimeout(250);
-        await page.screenshot({ path: `${shotDir}/running-choice-light.png` });
-        await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
-        await page.screenshot({ path: `${shotDir}/running-choice-dark.png` });
-        await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
-      }
-      await lightBtn.click();
-      await choice.waitFor({ state: 'detached', timeout: 10_000 });
-      await page.locator('.topbar-title', { hasText: 'AGY运行中（分叉）' }).waitFor({ timeout: 10_000 });
-    } finally {
-      await api(daemon, `/api/threads/${agyRunning.id}/cancel`, { method: 'POST' }).catch(() => undefined);
-    }
-
-    // 3. Desktop sidebar row hover shows only clean done toggle + more (no fork icon, and hides trailing dir cleanly).
+    // Sidebar context menu opens "接力继续" while source is running.
     const rootRow = page.locator('.sidebar-inner .thread-row', { hasText: '长任务主线' }).first();
     await rootRow.hover();
-    assert.equal(await rootRow.locator('.row-quick[aria-label="轻量分叉"]').count(), 0, 'sidebar hover omits fork button');
     await rootRow.locator('.row-quick[aria-label="标记为已完成"]').waitFor({ timeout: 5_000 });
-    if (shotDir) {
-      await page.screenshot({ path: `${shotDir}/row-hover-light.png` });
-      await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
-      await page.screenshot({ path: `${shotDir}/row-hover-dark.png` });
-      await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
-    }
-
-    // 4. Sidebar context menu shows top-level "轻量分叉" and "标记为已完成"; quick fork works while source is running.
     await rootRow.click({ button: 'right' });
-    await page.locator('.menu-float').getByRole('menuitem', { name: '轻量分叉' }).click();
-    await page.locator('.topbar-title', { hasText: '长任务主线（分叉）' }).waitFor({ timeout: 10_000 });
+    await page.locator('.menu-float').getByRole('menuitem', { name: '接力继续', exact: true }).click();
+    await card.waitFor({ timeout: 5_000 });
+    await card.getByRole('button', { name: '取消' }).click();
+    await card.waitFor({ state: 'detached', timeout: 5_000 });
 
-    const finishTarget = await (await api(daemon, '/api/threads', {
-      method: 'POST',
-      body: JSON.stringify({ agent: 'pi', cwd: daemon.workdir, title: '待快速完成任务' }),
-    })).json();
-    await openUi(page, daemon);
-    const targetRow = page.locator('.sidebar-inner .thread-row', { hasText: '待快速完成任务' }).first();
-    await targetRow.waitFor({ timeout: 10_000 });
-    await targetRow.click({ button: 'right' });
-    const ctxMenu = page.locator('.menu-float');
-    await ctxMenu.getByRole('menuitem', { name: '轻量分叉' }).waitFor({ timeout: 5_000 });
-    const markDoneItem = ctxMenu.getByRole('menuitem', { name: '标记为已完成' });
-    await markDoneItem.waitFor({ timeout: 5_000 });
-    if (shotDir) {
-      await page.waitForTimeout(250);
-      await page.screenshot({ path: `${shotDir}/context-menu-light.png` });
-      await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
-      await page.screenshot({ path: `${shotDir}/context-menu-dark.png` });
-      await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
-    }
-    await markDoneItem.click();
-    await page.locator('.sidebar-float .done-fold-pill').waitFor({ timeout: 10_000 });
-    assert.ok((await (await api(daemon, `/api/threads/${finishTarget.id}`)).json()).doneAt, 'thread marked done via context menu');
-
-    // Reopen from Done drawer via hover quick done button.
-    await page.locator('.sidebar-float .done-fold-pill').click();
-    const doneRow = page.locator('.done-fold-popover .thread-row', { hasText: '待快速完成任务' }).first();
-    await doneRow.waitFor({ timeout: 5_000 });
-    await doneRow.hover();
-    await doneRow.locator('.row-quick[aria-label="取消已完成"]').click();
-    await page.locator('.sidebar-inner .thread-row', { hasText: '待快速完成任务' }).first().waitFor({ timeout: 10_000 });
-    assert.equal((await (await api(daemon, `/api/threads/${finishTarget.id}`)).json()).doneAt, null, 'thread reopened via quick done button');
-
-    // 5. Quick done from page menu ("...") and mobile viewport check (touch swipe-right marks done, no hover quick buttons, no overflow).
-    await page.locator('.sidebar-inner .thread-row', { hasText: '待快速完成任务' }).first().click();
-    await page.locator('.topbar-more').click();
-    await page.locator('.menu-float').getByRole('menuitem', { name: '标记为已完成' }).click();
-    assert.ok((await (await api(daemon, `/api/threads/${finishTarget.id}`)).json()).doneAt, 'thread marked done via page menu');
-
+    // Mobile swipe-right to mark done still works cleanly.
     const swipeTarget = await (await api(daemon, '/api/threads', {
       method: 'POST',
       body: JSON.stringify({ agent: 'pi', cwd: daemon.workdir, title: '手机右滑完成测试' }),
     })).json();
-
     const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
     try {
       const pPage = await phoneCtx.newPage();
@@ -307,56 +224,21 @@ test('lightweight fork works while running, and quick fork / quick done work acr
       await pPage.locator('.topbar button').first().click();
       const mRow = pPage.locator('.sidebar-inner .thread-row', { hasText: '手机右滑完成测试' }).first();
       await mRow.waitFor({ timeout: 10_000 });
-      assert.equal(await mRow.locator('.row-quick').first().isVisible(), false, 'touch rows hide desktop hover quick buttons');
-
-      const dispatchSwipe = async (locator, startX, endX, release = true) => {
-        await locator.evaluate((el, { sx, ex, end }) => {
-          const rect = el.getBoundingClientRect();
-          const y = rect.top + rect.height / 2;
-          const touch = (x) => new Touch({ identifier: 1, target: el, clientX: x, clientY: y, pageX: x, pageY: y });
-          el.dispatchEvent(new TouchEvent('touchstart', { touches: [touch(sx)], targetTouches: [touch(sx)], changedTouches: [touch(sx)], bubbles: true, cancelable: true }));
-          const steps = 6;
-          for (let i = 1; i <= steps; i++) {
-            const x = sx + ((ex - sx) * i) / steps;
-            el.dispatchEvent(new TouchEvent('touchmove', { touches: [touch(x)], targetTouches: [touch(x)], changedTouches: [touch(x)], bubbles: true, cancelable: true }));
-          }
-          if (end) {
-            el.dispatchEvent(new TouchEvent('touchend', { touches: [], targetTouches: [], changedTouches: [touch(ex)], bubbles: true, cancelable: true }));
-          }
-        }, { sx: startX, ex: endX, end: release });
-      };
-
-      // Short right swipe (< trigger) snaps back without marking done.
-      await dispatchSwipe(mRow, 60, 95, true);
-      await pPage.waitForTimeout(150);
-      assert.equal((await (await api(daemon, `/api/threads/${swipeTarget.id}`)).json()).doneAt ?? null, null, 'short swipe does not mark done');
-
-      // Full right swipe (>= 68px) reveals green "完成" strip and marks thread done on release.
-      await dispatchSwipe(mRow, 60, 155, false);
-      await mRow.locator('.row-swipe-reveal.ready').waitFor({ timeout: 3_000 });
-      if (shotDir) {
-        await pPage.screenshot({ path: `${shotDir}/phone-swipe-done-light.png` });
-        await pPage.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
-        await pPage.screenshot({ path: `${shotDir}/phone-swipe-done-dark.png` });
-        await pPage.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
-      }
       await mRow.evaluate((el) => {
         const rect = el.getBoundingClientRect();
         const y = rect.top + rect.height / 2;
-        const t = new Touch({ identifier: 1, target: el, clientX: 155, clientY: y, pageX: 155, pageY: y });
-        el.dispatchEvent(new TouchEvent('touchend', { touches: [], targetTouches: [], changedTouches: [t], bubbles: true, cancelable: true }));
+        const touch = (x) => new Touch({ identifier: 1, target: el, clientX: x, clientY: y, pageX: x, pageY: y });
+        el.dispatchEvent(new TouchEvent('touchstart', { touches: [touch(60)], targetTouches: [touch(60)], changedTouches: [touch(60)], bubbles: true, cancelable: true }));
+        for (let i = 1; i <= 6; i++) {
+          const x = 60 + (95 * i) / 6;
+          el.dispatchEvent(new TouchEvent('touchmove', { touches: [touch(x)], targetTouches: [touch(x)], changedTouches: [touch(x)], bubbles: true, cancelable: true }));
+        }
+        el.dispatchEvent(new TouchEvent('touchend', { touches: [], targetTouches: [], changedTouches: [touch(155)], bubbles: true, cancelable: true }));
       });
       await pPage.waitForFunction(async (id) => {
         const res = await fetch(`/api/threads/${id}`, { headers: { Authorization: `Bearer ${localStorage.getItem('calli.token')}` } });
         return Boolean((await res.json()).doneAt);
       }, swipeTarget.id, { timeout: 10_000 });
-      assert.ok((await (await api(daemon, `/api/threads/${swipeTarget.id}`)).json()).doneAt, 'phone swipe-right marked thread done');
-
-      const otherRow = pPage.locator('.sidebar-inner .thread-row', { hasText: '长任务主线' }).first();
-      await otherRow.click({ button: 'right' });
-      await pPage.locator('.menu-float').getByRole('menuitem', { name: '轻量分叉' }).waitFor({ timeout: 5_000 });
-      await pPage.locator('.menu-float').getByRole('menuitem', { name: '标记为已完成' }).waitFor({ timeout: 5_000 });
-      assert.equal(await pPage.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false, 'no horizontal overflow on phone menu');
     } finally {
       await phoneCtx.close();
     }

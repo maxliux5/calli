@@ -28,7 +28,6 @@ import {
   type GeneralSettings,
   type GoalView,
   type HandoverTarget,
-  type ReturnTarget,
   type ModelOption,
   type Section,
   type SlashCommand,
@@ -1175,9 +1174,9 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   }, [threads]);
   const forkMembers = useMemo(() => forkGroupsByRoot(threads), [threads]);
 
-  // A takeover under way, from the button on a turn that failed because the plan ran out.
+  // A lightweight fork continuation under way, from the button on a turn that failed because the plan ran out.
   const [takingOver, setTakingOver] = useState(false);
-  const [takeoverTarget, setTakeoverTarget] = useState<{ threadId: string; target: HandoverTarget | null; back: ReturnTarget | null } | null>(null);
+  const [takeoverTarget, setTakeoverTarget] = useState<{ threadId: string; target: HandoverTarget | null } | null>(null);
   // Arming or cancelling a "wait for the quota and continue" watch on that same turn.
   const [resumeBusy, setResumeBusy] = useState(false);
   const [autoRetryBusy, setAutoRetryBusy] = useState(false);
@@ -1488,7 +1487,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
   useEffect(() => {
     const el = scrollerRef.current;
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
-  }, [displayEvents, selected?.autoHandover?.state, selected?.autoHandover?.step]);
+  }, [displayEvents, selected?.autoHandover?.state]);
 
   // Screenshots and slow-rendering blocks grow the thread after the scroll above, which used to
   // leave a reopened thread parked at the top. Watching the thread's height keeps it pinned. The
@@ -2538,18 +2537,13 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           { id: 'new-beside', label: t('actions.newBeside'), hint: t('app.cmd.newBeside'), keywords: ['new', 'here', 'same', 'worktree', 'clear', '新线程', '同目录'] },
           ...(!selected.archivedAt
             ? [
-                { id: 'fork-lightweight', label: t('actions.forkLightweight'), hint: t('app.cmd.forkLightweight'), keywords: ['fork', 'light', 'branch', 'subchat', '轻量', '分叉'] },
+                { id: 'fork', label: t('sidebar.fork'), hint: t('app.cmd.fork'), keywords: ['fork', 'branch', 'clone', 'worktree', '分叉'] },
+                { id: 'handoff', label: t('actions.handoffContinue'), hint: t('app.cmd.handoff'), keywords: ['handoff', 'handover', 'continue', 'relay', 'switch', '接力', '续跑', '交接'] },
                 { id: 'done', label: selected.doneAt ? t('actions.unmarkDone') : t('actions.markDone'), hint: selected.doneAt ? t('app.cmd.undone') : t('app.cmd.done'), keywords: ['done', 'complete', 'finish', 'reopen', '完成'] },
               ]
             : []),
           { id: 'rename', label: t('actions.rename'), hint: t('app.cmd.rename'), keywords: ['rename', 'name'] },
           { id: 'pin', label: selected.pinned ? t('actions.unpin') : t('actions.pin'), hint: t('app.cmd.pin'), keywords: ['pin'] },
-          ...(activeCaps?.fork && !forkBlocked(selected)
-            ? [{ id: 'fork', label: t('sidebar.fork'), hint: t('app.cmd.fork'), keywords: ['fork', 'branch', 'clone'] }]
-            : []),
-          // The phone has no row menu, so the handover controls (including calling off an automatic
-          // takeover from the chain) reach it here; the desktop keeps them in the row menu too.
-          { id: 'handover', label: t('handover.title'), hint: t('app.cmd.handover'), keywords: ['handover', 'handoff', 'takeover', '交接'] },
           ...(threadActions.inChain(selected)
             ? [{ id: 'chain', label: t('handover.trail.title'), hint: t('app.cmd.chain'), keywords: ['chain', 'trail', 'history', '交接链', '接力'] }]
             : []),
@@ -2579,9 +2573,8 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     if (id === 'permission') return setPermissionSignal((n) => n + 1);
     if (id === 'import') return openSettings('import');
     if (id === 'appearance') return openSettings('appearance');
-    if (selected && (id === 'rename' || id === 'pin' || id === 'done' || id === 'fork' || id === 'fork-lightweight' || id === 'archive')) threadActions.run(id, selected);
+    if (selected && (id === 'rename' || id === 'pin' || id === 'done' || id === 'fork' || id === 'handoff' || id === 'archive')) threadActions.run(id, selected);
     if (selected && id === 'new-beside') return newThread({ beside: selected });
-    if (selected && id === 'handover') return threadActions.handover(selected);
     if (selected && id === 'chain') return threadActions.chain(selected);
   };
 
@@ -2741,7 +2734,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
       if (!alive) return;
       void api.autoHandover(selected.id).then(value => {
         if (!alive) return;
-        if (value.targets[0] || value.returns?.[0]) setTakeoverTarget({ threadId: selected.id, target: value.targets[0] ?? null, back: value.returns?.[0] ?? null });
+        if (value.targets[0]) setTakeoverTarget({ threadId: selected.id, target: value.targets[0] });
         else timer = setTimeout(probe, TAKEOVER_RETRY_MS);
       }).catch(() => { if (alive) timer = setTimeout(probe, TAKEOVER_RETRY_MS); });
     };
@@ -2749,7 +2742,6 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
     return () => { alive = false; if (timer) clearTimeout(timer); };
   }, [api, api.demo, outOfPlan, selected?.id]);
   const takeoverChoice = selected && takeoverTarget?.threadId === selected.id ? takeoverTarget.target : null;
-  const takeoverBack = selected && takeoverTarget?.threadId === selected.id ? takeoverTarget.back : null;
   const takeoverLabel = takeoverChoice ? [agents.find(a => a.id === takeoverChoice.agent)?.label ?? takeoverChoice.agent, takeoverChoice.model].filter(Boolean).join(' · ') : undefined;
 
   const teamWaiting = Boolean(coordination?.members.some((m) => m.thread?.waiting));
@@ -3410,7 +3402,6 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
                 if (composerScopeRef.current === scope) setMessageReference({ scope, value, nonce: Date.now() });
               } : undefined}
               onHandToAssistant={!demo ? async (text, turnId, threadId) => setAssistantMessage(await messageSnapshot(text, turnId, threadId)) : undefined}
-              onAutoHandover={!demo && !selected.archivedAt ? () => threadActions.autoHandover(selected) : undefined}
               historyThreadId={selected.id}
               historyTitle={selected.title}
               items={threadItems}
@@ -3441,13 +3432,14 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
               // The button appears the moment the log says a turn is over; the thread list hears of it
               // a beat later, so the log's word on whether a turn is running is the one to go by.
               onFork={
-                selected.agentSessionId
+                !selected.archivedAt
                   ? (turnId) => threadActions.forkAt(
                       { ...selected, status: timeline.running || (!historyReady && selected.status === 'running') ? 'running' : 'idle' },
                       turnId,
                     )
                   : undefined
               }
+              onHandoff={!selected.archivedAt ? () => threadActions.handoff(selected) : undefined}
               forkAnyTurn={Boolean(activeCaps?.forkAt)}
               revision={historyRevision}
               onEdit={
@@ -3463,13 +3455,9 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
                 busy: takingOver,
                 go: takeoverChoice ? () => {
                   setTakingOver(true);
-                  void threadActions.takeOver(selected, takeoverChoice).catch(() => undefined).finally(() => setTakingOver(false));
+                  void threadActions.forkContinue(selected, takeoverChoice).catch(() => undefined).finally(() => setTakingOver(false));
                 } : undefined,
-                goBack: takeoverBack ? { title: takeoverBack.title, go: () => {
-                  setTakingOver(true);
-                  void threadActions.takeOver(selected, { agent: takeoverBack.agent }, undefined, takeoverBack.threadId).catch(() => undefined).finally(() => setTakingOver(false));
-                } } : undefined,
-                choose: () => threadActions.handover(selected),
+                choose: () => threadActions.forkSubchat(selected),
               } : null}
               resume={!api.demo && selected.autoHandover?.resume !== undefined ? {
                 armed: Boolean(selected.autoHandover.resume),
@@ -3515,7 +3503,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
               <h2>{draftScratch ? t('app.emptyScratch') : t('app.emptyIn', folderName(beside?.worktree ? beside.project : draftCwd))}</h2>
             </div>
           )}
-          {selected && <AutoHandoverNotice api={api} thread={selected} agents={agents} />}
+          {selected && <AutoHandoverNotice api={api} thread={selected} agents={agents} onOpenThread={openThreadById} />}
         </div>
         )}
 
@@ -3547,7 +3535,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           note={noteSignal?.draftKey === composerDraftKey ? noteSignal.note : null} onNotesChange={onNotesChange}
         /> : sessionInUse && selected ? <SessionInUseNotice key={selected.id}
           onRetry={async () => { await api.retryThread(selected.id); await refreshThreads(); }}
-          onFork={activeCaps?.fork ? () => threadActions.run('fork', selected) : undefined}
+          onFork={!selected.archivedAt ? () => threadActions.forkSubchat(selected) : undefined}
           onError={handleError}
         /> : <Composer
           draftKey={composerDraftKey}
@@ -3579,7 +3567,7 @@ function Hub({ token, onToken, connect, hostId = null, onHost, start, showcase }
           onStop={stop}
           header={header}
           writingMode={draftTeam ? undefined : { active: !!writing, disabled: writingBusy, onChange: active => void changeWriting(active ? 'draft' : null) }}
-          takeover={outOfPlan && !voice.state.active ? { from: agentLabel(selected!.agent), current: selected!.agent, go: (agent, note, references) => threadActions.takeOver(selected!, agent, note, undefined, references) } : undefined}
+          takeover={outOfPlan && !voice.state.active ? { from: agentLabel(selected!.agent), current: selected!.agent, go: (agent, note) => threadActions.forkContinue(selected!, { agent }, note || undefined) } : undefined}
           banner={writing && !draftTeam && <WritingBar writing={writing} busy={writingBusy} onStage={stage => void changeWriting(stage)} onEnd={() => void changeWriting(null)}
             onOpen={file => void openFileLink(file).catch(handleError)}
             habits={habitsPath ? { path: habitsPath, ready: habitsReady } : null}

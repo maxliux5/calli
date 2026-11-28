@@ -245,14 +245,22 @@ export function SideChat({
     const choiceChanged = choicePatch.model !== undefined || choicePatch.effort !== undefined;
     try {
       if (forkSourceId) {
-        const forked = await api.forkThread(forkSourceId);
+        const forked = await api.forkThread(forkSourceId, { grouped: true, forkKind: 'ask' });
         created = await api.updateThread(forked.id, {
           title,
           ...(choiceChanged ? { ...choicePatch, rememberModelChoice: true } : {}),
         });
         baseSeq.current = (await api.historyPosition(created.id)).snapshotSeq;
       } else {
-        created = await api.createThread({ agent, cwd, permissionMode, model: draftModel, effort: draftEffort, title });
+        created = await api.createThread({
+          agent,
+          cwd,
+          permissionMode,
+          model: draftModel,
+          effort: draftEffort,
+          title,
+          ...(sourceThreadId ? { forkGroup: sourceThreadId, forkKind: 'ask' as const } : {}),
+        });
         if (choiceChanged) created = await api.updateThread(created.id, { ...choicePatch, rememberModelChoice: true });
         const { notes, body } = splitNotes(text);
         const referenced = splitReferences(body);

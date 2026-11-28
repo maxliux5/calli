@@ -46,7 +46,9 @@ test('the fork button copies the thread and opens the copy', async () => {
   // The button sits in the row under the answer, with copy and the time the turn ended.
   await forkButton().waitFor();
   assert.match(await page.locator('.message-actions .message-time').innerText(), /^\d\d:\d\d$/);
+  // Codex-style 1-click native fork: clicking the reply-footer fork icon copies immediately without a modal.
   await forkButton().click();
+  assert.equal(await page.locator('.fork-subchat-dialog').count(), 0);
 
   // The copy opens: the title carries the fork mark, and the conversation came with it.
   await page.locator('.topbar-title', { hasText: '（分叉）' }).waitFor({ timeout: 10_000 });
@@ -57,7 +59,7 @@ test('the fork button copies the thread and opens the copy', async () => {
   await page.locator('.composer textarea').click();
   await page.keyboard.type('second turn');
   await page.keyboard.press('Enter');
-  await page.getByText('hi there second turn').waitFor({ timeout: 10_000 });
+  await page.locator('.row.assistant').nth(1).getByText('second turn').waitFor({ timeout: 10_000 });
   assert.equal((await page.locator('.topbar-title').innerText()).includes('（分叉）'), true);
 
   // Every finished answer offers a fork: the copy ends with that turn.
@@ -67,27 +69,31 @@ test('the fork button copies the thread and opens the copy', async () => {
 });
 
 test('forking under an earlier answer copies the thread up to that turn only', async () => {
-  // The thread on screen has two turns. The agent's own record of its session says the same.
+  // The thread on screen has two turns. The agent's own record of its session holds the same prompts.
   const threads = await (await api(daemon, '/api/threads')).json();
   const source = threads.find((t) => t.title.includes('（分叉）'));
+  const sourceEvents = await (await api(daemon, `/api/threads/${source.id}/events`)).json();
+  const starts = sourceEvents.filter((e) => e.type === 'turn.started');
   writeFileSync(
     messagesFile,
     JSON.stringify({
       [source.agentSessionId]: [
-        { role: 'user', content: 'hello fork' },
+        { role: 'user', content: String(starts[0].data.text) },
         { role: 'assistant', content: [{ type: 'text', text: 'hi there hello fork' }] },
-        { role: 'user', content: 'second turn' },
+        { role: 'user', content: String(starts[1].data.text) },
         { role: 'assistant', content: [{ type: 'text', text: 'hi there second turn' }] },
       ],
     }),
   );
 
+  // Clicking fork under an earlier answer copies up to that turn immediately with zero modal.
   await forkButton().first().click();
+  assert.equal(await page.locator('.fork-subchat-dialog').count(), 0);
   await page.locator('.topbar-title', { hasText: '（分叉）（分叉）' }).waitFor({ timeout: 10_000 });
   await page.getByText('hi there hello fork').waitFor({ timeout: 5_000 });
   // The second turn stayed behind.
   assert.equal(await page.locator('.row.user').count(), 1);
-  assert.equal(await page.getByText('hi there second turn').count(), 0);
+  assert.equal(await page.getByText('second turn').count(), 0);
 
   // On the agent's side the copy was forked from the second turn's message, not cloned whole.
   const copy = (await (await api(daemon, '/api/threads')).json()).find((t) => t.title.includes('（分叉）（分叉）'));
@@ -98,6 +104,6 @@ test('forking under an earlier answer copies the thread up to that turn only', a
   await page.locator('.composer textarea').click();
   await page.keyboard.type('another way');
   await page.keyboard.press('Enter');
-  await page.getByText('hi there another way').waitFor({ timeout: 10_000 });
+  await page.locator('.row.assistant').nth(1).getByText('another way').waitFor({ timeout: 10_000 });
   assert.equal(await page.locator('.row.user').count(), 2);
 });

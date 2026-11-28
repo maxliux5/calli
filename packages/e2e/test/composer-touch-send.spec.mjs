@@ -262,17 +262,17 @@ test('tapping send on a phone while a turn is running queues the message without
     const sendTyped = await send.boundingBox();
     const stopTyped = await stop.boundingBox();
     assert.ok(sendTyped && stopTyped && stopEmpty, 'both composer buttons are measurable');
-    assert.ok(sendTyped.x + sendTyped.width <= stopTyped.x + 1, 'queue send appears to the left of stop');
-    assert.ok(Math.abs(stopTyped.x - stopEmpty.x) <= 1, 'typing a draft keeps stop anchored in its corner');
+    assert.ok(stopTyped.x + stopTyped.width <= sendTyped.x + 1, 'stop sits to the left of queue send');
+    assert.ok(Math.abs(sendTyped.x - stopEmpty.x) <= 1, 'typing a draft places queue send in the corner');
 
     await send.tap();
     await page.locator('.queue-item', { hasText: '继续追问' }).waitFor();
     await page.waitForTimeout(250);
-    assert.equal(cancels, 0, 'the compatibility click from tapping send must not hit stop');
-    assert.equal(await page.locator('.model-control-panel, .pop-panel').count(), 0, 'adjacent bar controls sliding into send slot must not receive the compatibility click');
+    assert.equal(cancels, 0, 'the compatibility click from tapping send must not hit stop even as it slides back');
+    assert.equal(await page.locator('.model-control-panel, .pop-panel').count(), 0, 'adjacent bar controls sliding left must not receive the compatibility click');
     assert.deepEqual(queued.map(r => r.text), ['继续追问']);
     const stopQueued = await stop.boundingBox();
-    assert.ok(stopQueued && Math.abs(stopQueued.x - stopEmpty.x) <= 1, 'stop stays anchored after send unmounts');
+    assert.ok(stopQueued && Math.abs(stopQueued.x - stopEmpty.x) <= 1, 'stop returns to the corner after send unmounts');
 
     // A separate deliberate tap on stop right away (still within the 500ms suppression window) works.
     await stop.tap();

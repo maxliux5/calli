@@ -74,7 +74,7 @@ test('handover groups and bidirectional navigation on desktop and phone in both 
   }
 });
 
-test('a turn stopped by a plan that ran out offers another account of the same type, which takes over in one click', async () => {
+test('a turn stopped by a plan that ran out offers another account of the same type, which forks and continues in one click', async () => {
   // One product with two accounts: the one-click suggestion stays inside the same adapter.
   const hub = await startDaemon({ CALLI_AGENTS_JSON: JSON.stringify({ agents: [
     { id: 'claude', adapter: 'claude', command: ['fake-claude'] },
@@ -87,7 +87,7 @@ test('a turn stopped by a plan that ran out offers another account of the same t
     await api(hub, `/api/threads/${source.id}/turns`, { method: 'POST', body: JSON.stringify({ text: 'out of plan' }) });
     browser = await launchBrowser();
     mkdirSync('/tmp/calli-handover-shots', { recursive: true });
-    // The takeover goes last: after it, the sidebar's top row for this task is the successor.
+    // The fork goes last: after it, the sidebar shows the grouped continuation under this task.
     for (const phone of [true, false]) for (const theme of ['light', 'dark']) {
       const context = await browser.newContext({ viewport: phone ? { width: 390, height: 844 } : { width: 1440, height: 960 }, isMobile: phone, hasTouch: phone, colorScheme: theme });
       const page = await context.newPage();
@@ -100,18 +100,19 @@ test('a turn stopped by a plan that ran out offers another account of the same t
       const go = page.locator('.exhausted-note .exhausted-hand');
       await go.waitFor();
       assert.match(await page.locator('.exhausted-note').innerText(), /额度用尽/);
-      assert.match(await go.innerText(), /交给 .+ 接手/);
+      assert.match(await go.innerText(), /用 .+ 分叉继续/);
       await page.waitForTimeout(400);
       await page.screenshot({ path: `/tmp/calli-handover-shots/${phone ? 'phone' : 'desktop'}-${theme}-exhausted.png` });
       if (phone || theme === 'light') { await context.close(); continue; }
-      const [takeover] = await Promise.all([page.waitForResponse(r => r.url().endsWith('/takeover') && r.request().method() === 'POST'), go.click()]);
-      assert.equal(takeover.request().postDataJSON().agent, 'claude2');
-      assert.equal((await takeover.json()).agent, 'claude2');
-      assert.equal((await takeover.json()).handover.mode, 'continue');
-      await page.locator('.topbar-title').filter({ hasText: '（接手）' }).waitFor();
-      // A same-type relay leaves no seam: the merged conversation reads as one.
-      await page.locator('.merged-history').waitFor();
-      assert.equal(await page.locator('.handover-boundary').count(), 0);
+      const [forkRes] = await Promise.all([page.waitForResponse(r => r.url().endsWith('/fork') && r.request().method() === 'POST'), go.click()]);
+      assert.equal(forkRes.request().postDataJSON().agent, 'claude2');
+      assert.equal(forkRes.request().postDataJSON().lightweight, true);
+      assert.equal(forkRes.request().postDataJSON().continueFromSource, true);
+      const forked = await forkRes.json();
+      assert.equal(forked.agent, 'claude2');
+      assert.equal(forked.forkedFrom, source.id);
+      assert.equal(forked.forkGroup, source.id);
+      await page.locator('.topbar-title').filter({ hasText: '（继续）' }).waitFor();
       assert.deepEqual(errors, []);
       await context.close();
     }

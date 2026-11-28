@@ -1589,8 +1589,13 @@ export function Composer({
             <div className="spacer" />
             {!collapsed && right}
             {composerActions}
-            {/* While a turn runs the send button appears beside stop once there is something to queue,
-                keeping stop anchored in its corner so sending never pulls stop under the finger. */}
+            {running && !slow && (
+              <button className="send-btn stop" onClick={onStop} aria-label={t('composer.stop')} title={t('composer.stopTurn')}>
+                <IconStop size={16} />
+              </button>
+            )}
+            {/* While a turn runs the send button appears on the right once there is something to queue;
+                the composer's click-capture guard suppresses any ghost click sliding onto stop after send unmounts. */}
             {(voiceControls ? hasContent || slow : !running || hasContent || slow) && (
               <button
                 className={`send-btn${slow ? ' sending' : ''}`}
@@ -1604,11 +1609,6 @@ export function Composer({
                 title={slow ? t('composer.sendingEllipsis') : taker ? t('composer.takeoverSend', taker.label) : queueFull ? t('composer.queueMax', MAX_QUEUED) : running ? immediate ? t('composer.goalNow') : t('composer.afterTurn') : undefined}
               >
                 {slow ? <span className="send-spinner" aria-hidden="true" /> : <IconSend size={16} />}
-              </button>
-            )}
-            {running && !slow && (
-              <button className="send-btn stop" onClick={onStop} aria-label={t('composer.stop')} title={t('composer.stopTurn')}>
-                <IconStop size={16} />
               </button>
             )}
           </div>

@@ -18,7 +18,7 @@ type Props = ViewProps & {
   api: Api; thread: Thread; /** Every thread the hub lists: the chain the reading turns through is found in it. */ chainThreads?: Thread[]; merged: boolean; ready: boolean;
   agentLabel: (id: string) => string;
   onBrowseOlder: () => void;
-  onSegmentFork: (thread: Thread, turn: string) => void;
+  onSegmentFork: (thread: Thread, turn?: string) => void;
   canFork: (thread: Thread) => { enabled: boolean; any: boolean };
   onSegmentFile: (thread: Thread, path: string) => Promise<void>;
   onSegmentPreview: (thread: Thread, path: string) => void;
@@ -374,7 +374,7 @@ export function MergedHistory({ api, thread, chainThreads, merged, ready, agentL
   } else if (usable && active) {
     body = <>
       <EarlierSegment segment={{ thread: active.thread, page: usable.page, ...(active.part ? { part: active.part } : {}), ...(active.clip !== undefined ? { clip: active.clip } : {}), followups: active.followups }} api={api} agentLabel={agentLabel} line={lineOf(active)}
-        onQuote={current.onQuote} onMessageContext={current.onMessageContext} onHandToAssistant={current.onHandToAssistant} onAutoHandover={current.onAutoHandover} fork={canFork(active.thread)} onFork={turn => onSegmentFork(active.thread, turn)}
+        onQuote={current.onQuote} onMessageContext={current.onMessageContext} onHandToAssistant={current.onHandToAssistant} fork={canFork(active.thread)} onFork={turn => onSegmentFork(active.thread, turn)}
         onOpenFile={path => onSegmentFile(active.thread, path)} onPreview={path => onSegmentPreview(active.thread, path)}
         older={{ hasOlder: usable.page.hasOlder, loadingOlder: busy[`o:${activeKey}`], onLoadOlder: () => void loadOlder(active), observeOlder: true, chain: true,
           olderError: failed[`o:${activeKey}`] ? t('handover.chain.failed') : undefined }} prefix={usable.page.hasOlder ? null : beginning} />
@@ -428,10 +428,10 @@ function ChainLine({ thread, part, agentLabel, icon, onOpen }: { thread: Thread;
   return <div className="row chain-line" data-chain-line={`${thread.id}:${part ?? 'after'}`}>{lineBody({ thread, part, agentLabel, icon, onOpen })}</div>;
 }
 
-function EarlierSegment({ segment, api, agentLabel, line, fork, onFork, onQuote, onMessageContext, onHandToAssistant, onAutoHandover, onOpenFile, onPreview, older, prefix }: {
+function EarlierSegment({ segment, api, agentLabel, line, fork, onFork, onQuote, onMessageContext, onHandToAssistant, onOpenFile, onPreview, older, prefix }: {
   segment: Segment; api: Api; agentLabel: Props['agentLabel']; fork: ReturnType<Props['canFork']>; line: ReactNode;
-  onFork: (id: string) => void; onOpenFile: (path: string) => Promise<void>; onPreview: (path: string) => void;
-  older: Partial<ViewProps>; prefix: ReactNode; onQuote?: ViewProps['onQuote']; onMessageContext?: ViewProps['onMessageContext']; onHandToAssistant?: ViewProps['onHandToAssistant']; onAutoHandover?: ViewProps['onAutoHandover'];
+  onFork: (id?: string) => void; onOpenFile: (path: string) => Promise<void>; onPreview: (path: string) => void;
+  older: Partial<ViewProps>; prefix: ReactNode; onQuote?: ViewProps['onQuote']; onMessageContext?: ViewProps['onMessageContext']; onHandToAssistant?: ViewProps['onHandToAssistant'];
 }) {
   const { thread, page } = segment;
   const timeline = useMemo(() => buildTimeline(page.events), [page.events]);
@@ -442,12 +442,12 @@ function EarlierSegment({ segment, api, agentLabel, line, fork, onFork, onQuote,
   // made from) is the fold; the part after the return opens with what it was handed back.
   const folded = segment.part === 'after' ? Boolean(thread.handback) : segment.part === 'before' ? handedOver(thread) : handedOver(thread) || Boolean(thread.handback);
   return <div data-history-thread={thread.id} data-history-part={segment.part} className="history-segment">
-    <ThreadView onQuote={onQuote} onMessageContext={onMessageContext} onHandToAssistant={onHandToAssistant} onAutoHandover={onAutoHandover} historyApi={api} historyThreadId={thread.id} historyTitle={thread.title} items={timeline.items} roots={roots} loadImage={loadImage} loadFile={loadFile}
+    <ThreadView onQuote={onQuote} onMessageContext={onMessageContext} onHandToAssistant={onHandToAssistant} historyApi={api} historyThreadId={thread.id} historyTitle={thread.title} items={timeline.items} roots={roots} loadImage={loadImage} loadFile={loadFile}
       onOpenFile={onOpenFile} onPreview={onPreview} onFork={fork.enabled ? onFork : undefined} forkAnyTurn={fork.any} {...older}
       beforeItems={<>{prefix}{!page.hasOlder && line}{!page.hasOlder && folded && <HandoverBoundary api={api} thread={thread} part={segment.part} agentLabel={agentLabel} turnId={timeline.items.find(item => item.kind === 'user' && item.handoverCollapsed)?.turnId ?? (segment.part === 'before' ? page.events.find(event => event.type === 'turn.started')?.turnId : undefined) ?? undefined} />}
         {!timeline.items.length && <div className="row chain-beginning">{t('handover.chain.empty')}</div>}</>} />
     {segment.followups > 0 && <FollowupsTail segment={segment} api={api} fork={fork} onFork={onFork} onQuote={onQuote}
-      onMessageContext={onMessageContext} onHandToAssistant={onHandToAssistant} onAutoHandover={onAutoHandover} onOpenFile={onOpenFile} onPreview={onPreview} />}
+      onMessageContext={onMessageContext} onHandToAssistant={onHandToAssistant} onOpenFile={onOpenFile} onPreview={onPreview} />}
   </div>;
 }
 
@@ -456,10 +456,10 @@ function EarlierSegment({ segment, api, agentLabel, line, fork, onFork, onQuote,
  * themselves read on beneath it. Nothing has to be opened; they are already part of the page, paged
  * forward from the handover the same way a segment read from its start is.
  */
-function FollowupsTail({ segment, api, fork, onFork, onQuote, onMessageContext, onHandToAssistant, onAutoHandover, onOpenFile, onPreview }: {
-  segment: Segment; api: Api; fork: ReturnType<Props['canFork']>; onFork: (id: string) => void;
+function FollowupsTail({ segment, api, fork, onFork, onQuote, onMessageContext, onHandToAssistant, onOpenFile, onPreview }: {
+  segment: Segment; api: Api; fork: ReturnType<Props['canFork']>; onFork: (id?: string) => void;
   onOpenFile: (path: string) => Promise<void>; onPreview: (path: string) => void;
-  onQuote?: ViewProps['onQuote']; onMessageContext?: ViewProps['onMessageContext']; onHandToAssistant?: ViewProps['onHandToAssistant']; onAutoHandover?: ViewProps['onAutoHandover'];
+  onQuote?: ViewProps['onQuote']; onMessageContext?: ViewProps['onMessageContext']; onHandToAssistant?: ViewProps['onHandToAssistant'];
 }) {
   const { thread, clip, part, followups } = segment;
   // What was counted as a follow-up runs from the handover to a later return to the same thread, and the read keeps to that range.
@@ -507,7 +507,7 @@ function FollowupsTail({ segment, api, fork, onFork, onQuote, onMessageContext, 
     {phase === 'failed' && <div className="history-status" role="alert">{t('handover.chain.laterFailed')} <button className="text-btn" onClick={() => setAttempt(value => value + 1)}>{t('common.retry')}</button></div>}
     {items.length > 0 && <ThreadView chain historyApi={api} historyThreadId={thread.id} items={items} roots={roots} loadImage={loadImage} loadFile={loadFile}
       onOpenFile={onOpenFile} onPreview={onPreview} onFork={fork.enabled ? onFork : undefined} forkAnyTurn={fork.any} observeOlder={false}
-      onQuote={onQuote} onMessageContext={onMessageContext} onHandToAssistant={onHandToAssistant} onAutoHandover={onAutoHandover} />}
+      onQuote={onQuote} onMessageContext={onMessageContext} onHandToAssistant={onHandToAssistant} />}
     {(phase === 'reading' || phase === 'more') && <div ref={sentinel} className="chain-later" role={busy ? 'status' : undefined}>{busy ? t('common.loading') : null}</div>}
   </div>;
 }

@@ -119,7 +119,6 @@ async function main(): Promise<void> {
   localSessions.start();
   machineUsage?.start();
   manager.recoverInterrupted();
-  manager.autoHandover.seedDefault();
   manager.personal.proactive.recover();
   // Started after recovery: turns a restart cut off are not news from a Worker.
   manager.personal.ledger.start();

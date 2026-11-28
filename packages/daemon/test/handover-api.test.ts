@@ -471,7 +471,7 @@ test('a relay between accounts of the same agent keeps model and effort; across 
   } finally { await manager.shutdown(); store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test('a gateway plan running out switches the same thread to a separately billed model and resends the ask', async () => {
+test('a gateway plan running out auto-forks to a separately billed model and resends the ask', async () => {
   const { modelGateway } = await import('./fixtures/model-gateway.mjs');
   const gateway = await modelGateway();
   const root = mkdtempSync(join(tmpdir(), 'calli-gateway-switch-'));
@@ -499,14 +499,13 @@ test('a gateway plan running out switches the same thread to a separately billed
     const store = new Store(join(root, 'data'));
     const cwd = join(root, 'project'); mkdirSync(cwd);
     manager = new ThreadManager(store, registry.adapters, new Workdirs([cwd], null), new AttachmentStore(join(root, 'data')), () => [{ id: 'magpie', adapter: 'claude' }]);
-    Object.defineProperty(manager.autoHandover, 'delayMs', { value: 80 });
     const adapter = registry.adapters.get('magpie')!;
     adapter.fetchQuota = () => Promise.resolve({ windows: [], checkedAt: new Date().toISOString() });
 
     const thread = await manager.createThread({ agent: 'magpie', cwd, model: 'zcode/GLM-5.3' });
     store.updateThread(thread.id, { permissionMode: 'full_access' });
     // The order names the routed model, which the adapter's ids prove bills on its own provider.
-    manager.autoHandover.configure({ enabled: true, threshold: 90, orders: { magpie: [{ agent: 'magpie', model: 'deepseek/deepseek-flash' }] } });
+    manager.autoHandover.configure({ enabled: true, orders: { magpie: [{ agent: 'magpie', model: 'deepseek/deepseek-flash' }] } });
     assert.deepEqual(await manager.autoHandover.targets(thread.id), [{ agent: 'magpie', model: 'deepseek/deepseek-flash' }]);
 
     await manager.startTurn(thread.id, { text: 'out of plan' });
@@ -514,18 +513,23 @@ test('a gateway plan running out switches the same thread to a separately billed
       const end = Date.now() + timeout;
       while (!check()) { if (Date.now() > end) throw new Error('timed out'); await new Promise(r => setTimeout(r, 25)); }
     };
-    await wait(() => manager.threadView(thread.id).status === 'idle' && !manager.autoHandover.held(thread.id));
+    await wait(() => {
+      const fork = manager!.listThreads().find((t) => t.forkedFrom === thread.id);
+      return fork && manager!.threadView(fork.id).status === 'idle';
+    });
 
-    // One conversation, on the other model now, the failed ask sent again and answered.
-    assert.equal(manager.listThreads().length, 1);
-    assert.equal(manager.getThread(thread.id).model, 'deepseek/deepseek-flash');
-    const turns = store.listTurns(thread.id);
-    assert.equal(turns.length, 2);
+    // A grouped lightweight fork picks up on the routed model, carrying the failed ask and 0-Token anchor.
+    const fork = manager.listThreads().find((t) => t.forkedFrom === thread.id)!;
+    assert.equal(fork.agent, 'magpie');
+    assert.equal(fork.model, 'deepseek/deepseek-flash');
+    assert.equal(fork.forkGroup, thread.id);
+    assert.equal(manager.threadView(thread.id).autoHandover?.state, 'forked');
+    assert.equal(manager.threadView(thread.id).autoHandover?.forkedThreadId, fork.id);
     assert.equal(store.listEvents(thread.id, 0, -1).filter(e => e.type === 'turn.error').length, 1);
-    const switched = store.listEvents(thread.id, 0, -1).find(e => e.type === 'handover.model');
-    assert.deepEqual({ model: switched?.data.model, previous: switched?.data.previous, reason: switched?.data.reason },
-      { model: 'deepseek/deepseek-flash', previous: 'zcode/GLM-5.3', reason: 'exhausted' });
-    // The agent really ran the resend on the routed model, not only had its name changed.
+    const forkReply = store.listEvents(fork.id, 0, -1).filter((e) => e.type === 'message.delta').map((e) => String(e.data.text ?? '')).join('');
+    assert.match(forkReply, /out of plan/);
+    assert.match(forkReply, /<calli-fork-anchor>/);
+    // The agent really ran the continuation on the routed model, not only had its name changed.
     assert.deepEqual(readFileSync(selected, 'utf8').trim().split('\n'), ['zcode/GLM-5.3', 'deepseek/deepseek-flash']);
   } finally {
     await manager?.shutdown().catch(() => undefined);

@@ -10,7 +10,7 @@ import type { Store } from './store.js';
  * is worth a reminder. What was attached lives in the database, so a restart does not repeat it.
  */
 
-export type InjectionKind = 'coordination' | 'handover' | 'forks' | 'progress' | 'tools' | 'todo';
+export type InjectionKind = 'coordination' | 'handover' | 'forks' | 'fork-anchor' | 'progress' | 'tools' | 'todo';
 
 /** Whether a block must ride along with this message. */
 export type InjectionGate = (kind: InjectionKind, block: string) => boolean;

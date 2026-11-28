@@ -8,7 +8,6 @@ import { changedFiles, mentionedFiles, checkMissingFiles, MAX_OUTPUT_ITEMS, type
 import { LarkChannel } from './channels/lark.js';
 import { PersonalService } from './personal.js';
 import { AutoHandover, type AutoHandoverView, type HandoverTarget, type SettledOutcome } from './auto-handover.js';
-import { AutoCompact } from './auto-compact.js';
 import type { HandbackLink, HandoverLink } from './handover-mode.js';
 import { QuotaResume, type ResumeView } from './quota-resume.js';
 import { AutoRetry, type RetryView } from './auto-retry.js';
@@ -50,12 +49,12 @@ import { findFiles, listDir, readText, type Listing, type TextFile } from './bro
 import { referencedFile } from './artifacts.js';
 import { imagePathNote, isVideoType, MAX_IMAGES, sniffImageType, sniffSvg, type AttachmentStore, type StoredAttachment, type StoredVideo } from './attachments.js';
 import { HttpError } from './errors.js';
-import { chainOutlineText, chainSegments, handoverBrief, handoverChainBlock, handoverChainInstructions, handoverPrompt, synthesizeBrief, turnMessage, type ChainSegment } from './handover.js';
+import { buildForkAnchor, chainOutlineText, chainSegments, handoverBrief, handoverChainBlock, handoverChainInstructions, handoverPrompt, synthesizeBrief, turnMessage, type ChainSegment } from './handover.js';
 import { McpManager } from './mcp.js';
 import { SkillsManager } from './skills.js';
 import { isWithinWorkdirs, Workdirs } from './workdirs.js';
 import { coalesceToolEvents, compactDeltas, toolText, type EmittedEvent, type EventType, type StoredEvent, type TurnChannel } from './events.js';
-import type { SearchHit, SectionRecord, Store, ThreadRecord, ThreadWorktree, TodoProposal, TodoRecord, TodoUrgency } from './store.js';
+import type { ForkKind, SearchHit, SectionRecord, Store, ThreadRecord, ThreadWorktree, TodoProposal, TodoRecord, TodoUrgency } from './store.js';
 import { readBrief, type ThreadBrief } from './brief.js';
 import { urgencyOf } from './store.js';
 import { todoStages } from './todo-stage.js';
@@ -433,7 +432,6 @@ export class ThreadManager {
   readonly references: ContextReferences;
   readonly previewNotes: PreviewNotes;
   readonly autoHandover: AutoHandover;
-  readonly autoCompact: AutoCompact;
   readonly personal: PersonalService;
   readonly lark: LarkChannel;
   readonly briefs: PersonalBriefSchedule;
@@ -457,7 +455,6 @@ export class ThreadManager {
     this.autoRetry = new AutoRetry(store, this);
     this.autoAdvance = new AutoAdvance(store, this);
     this.autoHandover.onSaved = settings => this.quotaResume.onSettings(settings.resume);
-    this.autoCompact = new AutoCompact(store, this);
     for (const [id, adapter] of adapters) adapter.onQuotaObserved = quota => this.observeQuota(id, quota);
     this.startQuotaWatch();
     this.quotaResume.start();
@@ -769,27 +766,43 @@ export class ThreadManager {
    */
   async forkThread(
     id: string,
-    opts: { turnId?: string; worktree?: boolean; agent?: string; grouped?: boolean; lightweight?: boolean; forkTag?: string | null; firstMessage?: string } = {},
+    opts: {
+      turnId?: string;
+      worktree?: boolean;
+      agent?: string;
+      model?: string | null;
+      grouped?: boolean;
+      lightweight?: boolean;
+      continueFromSource?: boolean;
+      forkKind?: ForkKind | null;
+      forkTag?: string | null;
+      firstMessage?: string;
+      /** Wait until the opening turn is started before returning (used by auto-fork so queued turns transfer cleanly). */
+      awaitStart?: boolean;
+    } = {},
   ): Promise<ThreadView> {
     const thread = this.getThread(id);
     const adapter = this.adapters.get(thread.agent);
     const lightweight = opts.lightweight === true;
-    // A fork to another agent carries the whole conversation over, the way a resume handover does,
-    // instead of copying it in the source agent's own format.
-    const across = Boolean(opts.agent && opts.agent !== thread.agent);
+    const targetAgent = opts.agent && opts.agent.trim() ? opts.agent.trim() : thread.agent;
+    const targetAdapter = this.adapters.get(targetAgent);
+    // A full-history fork to another agent carries the whole conversation over, the way a resume
+    // handover does, instead of copying it in the source agent's own format. A lightweight fork
+    // starts a fresh session, so it may switch to any available agent or model directly.
+    const across = targetAgent !== thread.agent;
     if (!adapter) throw new HttpError(400, `no such agent: ${thread.agent}`);
     if (lightweight && opts.turnId) throw new HttpError(400, 'a lightweight fork starts a fresh session and does not accept turnId');
-    if (lightweight && across) throw new HttpError(400, 'a lightweight fork stays on the same agent');
     if (!lightweight) {
       if (!across && (!adapter.capabilities.fork || !adapter.forkSession)) throw new HttpError(400, `${thread.agent} cannot fork a conversation`);
       if (!thread.agentSessionId) throw new HttpError(400, 'there is nothing to fork yet; send a message first');
     }
     const running = this.running.has(id);
     if (!lightweight && running && !opts.turnId) throw new HttpError(409, 'wait for the running turn to finish before forking');
-    if (across) {
-      if (!(await this.canForkAcross(id, opts.agent!))) throw new HttpError(400, `${thread.agent}'s conversation cannot be copied to ${opts.agent}`);
+    if (!lightweight && across) {
+      if (!(await this.canForkAcross(id, targetAgent))) throw new HttpError(400, `${thread.agent}'s conversation cannot be copied to ${targetAgent}`);
       if (opts.turnId) throw new HttpError(400, 'a fork to another agent copies the whole conversation; ask for no particular turn');
     }
+    if (!targetAdapter) throw new HttpError(400, `no such agent: ${targetAgent}`);
 
     // Where the hub's copy stops, and which of its turns that is. Null: the whole thread.
     let cut: { upToSeq: number; hubIndex: number; hubKeys: string[] } | null = null;
@@ -824,7 +837,7 @@ export class ThreadManager {
     try {
       const forkRef = !lightweight && cut ? await this.agentForkRef(thread, adapter, cut.hubIndex, cut.hubKeys) : undefined;
       if (opts.worktree) {
-        if (!lightweight && across && !this.adapters.get(opts.agent!)?.capabilities.forkInto) throw new HttpError(400, WORKTREE_REFUSALS.agent);
+        if (!lightweight && across && !targetAdapter.capabilities.forkInto) throw new HttpError(400, WORKTREE_REFUSALS.agent);
         const plan = await this.worktreePlan(thread, lightweight);
         if (!plan.checkout) throw new HttpError(400, WORKTREE_REFUSALS[plan.reason]);
         const tree = await addWorktree(plan.checkout, copyId.slice(0, 8)).catch((err) => {
@@ -838,8 +851,8 @@ export class ThreadManager {
       }
       if (!lightweight) {
         if (across) {
-          forkedSessionId = await this.importHandoverSession(id, opts.agent!) ?? '';
-          if (!forkedSessionId) throw new HttpError(502, `could not copy the conversation of ${thread.agent} to ${opts.agent}`);
+          forkedSessionId = await this.importHandoverSession(id, targetAgent) ?? '';
+          if (!forkedSessionId) throw new HttpError(502, `could not copy the conversation of ${thread.agent} to ${targetAgent}`);
         } else {
           // Not across: the guard above made sure the source agent can copy its own conversation.
           forkedSessionId = await adapter.forkSession!(thread.agentSessionId!, thread.cwd, forkRef, added ? cwd : undefined);
@@ -852,13 +865,27 @@ export class ThreadManager {
     }
 
     if (!lightweight) this.attachments.copyThread(thread.id, copyId);
-    // Another agent has names of its own for models and effort levels; a relay between accounts of
-    // the same kind keeps them, across kinds the target starts on its own default.
-    const acrossModel = across ? (await this.handoverModel(opts.agent!, thread.model)) ?? null : thread.model;
+    // Resolve target model/effort/speed/permissions for lightweight cross-agent/cross-model forks.
+    let copyModel: string | null;
+    if (opts.model !== undefined) {
+      copyModel = opts.model ? await this.validateModel(targetAgent, opts.model) : null;
+    } else if (across) {
+      copyModel = lightweight ? null : (await this.handoverModel(targetAgent, thread.model)) ?? null;
+    } else {
+      copyModel = thread.model;
+    }
+    const sameModel = !across && copyModel === thread.model;
+    const targetModes = targetAdapter.capabilities.permissionModes;
+    const copyPermission = targetModes.includes(thread.permissionMode as PermissionMode)
+      ? thread.permissionMode
+      : (targetModes.includes('ask') ? 'ask' : targetModes[0] ?? thread.permissionMode);
+    const copyWorkMode = targetAdapter.capabilities.workModes?.includes(thread.workMode ?? 'execute')
+      ? thread.workMode
+      : 'execute';
     // A fork taken from the middle of a relay chain keeps the way back: through this link the chain
     // outline rides along and `calli history` reaches every earlier segment. Detaching stands it alone.
     const sourceSeq = this.store.listEvents(thread.id, 0, -1).at(-1)?.seq ?? 0;
-    const chainLink = thread.handover && !thread.handover.detached
+    const chainLink = !lightweight && thread.handover && !thread.handover.detached
       ? { sourceId: thread.id, title: thread.title, agent: thread.agent, mode: 'branch' as const, method: 'resume' as const, sourceSeq }
       : undefined;
     const grouped = opts.grouped === true;
@@ -866,24 +893,43 @@ export class ThreadManager {
     if (rawTag.length > 40) throw new HttpError(400, 'forkTag must be at most 40 characters');
     const forkTag = grouped && rawTag ? rawTag : null;
     const forkGroup = grouped ? this.forkGroupRoot(thread) : null;
-    const firstMessage = typeof opts.firstMessage === 'string' ? opts.firstMessage.trim() : '';
+    const forkKind: ForkKind | null = grouped
+      ? (opts.forkKind ?? (lightweight ? 'handoff' : 'fork'))
+      : (opts.forkKind ?? null);
+    const explicitMessage = typeof opts.firstMessage === 'string' ? opts.firstMessage.trim() : '';
+    const continueFromSource = opts.continueFromSource === true;
+    // When continuing a thread whose last turn ended with an error (e.g. plan_exhausted), carry
+    // over the interrupted user ask and its attachments so the user does not have to retype it.
+    let failedStart: StoredEvent | undefined;
+    if (lightweight && continueFromSource && !explicitMessage) {
+      const lastTurnId = this.store.listTurns(thread.id).at(-1)?.turnId ?? null;
+      if (lastTurnId) {
+        const lastTurnEvents = this.store.listTurnEvents(thread.id, lastTurnId);
+        if (lastTurnEvents.some((e) => e.type === 'turn.error')) {
+          failedStart = lastTurnEvents.find((e) => e.type === 'turn.started');
+        }
+      }
+    }
+    const failedAsk = failedStart ? askedText(String(failedStart.data.displayText ?? failedStart.data.text ?? '')).trim() : '';
+    const firstMessage = explicitMessage || (continueFromSource ? (failedAsk || '接着上面的事情继续做') : '');
     const copyTitle = grouped
-      ? (firstMessage ? firstMessage.slice(0, 40) : forkTag || `${thread.title}（分叉）`)
+      ? (explicitMessage ? explicitMessage.slice(0, 40) : forkTag || (continueFromSource ? `${thread.title}（继续）` : `${thread.title}（分叉）`))
       : `${thread.title}（分叉）`;
     try {
       this.store.transaction(() => {
         this.store.createThread({
           id: copyId,
-          agent: across ? opts.agent! : thread.agent,
+          agent: targetAgent,
           cwd,
           title: copyTitle,
-          permissionMode: thread.permissionMode,
-          workMode: thread.workMode,
-          speed: thread.speed,
-          model: acrossModel,
-          effort: across ? null : thread.effort,
+          permissionMode: copyPermission,
+          workMode: copyWorkMode,
+          speed: sameModel ? thread.speed : null,
+          model: copyModel,
+          effort: sameModel ? thread.effort : null,
           forkedFrom: thread.id,
           forkGroup,
+          forkKind,
           forkTag,
           ...(chainLink ? { handover: chainLink } : {}),
           worktree,
@@ -897,9 +943,26 @@ export class ThreadManager {
       throw err;
     }
     // The last event of the copy: what comes before it was copied, what comes after is its own.
-    this.emitThreadEvent(copyId, null, 'thread.updated', { forkedFrom: thread.id, ...(forkGroup ? { forkGroup } : {}), ...(forkTag ? { forkTag } : {}), ...(added ? { worktree: { branch: added.tree.branch } } : {}) });
-    if (grouped && firstMessage) {
-      void this.startTurn(copyId, { text: firstMessage, fromUser: true }).catch(() => undefined);
+    this.emitThreadEvent(copyId, null, 'thread.updated', { forkedFrom: thread.id, ...(forkGroup ? { forkGroup } : {}), ...(forkKind ? { forkKind } : {}), ...(forkTag ? { forkTag } : {}), ...(added ? { worktree: { branch: added.tree.branch } } : {}) });
+    if (firstMessage) {
+      let carriedImages: Array<{ mimeType: string; data: string }> = [];
+      let carriedVideos: string[] = [];
+      if (failedStart) {
+        this.attachments.copyThread(thread.id, copyId);
+        carriedImages = ((failedStart.data.images ?? []) as Array<{ id: string }>).flatMap((img) => {
+          const file = this.attachments.find(thread.id, img.id);
+          return file ? [{ mimeType: file.mimeType, data: readFileSync(file.path).toString('base64') }] : [];
+        });
+        carriedVideos = ((failedStart.data.videos ?? []) as Array<{ id: string }>).map((v) => v.id);
+      }
+      const started = this.startTurn(copyId, {
+        text: firstMessage,
+        ...(carriedImages.length ? { images: carriedImages } : {}),
+        ...(carriedVideos.length ? { videos: carriedVideos } : {}),
+        fromUser: true,
+      });
+      if (opts.awaitStart) await started;
+      else void started.catch(() => undefined);
     }
     return this.threadView(copyId);
   }
@@ -947,6 +1010,9 @@ export class ThreadManager {
         }
       }
     }
+    // Also include direct fork parent/children so non-grouped lightweight forks can read history.
+    if (self.forkedFrom) out.add(self.forkedFrom);
+    for (const t of all) if (t.forkedFrom === threadId) out.add(t.id);
     // Also allow lead and collaboration members to read each other on demand.
     for (const cid of this.coordination?.familyIds(threadId) ?? []) out.add(cid);
     out.delete(threadId);
@@ -984,7 +1050,7 @@ export class ThreadManager {
       const label = !t.forkGroup ? `主会话「${t.title}」` : t.forkTag ? `[${t.forkTag}] ${t.title}` : t.title;
       return `- ${label}（id: ${t.id}，状态: ${t.status === 'running' ? '运行中' : '空闲'}）`;
     });
-    return `<calli-forks>\n同工作区关联会话（按需只读；平时不要主动读取，仅在用户提及或需要对照时用 \`calli history <id> --user-inputs\` 查阅）：\n${lines.join('\n')}\n</calli-forks>`;
+    return `<calli-forks>\n同工作区关联会话（按需只读；平时不要主动读取，需要接着做或对照细节时用 \`calli history <id> --turns 6\` 查成对问答，\`--user-inputs\` 仅作轮次目录）：\n${lines.join('\n')}\n</calli-forks>`;
   }
 
   /** What forking this thread can offer. Asked when the user reaches for the fork button, not before. */
@@ -2050,6 +2116,10 @@ export class ThreadManager {
       done?: boolean;
       /** The person places the thread on the board; it stands until a later turn reports again. */
       stage?: ProgressStage;
+      /** Root topic id to nest under, or null to promote a derived thread to a standalone topic. */
+      forkGroup?: string | null;
+      /** Kind of derived thread nested under a topic. */
+      forkKind?: ForkKind | null;
       /** Short purpose tag for a forked sub-conversation. */
       forkTag?: string | null;
     },
@@ -2075,6 +2145,26 @@ export class ThreadManager {
       if (updates.done !== undefined) throw new HttpError(400, 'set done or stage, not both');
       if (!PROGRESS_STAGES.includes(updates.stage)) throw new HttpError(400, 'stage must be backlog, doing, blocked or review');
       this.store.setThreadProgress(id, { doneAt: null, report: { stage: updates.stage, note: '', at: new Date().toISOString(), by: 'user' } });
+    }
+    if (updates.forkGroup !== undefined) {
+      if (updates.forkGroup === null) {
+        patch.forkGroup = null;
+        patch.forkKind = null;
+        if (updates.forkTag === undefined) patch.forkTag = null;
+      } else if (typeof updates.forkGroup === 'string' && updates.forkGroup.trim()) {
+        const parent = this.store.getThread(updates.forkGroup.trim());
+        if (!parent) throw new HttpError(400, 'forkGroup thread not found');
+        const rootId = this.forkGroupRoot(parent);
+        patch.forkGroup = rootId === id ? null : rootId;
+      } else {
+        throw new HttpError(400, 'forkGroup must be a thread id or null');
+      }
+    }
+    if (updates.forkKind !== undefined) {
+      if (updates.forkKind !== null && !['fork', 'handoff', 'ask'].includes(updates.forkKind)) {
+        throw new HttpError(400, 'forkKind must be fork, handoff, ask or null');
+      }
+      patch.forkKind = updates.forkKind;
     }
     if (updates.forkTag !== undefined) {
       if (updates.forkTag !== null && typeof updates.forkTag !== 'string') throw new HttpError(400, 'forkTag must be a string or null');
@@ -2688,8 +2778,9 @@ export class ThreadManager {
     schedule?: { id: string; name: string } | null;
     /** A fresh conversation where this thread works: its exact directory, sharing its worktree. */
     besideThread?: string;
-    /** Inherited grouped fork family & tag (e.g. when a forked sub-conversation hands over). */
+    /** Inherited grouped fork family, kind & tag (e.g. side-chat asks or handover successors). */
     forkGroup?: string | null;
+    forkKind?: ForkKind | null;
     forkTag?: string | null;
   }, inheritedWorktree?: ThreadWorktree | null, handover?: ThreadRecord['handover']): Promise<ThreadView> {
     const adapter = this.adapters.get(input.agent);
@@ -2730,6 +2821,14 @@ export class ThreadManager {
         throw new HttpError(400, WORKTREE_REFUSALS.outside_workdirs);
       }
     }
+    let resolvedForkGroup: string | null = null;
+    if (input.forkGroup) {
+      const parent = this.store.getThread(input.forkGroup);
+      resolvedForkGroup = parent ? this.forkGroupRoot(parent) : input.forkGroup;
+    }
+    const resolvedForkKind: ForkKind | null = input.forkKind && ['fork', 'handoff', 'ask'].includes(input.forkKind)
+      ? input.forkKind
+      : null;
     let thread: ThreadRecord;
     try {
       thread = this.store.createThread({
@@ -2743,7 +2842,8 @@ export class ThreadManager {
         model,
         effort,
         handover,
-        forkGroup: input.forkGroup ?? null,
+        forkGroup: resolvedForkGroup,
+        forkKind: resolvedForkKind,
         forkTag: input.forkTag ?? null,
         schedule: input.schedule ?? null,
         ...(input.sectionId ? { sectionId: input.sectionId } : {}),
@@ -2856,6 +2956,7 @@ export class ThreadManager {
       effort,
       sectionId: source.sectionId,
       forkGroup: source.forkGroup ?? null,
+      forkKind: source.forkKind ?? null,
       forkTag: source.forkTag ?? null,
     }, source.worktree);
     this.handoverBoundaries.set(successor, boundary);
@@ -3232,9 +3333,23 @@ export class ThreadManager {
     const chained = chain.length > 1 ? handoverChainInstructions(written, handoverChainBlock(chainOutlineText(chain, thread.id)), gate) : written;
     const forkBlock = !bare && !slashCommand && Boolean(rawText) ? this.forkDirectoryBlock(thread) : null;
     const withForks = forkBlock && (!gate || gate('forks', forkBlock)) ? `${chained}\n\n${forkBlock}` : chained;
+    // On a lightweight fork's first turn (no copied history, no native session yet), attach a
+    // 0-token paired Q&A progress anchor from the source thread so the incoming agent/model can
+    // continue seamlessly without LLM summarization or full-history replay.
+    const isFreshLightFork = !bare && !slashCommand && Boolean(rawText)
+      && Boolean(thread.forkedFrom) && !thread.agentSessionId
+      && this.store.listEventsOfType(threadId, 'turn.started').length === 0;
+    const forkSource = isFreshLightFork ? this.store.getThread(thread.forkedFrom!) : null;
+    const anchorBlock = forkSource
+      ? buildForkAnchor(
+          { id: forkSource.id, title: forkSource.title, cwd: forkSource.cwd, worktree: forkSource.worktree },
+          this.store.listEvents(forkSource.id, 0, -1),
+        )
+      : null;
+    const withAnchor = anchorBlock && (!gate || gate('fork-anchor', anchorBlock)) ? `${withForks}\n\n${anchorBlock}` : withForks;
     // If the prior user request was cancelled before the native agent kept it, a short follow-up
     // like "what is it for?" still needs that interrupted request to interpret the ask.
-    const contextual = interruptedContext ? interruptedFollowupPrompt(interruptedContext, withForks) : withForks;
+    const contextual = interruptedContext ? interruptedFollowupPrompt(interruptedContext, withAnchor) : withAnchor;
     const askProgress = !bare && !slashCommand && Boolean(rawText) && this.progressWanted();
     const text = askProgress ? progressInstructions(contextual, gate) : contextual;
 
@@ -3395,9 +3510,7 @@ export class ThreadManager {
     const failedTurn = lastTurn && this.store.listTurnEvents(threadId, lastTurn).some(e => e.type === 'turn.error') ? lastTurn : null;
     const retryStart = failedTurn ? this.store.listTurnEvents(threadId, failedTurn).find(e => e.type === 'turn.started') : undefined;
     const retry = opts.carryFailed && retryStart ? String(retryStart.data.displayText ?? retryStart.data.text ?? '') : '';
-    // The source could not write its own summary: another agent reads the record, when one is set up for that.
-    const written = opts.compress ? await this.autoCompact.summarizeForHandover(threadId, Array.isArray(opts.compress) ? opts.compress : undefined) : null;
-    const brief = [context, written, synthesizeBrief(events)].filter(Boolean).join('\n\n');
+    const brief = [context, synthesizeBrief(events)].filter(Boolean).join('\n\n');
     return { summary: retry ? `${brief}\n\n## 继续未完成的这一轮\n\n${retry}` : brief, source: 'log' };
   }
 
@@ -3716,6 +3829,37 @@ export class ThreadManager {
     return `# 交回\n\n任务交回给你：你离开之后由别的会话接着做了一段，下面是自你离开后的进展。你自己的会话上下文仍在，先对照现状再继续。\n\n${summary}`;
   }
 
+  /**
+   * Automatic continuation on plan exhaustion: opens a grouped lightweight fork on the chosen
+   * target agent/model with the 0-token Arm 2 progress anchor, carrying over the failed turn
+   * and any queued messages — zero LLM summary wait, zero session copy, zero handover chain.
+   */
+  async executeAutoFork(id: string, target: HandoverTarget): Promise<ThreadView> {
+    this.quotaResume.drop(id);
+    this.autoRetry.drop(id);
+    this.autoAdvance.drop(id);
+    await this.stopBackgroundTurn(id);
+    const fork = await this.forkThread(id, {
+      grouped: true,
+      lightweight: true,
+      agent: target.agent,
+      ...(target.model ? { model: target.model } : { model: null }),
+      continueFromSource: true,
+      forkKind: 'handoff',
+      forkTag: '自动续跑',
+      awaitStart: true,
+    });
+    this.autoHandover.inherit(id, fork.id);
+    const queue = this.queues.get(id) ?? [];
+    if (queue.length) {
+      this.attachments.copyThread(id, fork.id);
+      this.setQueue(id, []);
+      this.setQueue(fork.id, [...(this.queues.get(fork.id) ?? []), ...queue]);
+      this.startNextQueued(fork.id);
+    }
+    return this.threadView(fork.id);
+  }
+
   async executeAutoHandover(id: string, target: HandoverTarget, summary: string, failedTurn: string | null, note?: string, humanNote?: HumanHandoverNote): Promise<ThreadView> {
     if (humanNote && !this.humanHandoverNotes.has(humanNote)) throw new HttpError(403, 'only an authenticated human send can attach a handover note');
     const source = this.getThread(id);
@@ -4011,9 +4155,6 @@ export class ThreadManager {
         // The agent said where the work stands: with auto-advance on, an external wait or unfinished
         // work arms the hub to nudge the thread on by itself (it re-checks all facts itself).
         this.autoAdvance.settled(thread.id, turnId);
-        // Quota is closing in but the handover did not move the work: shrink the context while the
-        // account can still answer, so the rest of the window is not spent re-reading it.
-        if (settled !== 'moved') void this.autoCompact.settled(thread.id, turnId).catch(() => undefined);
         this.startNextQueued(thread.id);
       }
     }

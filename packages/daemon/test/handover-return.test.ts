@@ -30,7 +30,6 @@ async function setup() {
     adapters.set(id, new AgyAdapter([process.execPath, join(fixtures, 'fake-agy.mjs')], { FAKE_HANDOVER_QUOTA: join(dir, id + '.json') }));
   }
   const manager = new ThreadManager(store, adapters, new Workdirs([dir], join(dir, 'dirs.json'), join(dir, 'scratch')), new AttachmentStore(dir), () => [...adapters.keys()].map(id => ({ id, adapter: 'agy' })));
-  Object.defineProperty(manager.autoHandover, 'delayMs', { value: 400 });
   const server = createHttpServer({ manager, token: 'test-token', webDir: null, version: 'test' });
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -168,60 +167,5 @@ test('an older conversation whose quota is high, which is blocked or has no sess
     assert.equal((await h.manager.autoHandover.returnTargets(b.id)).length, 1);
     h.store.updateThread(a.id, { agentSessionId: null });
     assert.deepEqual(await h.manager.autoHandover.returnTargets(b.id), [], 'no native session to go on in');
-    // A choice is only for a countdown that offers one.
-    assert.equal((await h.api(`/api/threads/${b.id}/auto-handover`, 'PATCH', { choice: 'return' })).status, 409);
-    assert.equal((await h.api(`/api/threads/${b.id}/auto-handover`, 'PATCH', { choice: 'maybe' })).status, 400);
   } finally { await h.close(); }
-});
-
-test('an automatic handover going to another agent never lands in an older conversation of a third', async () => {
-  const h = await setup();
-  try {
-    const { a, b } = await h.chain();
-    // The order names agy3; A (agy) could take the work back, but nobody chose agy.
-    h.manager.autoHandover.configure({ enabled: true, threshold: 90, orders: { agy2: [{ agent: 'agy3', model: 'gemini-pro' }] } });
-    await h.manager.startTurn(b.id, { text: 'quota-near' });
-    await wait(() => h.manager.autoHandover.view(b.id).state === 'countdown');
-    const view = h.manager.autoHandover.view(b.id);
-    assert.equal(view.target?.agent, 'agy3');
-    assert.equal(view.returnTo, undefined, 'no older conversation of another agent is offered');
-    await h.done(b.id);
-    await wait(() => h.manager.listThreads().length >= 3);
-    const c = h.manager.listThreads().find(t => t.handover?.sourceId === b.id)!;
-    assert.equal(c.agent, 'agy3');
-    assert.equal(h.manager.getThread(a.id).handback ?? null, null, 'A was not handed the work');
-    await h.done(c.id);
-  } finally { await h.close(); }
-});
-
-test('an automatic handover offers the older conversation first, and a new one when chosen', async () => {
-  for (const choose of [null, 'new'] as const) {
-    const h = await setup();
-    try {
-      const { a, b } = await h.chain();
-      // The order names A's own agent: its older conversation is the one offered.
-      h.manager.autoHandover.configure({ enabled: true, threshold: 90, orders: { agy2: [{ agent: 'agy', model: 'gemini-pro' }] } });
-      await h.manager.startTurn(b.id, { text: 'quota-near' });
-      await wait(() => h.manager.autoHandover.view(b.id).state === 'countdown');
-      const view = h.manager.autoHandover.view(b.id);
-      assert.equal(view.returnTo?.threadId, a.id);
-      assert.equal(view.choice, 'return', 'with an older conversation to go back to, that is the default');
-      if (choose) assert.equal((await h.api(`/api/threads/${b.id}/auto-handover`, 'PATCH', { choice: choose })).status, 200);
-      await h.done(b.id);
-      await wait(() => h.manager.listThreads().length >= 3 || h.manager.getThread(a.id).handback);
-      await h.done(a.id);
-      if (!choose) {
-        assert.equal(h.manager.listThreads().length, 2, 'no new thread');
-        assert.equal(h.manager.getThread(a.id).handback?.sourceId, b.id);
-        assert.match(String(h.store.listEvents(a.id, 0, -1).filter(e => e.type === 'turn.started').at(-1)?.data.text), /^# 交回/);
-      } else {
-        const c = h.manager.listThreads().find(t => t.handover?.sourceId === b.id)!;
-        assert.ok(c, 'a new conversation');
-        assert.equal(c.agent, 'agy');
-        assert.equal(c.handover?.method, 'summary', 'carried by a summary, never a copy of the session');
-        assert.equal(h.manager.getThread(a.id).handback ?? null, null);
-        await h.done(c.id);
-      }
-    } finally { await h.close(); }
-  }
 });

@@ -96,18 +96,19 @@ interface Props {
   revealTurnId?: string;
   loadingOlder?: boolean;
   onLoadOlder?: () => void;
-  /** Copies the thread as it stands and opens the copy. Missing when the agent cannot fork, or there is no session yet. */
-  onFork?: (turnId: string) => void;
+  /** Codex-style 1-click native fork (omitting turnId on the latest reply), falling back to handoff while running. */
+  onFork?: (turnId?: string) => void;
+  /** Opens the "Continue in new chat" composer sheet from the reply's overflow / context menu. */
+  onHandoff?: () => void;
   onQuote?: (text: string, turnId: string, threadId?: string) => void;
   onMessageContext?: (text: string, turnId: string, threadId?: string) => Promise<void>;
   onHandToAssistant?: (text: string, turnId: string, threadId?: string) => Promise<void>;
-  /** Hands the whole thread to another agent, offered last in a message's menu. */
-  onAutoHandover?: () => void;
   /**
-   * When the last turn failed because the agent's plan ran out: hand the thread to another agent.
-   * `label` names the quota-aware one-click target when one is available; `choose` opens the handover to pick another.
+   * When the last turn failed because the agent's plan ran out: continue in a lightweight fork on
+   * another agent/model. `label` names the quota-aware one-click target when available; `choose`
+   * opens the minimal fork card to pick another agent/model.
    */
-  takeover?: { label?: string; go?: () => void; /** An earlier conversation of the chain that can take the work back, offered beside a new one. */ goBack?: { title: string; go: () => void }; choose: () => void; busy?: boolean } | null;
+  takeover?: { label?: string; go?: () => void; choose: () => void; busy?: boolean } | null;
   /**
    * When the last turn failed because the agent's plan ran out: wait for the quota to reset and
    * continue with the same agent. `armed` mirrors the daemon's watch; `onArm`/`onCancel` toggle it.
@@ -159,7 +160,7 @@ const NEAR_TOP_PX = 600;
 /** Nearest scrollable container for a thread: panel scrollers first, falling back to the main page scroller. */
 const THREAD_SCROLLER = '.chat-flow, .agent-panel-body, .thread-peek-body, .side-chat-body, .scroller';
 
-export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, beforeItems, olderLabel, olderError, revealTurnId, historyApi, historyThreadId, historyTitle, items: originalItems, roots, loadImage, loadFile, onOpenFile, onPreview, hasOlder, loadingOlder, onLoadOlder, onFork, onQuote, onMessageContext, onHandToAssistant, onAutoHandover, forkAnyTurn, onEdit, revision = 0, takeover, resume, autoRetry, advance, memberThreadId, onOpenMemberThread, threads, onOpenThread }: Props) {
+export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, beforeItems, olderLabel, olderError, revealTurnId, historyApi, historyThreadId, historyTitle, items: originalItems, roots, loadImage, loadFile, onOpenFile, onPreview, hasOlder, loadingOlder, onLoadOlder, onFork, onHandoff, onQuote, onMessageContext, onHandToAssistant, forkAnyTurn, onEdit, revision = 0, takeover, resume, autoRetry, advance, memberThreadId, onOpenMemberThread, threads, onOpenThread }: Props) {
   const machineId = useReferenceMachine(historyApi?.demo ? null : historyApi);
   const sourceTitle = historyTitle ?? threads?.find(thread => thread.id === historyThreadId)?.title ?? historyThreadId ?? '';
   const [selection, setSelection] = useState<{ text: string; turnId: string } | null>(null);
@@ -177,9 +178,9 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
     ...(onQuote ? [{ key: 'quote', label: t('references.quote'), icon: IconQuote, run: () => onQuote(text, turnId, historyThreadId) }] : []),
     ...(onHandToAssistant ? [{ key: 'assistant', label: t('messageActions.assistant'), icon: IconSparkle, run: () => onHandToAssistant(text, turnId, historyThreadId) }] : []),
     ...(onMessageContext ? [{ key: 'context', label: t('messageActions.context'), icon: IconPaperclip, run: () => onMessageContext(text, turnId, historyThreadId) }] : []),
+    ...(onHandoff ? [{ key: 'handoff', label: t('actions.handoffContinue'), icon: IconHandover, run: () => onHandoff() }] : []),
     { key: 'select', label: t('messageActions.select'), icon: IconRead, run: () => setSelection({ text, turnId }) },
     ...(element?.querySelector('.message-edit-btn') ? [{ key: 'edit', label: t('view.editMessage'), icon: IconEdit, run: () => element.querySelector<HTMLButtonElement>('.message-edit-btn')?.click() }] : []),
-    ...(onAutoHandover ? [{ key: 'handover', label: t('takeover.title'), icon: IconHand, run: onAutoHandover }] : []),
   ];
   const gestures = useMessageGestures((element, x, y) => {
     const item = originalItems.find(item => item.key === element.dataset.messageKey);
@@ -538,7 +539,7 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
                   className="quiet-btn"
                   aria-label={t('sidebar.fork')}
                   title={item.key === lastActionsKey ? t('view.forkLast') : t('view.forkHere')}
-                  onClick={() => onFork(item.turnId)}
+                  onClick={() => onFork(item.key === lastActionsKey ? undefined : item.turnId)}
                 >
                   <IconFork size={15} />
                 </button>
@@ -557,13 +558,9 @@ export function ThreadView({ onOpenFinds, chain = false, observeOlder = true, be
           return (
           <ErrorNotice key={item.key} item={item}>
             {item.planExhausted && item === items[items.length - 1] && (takeover || resume) && <div className="exhausted-actions">
-              {takeover?.goBack && <button className="exhausted-hand" onClick={takeover.goBack.go} disabled={takeover.busy}>
-                {takeover.busy ? t('view.handingOver') : t('handover.choice.old', takeover.goBack.title)}
+              {takeover?.go && takeover.label && <button className="exhausted-hand" onClick={takeover.go} disabled={takeover.busy}>
+                {takeover.busy ? t('actions.forking') : t('view.forkContinueWith', takeover.label)}
                 <IconArrowRight size={14} />
-              </button>}
-              {takeover?.go && takeover.label && <button className={takeover.goBack ? 'exhausted-quiet' : 'exhausted-hand'} onClick={takeover.go} disabled={takeover.busy}>
-                {takeover.busy ? t('view.handingOver') : takeover.goBack ? t('handover.choice.new') : t('view.handTo', takeover.label)}
-                {!takeover.goBack && <IconArrowRight size={14} />}
               </button>}
               {takeover && <button className="exhausted-quiet" onClick={takeover.choose} disabled={takeover.busy}>{t('view.chooseOtherShort')}</button>}
               {resume && !resume.armed && <button className="exhausted-quiet" onClick={resume.onArm} disabled={resume.busy}>{t('view.resumeArm')}</button>}

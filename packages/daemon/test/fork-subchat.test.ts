@@ -248,3 +248,85 @@ test('lightweight fork succeeds while the source thread is running (including be
     await h.close();
   }
 });
+
+test('lightweight fork supports switching Agent/Model, injects 0-token Arm 2 anchor once, and updates <calli-forks> to paired history', async () => {
+  const h = await setup();
+  try {
+    const root = await h.manager.createThread({ agent: 'pi-a', cwd: h.dir, title: '主线优化' });
+    for (const msg of ['第1轮问题', '第2轮方案A与C', '第3轮确认约束', '第4轮最后进度']) {
+      await h.manager.startTurn(root.id, { text: msg, fromUser: true });
+      await h.idle(root.id);
+    }
+
+    // 1. Cross-agent lightweight fork with continueFromSource=true (even on a different agent pi-b)
+    const contRes = await h.req('POST', `/api/threads/${root.id}/fork`, {
+      grouped: true,
+      lightweight: true,
+      agent: 'pi-b',
+      continueFromSource: true,
+    });
+    assert.equal(contRes.status, 201);
+    const cont = await contRes.json();
+    assert.equal(cont.agent, 'pi-b');
+    assert.equal(cont.forkGroup, root.id);
+    assert.equal(cont.title, '主线优化（继续）');
+    await h.idle(cont.id);
+
+    const starts = h.store.listEventsOfType(cont.id, 'turn.started');
+    assert.equal(starts.length, 1);
+    const rawPrompt = String(starts[0].data.text);
+    // Prompt carries 0-token Arm 2 paired last-3-turns Q&A anchor + paired `calli history --turns 6` pointer.
+    assert.match(rawPrompt, /<calli-fork-anchor>/);
+    assert.match(rawPrompt, /共 4 轮/);
+    assert.doesNotMatch(rawPrompt, /第1轮问题/, 'anchor keeps only the last 3 turns');
+    assert.match(rawPrompt, /第2轮方案A与C/);
+    assert.match(rawPrompt, /第3轮确认约束/);
+    assert.match(rawPrompt, /第4轮最后进度/);
+    assert.match(rawPrompt, /hi there 第4轮最后进度/, 'anchor includes paired assistant answers');
+    assert.match(rawPrompt, new RegExp(`calli history ${root.id} --turns 6`));
+    // <calli-forks> also points to paired --turns 6 rather than --user-inputs alone.
+    assert.match(rawPrompt, /<calli-forks>[\s\S]*--turns 6[\s\S]*<\/calli-forks>/);
+    // Visible displayText & preview never leak <calli-fork-anchor>.
+    assert.equal(askedText(rawPrompt), '接着上面的事情继续做');
+    assert.equal(String(starts[0].data.displayText ?? ''), '接着上面的事情继续做');
+    assert.equal(h.store.getThread(cont.id)!.preview, '接着上面的事情继续做');
+
+    // Turn 2 on the same lightweight fork must NOT re-inject <calli-fork-anchor>.
+    await h.manager.startTurn(cont.id, { text: '第二轮追问', fromUser: true });
+    await h.idle(cont.id);
+    const turn2Prompt = String(h.store.listEventsOfType(cont.id, 'turn.started').at(-1)!.data.text);
+    assert.doesNotMatch(turn2Prompt, /<calli-fork-anchor>/);
+
+    // Cross-agent lightweight fork can still read parent history on demand.
+    const historyRead = (await h.manager.references.command(cont.id, { op: 'history', target: root.id, turns: 2 })) as any;
+    assert.ok(Array.isArray(historyRead.turns) && historyRead.turns.length === 2);
+
+    // Derived kinds (`fork`, `handoff`, `ask`) persist across fork/create and can be promoted out to top-level topics.
+    assert.equal(cont.forkKind, 'handoff');
+    const nativeRes = await h.req('POST', `/api/threads/${root.id}/fork`, { grouped: true, lightweight: false, forkKind: 'fork' });
+    assert.equal(nativeRes.status, 201);
+    const nativeFork = await nativeRes.json();
+    assert.equal(nativeFork.forkGroup, root.id);
+    assert.equal(nativeFork.forkKind, 'fork');
+
+    const askRes = await h.req('POST', '/api/threads', {
+      agent: 'pi-a',
+      cwd: h.dir,
+      title: '追问：默认标签',
+      forkGroup: cont.id, // nesting under a child resolves flatly to the root topic
+      forkKind: 'ask',
+    });
+    assert.equal(askRes.status, 201);
+    const ask = await askRes.json();
+    assert.equal(ask.forkGroup, root.id);
+    assert.equal(ask.forkKind, 'ask');
+
+    const promoteRes = await h.req('PATCH', `/api/threads/${ask.id}`, { forkGroup: null });
+    assert.equal(promoteRes.status, 200);
+    const promoted = await promoteRes.json();
+    assert.equal(promoted.forkGroup, null);
+    assert.equal(promoted.forkKind, null);
+  } finally {
+    await h.close();
+  }
+});

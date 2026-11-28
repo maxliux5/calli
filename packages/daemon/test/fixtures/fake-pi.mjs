@@ -262,6 +262,11 @@ rl.on('line', (line) => {
       if (running) return reply(null, false, 'already streaming');
       // Fixture commands belong to the current ask, not the interrupted request in its envelope.
       if (cmd.message.includes('[Calli interrupted-turn context]\n')) cmd.message = cmd.message.split('\nCurrent user message:\n').at(-1);
+      // Strip fork context envelopes before matching fixture triggers (e.g. "slow", "fail"),
+      // while preserving cmd.message for echo assertions in tests.
+      const askBody = cmd.message
+        .replace(/<calli-fork-anchor>[\s\S]*?<\/calli-fork-anchor>/g, '')
+        .replace(/<calli-forks>[\s\S]*?<\/calli-forks>/g, '');
       if (cmd.message.startsWith('auto-compact')) {
         reply({ disposition: 'started' });
         const prefix = cmd.message.includes('legacy') ? 'auto_' : '';
@@ -337,12 +342,12 @@ rl.on('line', (line) => {
       running = true;
       reply({ disposition: 'started' });
       out({ type: 'agent_start' });
-      if (cmd.message.includes('wait-first')) {
+      if (askBody.includes('wait-first')) {
         out({ type: 'message_start', message: { role: 'assistant', timestamp: Date.now() } });
         pendingFirstOutput = setTimeout(() => {
           pendingFirstOutput = null;
           if (!running) return;
-          if (cmd.message.includes('wait-first-fail')) {
+          if (askBody.includes('wait-first-fail')) {
             out({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'provider unavailable' } });
           } else {
             out({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'Checking the request.' } });
@@ -524,7 +529,7 @@ rl.on('line', (line) => {
             out({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'hi ' } });
             const marker = process.env.FAKE_PI_LABEL ? `[${process.env.FAKE_PI_LABEL}] ` : '';
             out({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: marker + 'there ' + cmd.message } });
-            if (/\bfail\b/.test(cmd.message)) {
+            if (/\bfail\b/.test(askBody)) {
               out({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'provider exploded' } });
               running = false;
               return out({ type: 'agent_settled', aborted: false });
@@ -549,13 +554,13 @@ rl.on('line', (line) => {
       // Whole word only: protocol envelopes (the Router's INTRO names push.failure) must not
       // turn an unrelated reply into a failure, while fail markers anywhere (work fail,
       // router-fixture-fail in a signal ref) still do.
-      if (/\bfail\b/.test(cmd.message)) {
+      if (/\bfail\b/.test(askBody)) {
         out({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'provider exploded' } });
         running = false;
         return out({ type: 'agent_settled', aborted: false });
       }
       if (process.env.FAKE_TELEMETRY) out({ type: 'message_end', message: { role: 'assistant', model: 'fixture-model', provider: 'fixture-provider', stopReason: 'stop', durationMs: 1250, usage: { input: 100, output: 20, cacheRead: 40, cacheWrite: 10, reasoning: 5, totalTokens: 170, cost: { total: 0.0123 } } } });
-      if (cmd.message.includes('slow')) return;
+      if (askBody.includes('slow')) return;
       running = false;
       return out({ type: 'agent_settled', aborted: false });
     }
